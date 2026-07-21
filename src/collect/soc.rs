@@ -34,7 +34,7 @@ use crate::ffi::sys::{sysctl_string, sysctl_u64};
 
 /// Parse a pmgr `voltage-states*` CFData blob: 8-byte LE (freq, voltage)
 /// pairs. Frequencies are Hz on M1–M3, kHz on M4+ — detected by magnitude.
-fn parse_dvfs(bytes: &[u8]) -> Vec<Mhz> {
+pub(crate) fn parse_dvfs(bytes: &[u8]) -> Vec<Mhz> {
     let mut freqs: Vec<u64> = bytes
         .chunks_exact(8)
         .map(|c| u64::from(u32::from_le_bytes([c[0], c[1], c[2], c[3]])))

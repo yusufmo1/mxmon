@@ -323,6 +323,27 @@ fn sensor_cache_path() -> Option<std::path::PathBuf> {
     crate::config::dir().map(|d| d.join("sensors.toml"))
 }
 
+/// A cached discovery pass is only usable on the exact machine state that
+/// produced it: same chip, same macOS build, same live `#KEY` count, and a
+/// non-empty sensor list.
+fn cache_fingerprint_matches(
+    cached: &SensorCacheFile,
+    chip: &str,
+    macos: &str,
+    key_count: u32,
+) -> bool {
+    cached.chip == chip
+        && cached.macos == macos
+        && cached.key_count == key_count
+        && !cached.sensors.is_empty()
+}
+
+/// A mostly-dead cache is distrusted: fewer than 3/4 of its keys still
+/// probing OK forces a fresh discovery scan.
+fn cache_is_trustworthy(survived: usize, expected: usize) -> bool {
+    survived * 4 >= expected * 3
+}
+
 /// Rebuild the sensor list from the cache when the machine fingerprint
 /// matches. Every cached key is re-probed (2 cheap calls) so stale entries
 /// drop out; if too few survive, the cache is distrusted and `None` forces a
@@ -330,11 +351,7 @@ fn sensor_cache_path() -> Option<std::path::PathBuf> {
 fn load_sensor_cache(smc: &Smc, chip: &str, macos: &str, key_count: u32) -> Option<Vec<SensorKey>> {
     let text = std::fs::read_to_string(sensor_cache_path()?).ok()?;
     let cached: SensorCacheFile = toml::from_str(&text).ok()?;
-    if cached.chip != chip
-        || cached.macos != macos
-        || cached.key_count != key_count
-        || cached.sensors.is_empty()
-    {
+    if !cache_fingerprint_matches(&cached, chip, macos, key_count) {
         return None;
     }
     let expected = cached.sensors.len();
@@ -350,7 +367,7 @@ fn load_sensor_cache(smc: &Smc, chip: &str, macos: &str, key_count: u32) -> Opti
             out.push((s.key, info, s.group, s.label));
         }
     }
-    (out.len() * 4 >= expected * 3).then_some(out)
+    cache_is_trustworthy(out.len(), expected).then_some(out)
 }
 
 /// Best-effort persist of a discovery pass (failed scans aren't cached).

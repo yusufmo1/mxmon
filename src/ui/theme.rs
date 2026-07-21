@@ -56,6 +56,17 @@ pub fn to_indexed(color: Color) -> Color {
     }
 }
 
+/// Quantize a finished frame to the indexed palette — one pass over every
+/// cell, run after rendering and before ratatui's cell diff, so terminals
+/// without 24-bit SGR (Terminal.app) get nearest-color output instead of
+/// dropped spans.
+pub fn quantize_buffer(buf: &mut ratatui::buffer::Buffer) {
+    for cell in &mut buf.content {
+        cell.fg = to_indexed(cell.fg);
+        cell.bg = to_indexed(cell.bg);
+    }
+}
+
 /// A color ramp; `at(t)` maps t in 0..=1 to a color.
 #[derive(Debug, Clone, Copy)]
 pub enum Gradient {

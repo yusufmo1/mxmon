@@ -306,6 +306,91 @@ struct FlowState {
 const GC_POLLS: u64 = 30;
 const MAX_FLOWS: usize = 512;
 
+/// Fold one parsed `SRC_UPDATE` into per-flow state: EMA'd rates over the
+/// real elapsed window (sub-50 ms gaps are folded without a rate update so a
+/// burst of queued sweeps can't divide by ~zero), descriptor retention, and
+/// a liveness stamp for GC.
+fn apply_update(states: &mut HashMap<u64, FlowState>, up: wire::SrcUpdate, now: Instant, seq: u64) {
+    let st = states.entry(up.srcref).or_insert_with(|| FlowState {
+        prev: up.counts,
+        at: now,
+        desc: None,
+        ema_rx: 0.0,
+        ema_tx: 0.0,
+        last_seen: seq,
+    });
+    let dt = now.duration_since(st.at).as_secs_f64();
+    if dt > 0.05 {
+        let rx = counter_delta(up.counts.rx_bytes, st.prev.rx_bytes);
+        let tx = counter_delta(up.counts.tx_bytes, st.prev.tx_bytes);
+        let alpha = 0.6;
+        st.ema_rx = alpha * (rx as f64 / dt) + (1.0 - alpha) * st.ema_rx;
+        st.ema_tx = alpha * (tx as f64 / dt) + (1.0 - alpha) * st.ema_tx;
+        st.at = now;
+    }
+    st.prev = up.counts;
+    if up.desc.is_some() {
+        st.desc = up.desc;
+    }
+    st.last_seen = seq;
+}
+
+/// Drop flows not refreshed within [`GC_POLLS`] polls of `seq`.
+fn gc_stale(states: &mut HashMap<u64, FlowState>, seq: u64) {
+    states.retain(|_, st| seq.saturating_sub(st.last_seen) < GC_POLLS);
+}
+
+/// Render current per-flow state into a sample: described flows only, most
+/// active first (rate, then lifetime bytes), capped at [`MAX_FLOWS`].
+fn build_sample(states: &HashMap<u64, FlowState>) -> FlowSample {
+    let mut flows: Vec<Flow> = states
+        .values()
+        .filter_map(|st| {
+            let d = st.desc.as_ref()?;
+            Some(Flow {
+                pid: d.pid,
+                pname: d.pname.clone(),
+                local: d.local.clone(),
+                remote: d.remote.clone(),
+                state: if d.udp {
+                    "UDP"
+                } else {
+                    wire::tcp_state_name(d.tcp_state)
+                },
+                udp: d.udp,
+                rx_rate: Bytes(st.ema_rx as u64),
+                tx_rate: Bytes(st.ema_tx as u64),
+                rx_total: Bytes(st.prev.rx_bytes),
+                tx_total: Bytes(st.prev.tx_bytes),
+                srtt_ms: (!d.udp && st.prev.avg_rtt_us > 0)
+                    .then(|| st.prev.avg_rtt_us as f32 / 1000.0),
+                retx_pct: (!d.udp && st.prev.tx_bytes > 0).then(|| {
+                    (f64::from(st.prev.retx_bytes) * 100.0 / st.prev.tx_bytes as f64) as f32
+                }),
+            })
+        })
+        .collect();
+    flows.sort_by(|a, b| {
+        let ra = a.rx_rate.0 + a.tx_rate.0;
+        let rb = b.rx_rate.0 + b.tx_rate.0;
+        rb.cmp(&ra)
+            .then_with(|| (b.rx_total.0 + b.tx_total.0).cmp(&(a.rx_total.0 + a.tx_total.0)))
+    });
+    flows.truncate(MAX_FLOWS);
+
+    let by_pid = aggregate_by_pid(&flows);
+    let (rx_total_rate, tx_total_rate) = by_pid
+        .values()
+        .fold((0, 0), |(rx, tx), &(r, t)| (rx + r, tx + t));
+    FlowSample {
+        count: states.len(),
+        rx_total_rate,
+        tx_total_rate,
+        by_pid,
+        flows,
+    }
+}
+
 pub struct FlowsCollector {
     sock: NtstatSocket,
     recv_buf: Vec<u8>,
@@ -368,31 +453,9 @@ impl FlowsCollector {
         while let Some(n) = self.sock.recv(&mut self.recv_buf)? {
             wire::for_each_msg(&self.recv_buf[..n], |hdr, msg| match hdr.typ {
                 wire::MSG_SRC_UPDATE => {
-                    let Some(up) = wire::parse_src_update(msg) else {
-                        return;
-                    };
-                    let st = states.entry(up.srcref).or_insert_with(|| FlowState {
-                        prev: up.counts,
-                        at: now,
-                        desc: None,
-                        ema_rx: 0.0,
-                        ema_tx: 0.0,
-                        last_seen: seq,
-                    });
-                    let dt = now.duration_since(st.at).as_secs_f64();
-                    if dt > 0.05 {
-                        let rx = counter_delta(up.counts.rx_bytes, st.prev.rx_bytes);
-                        let tx = counter_delta(up.counts.tx_bytes, st.prev.tx_bytes);
-                        let alpha = 0.6;
-                        st.ema_rx = alpha * (rx as f64 / dt) + (1.0 - alpha) * st.ema_rx;
-                        st.ema_tx = alpha * (tx as f64 / dt) + (1.0 - alpha) * st.ema_tx;
-                        st.at = now;
+                    if let Some(up) = wire::parse_src_update(msg) {
+                        apply_update(states, up, now, seq);
                     }
-                    st.prev = up.counts;
-                    if up.desc.is_some() {
-                        st.desc = up.desc;
-                    }
-                    st.last_seen = seq;
                 }
                 wire::MSG_SRC_REMOVED => {
                     if let Some(srcref) = wire::u64_at(msg, wire::OFF_SRCREF) {
@@ -402,59 +465,13 @@ impl FlowsCollector {
                 _ => {}
             });
         }
-        states.retain(|_, st| seq.saturating_sub(st.last_seen) < GC_POLLS);
+        gc_stale(states, seq);
 
         // Ask for the sweep the *next* poll will fold in.
         self.ctx += 1;
         self.sock.send(&wire::encode_get_update(self.ctx))?;
 
-        // Render: described flows, most active first.
-        let mut flows: Vec<Flow> = states
-            .values()
-            .filter_map(|st| {
-                let d = st.desc.as_ref()?;
-                Some(Flow {
-                    pid: d.pid,
-                    pname: d.pname.clone(),
-                    local: d.local.clone(),
-                    remote: d.remote.clone(),
-                    state: if d.udp {
-                        "UDP"
-                    } else {
-                        wire::tcp_state_name(d.tcp_state)
-                    },
-                    udp: d.udp,
-                    rx_rate: Bytes(st.ema_rx as u64),
-                    tx_rate: Bytes(st.ema_tx as u64),
-                    rx_total: Bytes(st.prev.rx_bytes),
-                    tx_total: Bytes(st.prev.tx_bytes),
-                    srtt_ms: (!d.udp && st.prev.avg_rtt_us > 0)
-                        .then(|| st.prev.avg_rtt_us as f32 / 1000.0),
-                    retx_pct: (!d.udp && st.prev.tx_bytes > 0).then(|| {
-                        (f64::from(st.prev.retx_bytes) * 100.0 / st.prev.tx_bytes as f64) as f32
-                    }),
-                })
-            })
-            .collect();
-        flows.sort_by(|a, b| {
-            let ra = a.rx_rate.0 + a.tx_rate.0;
-            let rb = b.rx_rate.0 + b.tx_rate.0;
-            rb.cmp(&ra)
-                .then_with(|| (b.rx_total.0 + b.tx_total.0).cmp(&(a.rx_total.0 + a.tx_total.0)))
-        });
-        flows.truncate(MAX_FLOWS);
-
-        let by_pid = aggregate_by_pid(&flows);
-        let (rx_total_rate, tx_total_rate) = by_pid
-            .values()
-            .fold((0, 0), |(rx, tx), &(r, t)| (rx + r, tx + t));
-        Ok(FlowSample {
-            count: states.len(),
-            rx_total_rate,
-            tx_total_rate,
-            by_pid,
-            flows,
-        })
+        Ok(build_sample(states))
     }
 }
 
