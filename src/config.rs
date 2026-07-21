@@ -9,8 +9,8 @@ use crate::collect::sampler::{FAST_MS_DEFAULT, FAST_MS_MAX, FAST_MS_MIN};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Config {
-    /// Theme name (any `ui::theme::THEMES` entry, e.g. "neon", "gruvbox",
-    /// "tokyonight"); unknown names fall back to "neon".
+    /// Theme name (any `ui::theme::THEMES` entry, e.g. "midnight", "neon",
+    /// "gruvbox"); unknown names fall back to "midnight".
     pub theme: String,
     /// Fast-tier sampling interval (ms); other tiers scale from it.
     pub interval_ms: u64,
@@ -31,7 +31,7 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         Self {
-            theme: "neon".into(),
+            theme: "midnight".into(),
             interval_ms: FAST_MS_DEFAULT,
             octant_graphs: false,
             ping: true,

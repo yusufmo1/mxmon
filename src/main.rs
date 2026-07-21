@@ -12,6 +12,10 @@ mod units;
 #[cfg(test)]
 mod tests;
 
+/// Headless render-path fuzz (macOS-only; samples the live collectors).
+#[cfg(all(test, target_os = "macos"))]
+mod render_fuzz;
+
 use std::sync::mpsc;
 use std::time::Duration;
 
@@ -43,7 +47,7 @@ struct Cli {
     #[arg(long)]
     interval: Option<u64>,
 
-    /// Theme name (neon, gruvbox, tokyonight, catppuccin, and more); overrides config.
+    /// Theme name (midnight, neon, gruvbox, tokyonight, and more); overrides config.
     #[arg(long)]
     theme: Option<String>,
 
@@ -181,7 +185,15 @@ type Term = ratatui::Terminal<CrosstermBackend<std::io::BufWriter<std::io::Stdou
 fn init_terminal() -> std::io::Result<Term> {
     let hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
+        // Leave the terminal exactly as a clean exit would (drop mouse capture
+        // and the alternate screen) *before* anything prints, so a panic lands
+        // on a readable primary screen instead of freezing the last TUI frame —
+        // the `[Process completed]`-over-a-corpse symptom.
+        let _ = execute!(std::io::stdout(), DisableMouseCapture);
         ratatui::restore();
+        // Persist the report so an intermittent crash is always diagnosable,
+        // even when stderr has scrolled away. Best-effort, never masks the panic.
+        log_panic(info);
         hook(info);
     }));
     enable_raw_mode()?;
@@ -191,6 +203,35 @@ fn init_terminal() -> std::io::Result<Term> {
         std::io::stdout(),
     ));
     ratatui::Terminal::new(backend)
+}
+
+/// Append a panic report — location, message, and a forced backtrace — to
+/// `~/.config/mxmon/last-panic.log` (beside `config.toml`). Rolling and
+/// timestamped so repeated intermittent crashes can be compared; `tail` gives
+/// the latest. Every step is best-effort: a failure here must never shadow the
+/// panic that triggered it. The backtrace is force-captured, so a line lands in
+/// the log even when `RUST_BACKTRACE` is unset.
+fn log_panic(info: &std::panic::PanicHookInfo<'_>) {
+    use std::io::Write;
+    let Some(dir) = config::dir() else { return };
+    let _ = std::fs::create_dir_all(&dir);
+    let path = dir.join("last-panic.log");
+    let backtrace = std::backtrace::Backtrace::force_capture();
+    let unix = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs());
+    let report = format!(
+        "\n===== mxmon {} panic @ unix {unix} =====\n{info}\n\nbacktrace:\n{backtrace}\n",
+        env!("CARGO_PKG_VERSION"),
+    );
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+        && f.write_all(report.as_bytes()).is_ok()
+    {
+        eprintln!("mxmon: panic report saved to {}", path.display());
+    }
 }
 
 fn run_tui(soc: collect::soc::SocInfo, config: Config) -> color_eyre::Result<()> {

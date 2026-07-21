@@ -200,6 +200,10 @@ pub struct Meter {
 
 impl Meter {
     pub fn render(&self, area: Rect, buf: &mut Buffer) {
+        // Never index past the buffer: a caller that hands us an area wider than
+        // the screen (e.g. a modal squeezed to ~10 cols) would otherwise panic
+        // the whole app on the raw `buf[..]` write below. Render must be total.
+        let area = area.intersection(buf.area);
         if area.width == 0 || area.height == 0 {
             return;
         }
