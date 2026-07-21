@@ -597,3 +597,122 @@ pub fn debug_dump() -> io::Result<()> {
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{Flow, aggregate_by_pid, wire};
+    use crate::units::Bytes;
+
+    /// Build a synthetic SRC_UPDATE message with known values at the frozen
+    /// offsets (the layout --flows-debug verified on this kernel).
+    fn canned_src_update(udp: bool) -> Vec<u8> {
+        let total = if udp { 432 } else { 496 };
+        let mut m = vec![0u8; total];
+        m[8..12].copy_from_slice(&wire::MSG_SRC_UPDATE.to_ne_bytes());
+        m[12..14].copy_from_slice(&(total as u16).to_ne_bytes());
+        m[wire::OFF_SRCREF..wire::OFF_SRCREF + 8].copy_from_slice(&0xfau64.to_ne_bytes());
+        m[wire::OFF_RXBYTES..wire::OFF_RXBYTES + 8].copy_from_slice(&1000u64.to_ne_bytes());
+        m[wire::OFF_TXBYTES..wire::OFF_TXBYTES + 8].copy_from_slice(&2000u64.to_ne_bytes());
+        m[wire::OFF_TXRETRANSMIT..wire::OFF_TXRETRANSMIT + 4].copy_from_slice(&40u32.to_ne_bytes());
+        m[wire::OFF_AVG_RTT..wire::OFF_AVG_RTT + 4].copy_from_slice(&3800u32.to_ne_bytes());
+        let provider = if udp { 4u32 } else { 2u32 };
+        m[wire::OFF_PROVIDER..wire::OFF_PROVIDER + 4].copy_from_slice(&provider.to_ne_bytes());
+        let (pid_off, pname_off, local_off) = if udp {
+            (wire::OFF_UDP_PID, wire::OFF_UDP_PNAME, wire::OFF_UDP_LOCAL)
+        } else {
+            (wire::OFF_TCP_PID, wire::OFF_TCP_PNAME, wire::OFF_TCP_LOCAL)
+        };
+        m[pid_off..pid_off + 4].copy_from_slice(&4242i32.to_ne_bytes());
+        m[pname_off..pname_off + 5].copy_from_slice(b"mxmon");
+        // sockaddr_in: len 16, AF_INET, port 443 BE, 10.0.0.1.
+        m[local_off] = 16;
+        m[local_off + 1] = 2;
+        m[local_off + 2..local_off + 4].copy_from_slice(&443u16.to_be_bytes());
+        m[local_off + 4..local_off + 8].copy_from_slice(&[10, 0, 0, 1]);
+        if !udp {
+            m[wire::OFF_TCP_STATE..wire::OFF_TCP_STATE + 4].copy_from_slice(&4u32.to_ne_bytes());
+        }
+        m
+    }
+
+    #[test]
+    fn ntstat_parse_src_update() {
+        let m = canned_src_update(false);
+        let up = wire::parse_src_update(&m).expect("tcp update parses");
+        assert_eq!(up.srcref, 0xfa);
+        assert_eq!(up.counts.rx_bytes, 1000);
+        assert_eq!(up.counts.tx_bytes, 2000);
+        assert_eq!(up.counts.retx_bytes, 40);
+        assert_eq!(up.counts.avg_rtt_us, 3800);
+        let d = up.desc.expect("descriptor");
+        assert_eq!(d.pid, 4242);
+        assert_eq!(d.pname, "mxmon");
+        assert_eq!(d.local, "10.0.0.1:443");
+        assert_eq!(d.remote, "*"); // zeroed slot
+        assert_eq!(wire::tcp_state_name(d.tcp_state), "ESTAB");
+        assert!(!d.udp);
+
+        let u = wire::parse_src_update(&canned_src_update(true)).expect("udp update parses");
+        let d = u.desc.expect("descriptor");
+        assert!(d.udp);
+        assert_eq!(d.pid, 4242);
+        assert_eq!(d.local, "10.0.0.1:443");
+    }
+
+    #[test]
+    fn ntstat_parse_survives_truncation_and_growth() {
+        let m = canned_src_update(false);
+        // Every truncation length must parse to None or Some — never panic —
+        // and a descriptor must never materialize from a short message.
+        for cut in 0..m.len() {
+            let up = wire::parse_src_update(&m[..cut]);
+            if cut < 412 {
+                assert!(up.is_none() || up.as_ref().unwrap().desc.is_none());
+            }
+        }
+        // Longer-than-expected messages (a newer kernel appending fields) parse.
+        let mut grown = m.clone();
+        grown.extend_from_slice(&[0xAA; 64]);
+        assert!(wire::parse_src_update(&grown).unwrap().desc.is_some());
+    }
+
+    #[test]
+    fn ntstat_msg_walk_and_encode() {
+        // Encoders produce self-consistent headers.
+        let add = wire::encode_add_all_srcs(7, wire::PROVIDER_TCP_KERNEL);
+        assert_eq!(add.len(), 56);
+        let hdr = wire::parse_hdr(&add).unwrap();
+        assert_eq!((hdr.typ, hdr.length), (1002, 56));
+        let q = wire::encode_get_update(9);
+        assert_eq!(q.len(), 24);
+
+        // Two packed messages walk as two; a trailing fragment is ignored.
+        let mut buf = add.clone();
+        buf.extend_from_slice(&q);
+        buf.extend_from_slice(&[1, 2, 3]);
+        let mut seen = Vec::new();
+        wire::for_each_msg(&buf, |h, m| seen.push((h.typ, m.len())));
+        assert_eq!(seen, vec![(1002, 56), (1007, 24)]);
+    }
+
+    #[test]
+    fn flow_pid_aggregation() {
+        let f = |pid, rx, tx| Flow {
+            pid,
+            pname: String::new(),
+            local: String::new(),
+            remote: String::new(),
+            state: "ESTAB",
+            udp: false,
+            rx_rate: Bytes(rx),
+            tx_rate: Bytes(tx),
+            rx_total: Bytes(0),
+            tx_total: Bytes(0),
+            srtt_ms: None,
+            retx_pct: None,
+        };
+        let map = aggregate_by_pid(&[f(1, 100, 10), f(1, 50, 5), f(2, 7, 3)]);
+        assert_eq!(map[&1], (150, 15));
+        assert_eq!(map[&2], (7, 3));
+    }
+}

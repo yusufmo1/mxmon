@@ -226,3 +226,24 @@ pub fn render(buf: &mut Buffer, area: Rect, app: &App, th: &Theme) {
         line_right(buf, inner, row, right);
     }
 }
+
+// Exact scale values in, exact values out — lossless passthrough asserts.
+#[cfg(test)]
+#[allow(clippy::float_cmp)]
+mod tests {
+    use super::scale;
+    use crate::ui::panels::windowed_scale;
+
+    #[test]
+    fn net_scale_is_windowed_and_floored() {
+        // Empty and light-traffic windows sit on the floor (≈64 Kb/s)…
+        assert_eq!(scale(&[]), 8192.0);
+        assert_eq!(scale(&[100.0, 4500.0]), 8192.0);
+        // …a burst raises the window's scale, and NaN misses are ignored.
+        assert_eq!(scale(&[100.0, 9e6]), 9e6);
+        assert_eq!(scale(&[f32::NAN, 5e5]), 5e5);
+        // The shared helper honors per-panel floors (disk uses 1 MB/s).
+        assert_eq!(windowed_scale(&[80_000.0], 1e6), 1e6);
+        assert_eq!(windowed_scale(&[4.6e7], 1e6), 4.6e7);
+    }
+}

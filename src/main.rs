@@ -9,10 +9,8 @@ mod trace;
 mod ui;
 mod units;
 
-#[cfg(test)]
-mod tests;
-
 /// Deterministic fixtures shared by unit, snapshot, and render-fuzz tests.
+/// Unit tests colocate with their subjects (`mod tests` per module).
 #[cfg(test)]
 mod testutil;
 

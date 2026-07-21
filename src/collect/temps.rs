@@ -612,3 +612,41 @@ fn dedup_labels(sensors: &mut Vec<Sensor>) {
     }
     *sensors = merged;
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{SensorGroup, classify_hid, curated_core_keys, natural_key};
+
+    #[test]
+    fn sensor_classification() {
+        let (group, label) = classify_hid("pACC MTR Temp Sensor4").expect("classified");
+        assert_eq!((group, label.as_str()), (SensorGroup::CpuPCore, "P-Core 4"));
+        let (group, label) = classify_hid("PMU tdie7").expect("classified");
+        assert_eq!((group, label.as_str()), (SensorGroup::Soc, "Die 7"));
+        assert!(
+            classify_hid("PMU tcal").is_none(),
+            "calibration channels dropped"
+        );
+        let (group, _) = classify_hid("NAND CH0 temp").expect("classified");
+        assert_eq!(group, SensorGroup::Ssd);
+        let (group, _) = classify_hid("gas gauge battery").expect("classified");
+        assert_eq!(group, SensorGroup::Battery);
+    }
+
+    #[test]
+    fn m3_curated_keys_present() {
+        let keys = curated_core_keys("Apple M3 Max").expect("M3 curated");
+        assert_eq!(keys.ecores.len(), 4);
+        assert_eq!(keys.pcores.len(), 12);
+        assert!(
+            curated_core_keys("Apple M9 Ultra").is_none(),
+            "unknown chips fall back"
+        );
+    }
+
+    #[test]
+    fn natural_sort_key_orders_numerically() {
+        assert!(natural_key("Die 2") < natural_key("Die 10"));
+        assert!(natural_key("P-Core 9") < natural_key("P-Core 12"));
+    }
+}

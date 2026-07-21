@@ -1031,3 +1031,59 @@ impl Theme {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{Gradient, THEMES, by_name, to_indexed};
+    use ratatui::style::Color;
+
+    #[test]
+    fn gradient_interpolation() {
+        let g = Gradient::new(&[(0.0, (0, 0, 0)), (1.0, (100, 200, 40))]);
+        assert_eq!(g.at(0.0), Color::Rgb(0, 0, 0));
+        assert_eq!(g.at(1.0), Color::Rgb(100, 200, 40));
+        assert_eq!(g.at(0.5), Color::Rgb(50, 100, 20));
+        assert_eq!(g.at(-3.0), Color::Rgb(0, 0, 0), "clamps below");
+        let s = Gradient::Solid(Color::Rgb(9, 9, 9));
+        assert_eq!(s.at(0.7), Color::Rgb(9, 9, 9));
+    }
+
+    #[test]
+    fn themes_resolve_unique_and_wellformed() {
+        use std::collections::HashSet;
+        let mut seen = HashSet::new();
+        for t in THEMES {
+            assert!(seen.insert(t.name), "duplicate theme name: {}", t.name);
+            assert_eq!(by_name(t.name).name, t.name, "{} did not resolve", t.name);
+            // Non-empty is load-bearing: thermal.rs indexes `[(t*(len-1)).round()]`,
+            // so an empty ramp underflows `len() - 1` on 256-color terminals.
+            assert!(
+                !t.thermal_indexed.is_empty(),
+                "{} has empty thermal_indexed",
+                t.name
+            );
+        }
+        assert!(!THEMES.is_empty());
+        assert_eq!(by_name("neon").name, "neon");
+        assert_eq!(by_name("midnight").name, "midnight");
+        assert_eq!(
+            by_name("does-not-exist").name,
+            "midnight",
+            "unknown names fall back to midnight"
+        );
+    }
+
+    #[test]
+    fn rgb_to_256_quantization() {
+        // Pure black/white hit the gray ramp or cube corners.
+        assert_eq!(to_indexed(Color::Rgb(0, 0, 0)), Color::Indexed(16));
+        assert_eq!(to_indexed(Color::Rgb(255, 255, 255)), Color::Indexed(231));
+        // Mid-gray prefers the fine gray ramp over the coarse cube.
+        let Color::Indexed(idx) = to_indexed(Color::Rgb(128, 128, 128)) else {
+            panic!("expected indexed")
+        };
+        assert!((232..=255).contains(&idx));
+        // Non-RGB colors pass through untouched.
+        assert_eq!(to_indexed(Color::Indexed(42)), Color::Indexed(42));
+    }
+}

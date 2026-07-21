@@ -138,3 +138,40 @@ pub fn format_duration(secs: u64) -> String {
         format!("{m}m {:02}s", secs % 60)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        format_bits_per_sec, format_duration, format_link_speed, split_bits_per_sec,
+        split_bytes_per_sec,
+    };
+
+    #[test]
+    fn bytes_per_sec_format() {
+        assert_eq!(split_bytes_per_sec(0), ("0".into(), "B/s"));
+        assert_eq!(split_bytes_per_sec(12_300), ("12".into(), "KB/s"));
+        assert_eq!(split_bytes_per_sec(340_000_000), ("340.0".into(), "MB/s"));
+        assert_eq!(split_bytes_per_sec(1_230_000_000), ("1.23".into(), "GB/s"));
+    }
+
+    #[test]
+    fn footer_formats() {
+        assert_eq!(format_bits_per_sec(122_875_000), "983.0 Mb/s");
+        assert_eq!(format_bits_per_sec(150_000_000), "1.20 Gb/s");
+        assert_eq!(format_bits_per_sec(500), "4 Kb/s");
+        assert_eq!(format_duration(45), "0m 45s");
+        assert_eq!(format_duration(3600 * 5 + 120), "5h 02m");
+        assert_eq!(format_duration(86400 * 2 + 3600 * 3), "2d 3h");
+    }
+
+    #[test]
+    fn link_speed_and_rate_split() {
+        assert_eq!(format_link_speed(2_500_000_000), "2.5G");
+        assert_eq!(format_link_speed(1_000_000_000), "1G");
+        assert_eq!(format_link_speed(480_000_000), "480M");
+        let (v, u) = split_bits_per_sec(4_500);
+        assert_eq!((v.as_str(), u), ("36", "Kb/s"));
+        let (v, u) = split_bits_per_sec(150_000_000);
+        assert_eq!((v.as_str(), u), ("1.20", "Gb/s"));
+    }
+}

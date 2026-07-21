@@ -317,3 +317,24 @@ pub fn kill(pid: i32, signal: i32) -> Result<(), String> {
         _ => e.to_string(),
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{ipc, p_share, watts_from_energy};
+    use crate::units::{Ratio, Watts};
+
+    #[test]
+    fn proc_rate_derivation() {
+        // 500 mJ over one second = 0.5 W.
+        assert_eq!(watts_from_energy(500_000_000, 1.0), Watts(0.5));
+        // A zero (or negative) window can't produce a rate.
+        assert_eq!(watts_from_energy(1_000_000, 0.0), Watts(0.0));
+        // IPC needs cycles to divide by.
+        assert_eq!(ipc(30, 10), Some(3.0));
+        assert_eq!(ipc(0, 0), None);
+        // P-share clamps counter skew instead of reporting >100%.
+        assert_eq!(p_share(50, 100).map(Ratio::as_percent), Some(50.0));
+        assert_eq!(p_share(120, 100).map(Ratio::as_percent), Some(100.0));
+        assert_eq!(p_share(1, 0), None);
+    }
+}

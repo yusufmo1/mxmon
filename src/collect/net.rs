@@ -137,3 +137,19 @@ impl NetCollector {
         Ok(out)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::counter_delta;
+
+    #[test]
+    fn net_counter_delta_handles_wrap() {
+        // Plain growth.
+        assert_eq!(counter_delta(1000, 900), 100);
+        // 32-bit wrap (quantized-counter mode for ad-hoc binaries).
+        let prev = (1u64 << 32) - 100;
+        assert_eq!(counter_delta(50, prev), 150);
+        // 64-bit counter reset (interface bounced) → 0, not garbage.
+        assert_eq!(counter_delta(50, u64::MAX - 10), 0);
+    }
+}

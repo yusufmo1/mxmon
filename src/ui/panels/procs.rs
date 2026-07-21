@@ -408,3 +408,22 @@ fn truncate(s: &str, max: usize) -> String {
         format!("{cut}…")
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{max_panes, preferred_width};
+
+    #[test]
+    fn procs_pane_geometry() {
+        // One pane below the 2-pane threshold, scaling up to the cap of 4.
+        assert_eq!(max_panes(96), 1);
+        assert_eq!(max_panes(194), 1);
+        assert_eq!(max_panes(195), 2);
+        assert_eq!(max_panes(297), 3);
+        assert_eq!(max_panes(600), 4);
+        // A reserved n-pane table must actually host n panes inside its borders.
+        for n in 1..=4 {
+            assert_eq!(max_panes(preferred_width(n) - 2), n);
+        }
+    }
+}

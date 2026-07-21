@@ -104,3 +104,25 @@ fn resolve_v4(host: &str) -> Option<Ipv4Addr> {
         SocketAddr::V6(_) => None,
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::PingStats;
+
+    #[test]
+    fn ping_stats_smoothing_and_debounce() {
+        let mut s = PingStats::default();
+        // First reply seeds the EMA; jitter needs a second sample.
+        let (lat, jit, up) = s.update(Some(20.0));
+        assert_eq!((lat, jit, up), (Some(20.0), None, true));
+        // EMA moves a quarter of the way; jitter seeds from |Δ|.
+        let (lat, jit, _) = s.update(Some(28.0));
+        assert_eq!(lat, Some(22.0));
+        assert_eq!(jit, Some(8.0));
+        // One miss is debounced, a second flips the link down.
+        assert!(s.update(None).2, "single miss stays up");
+        assert!(!s.update(None).2, "second miss goes down");
+        // A reply recovers immediately.
+        assert!(s.update(Some(25.0)).2);
+    }
+}
