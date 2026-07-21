@@ -1,0 +1,5 @@
+# Kill hung tests (a wedged PTY child, a stalled sampler) instead of hanging
+# CI: anything slower than one period is flagged, and terminated after two.
+# render_fuzz legitimately runs ~1–2 min under coverage instrumentation.
+[profile.default]
+slow-timeout = { period = "120s", terminate-after = 2 }
