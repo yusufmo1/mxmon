@@ -12,7 +12,9 @@ jobs:
   # re-triggering for token-created events).
   release-plz-release:
     name: Release-plz release
-    runs-on: ubuntu-latest
+    # mxmon is Apple-Silicon-only; `cargo publish` verifies by building, which
+    # only works on macOS. (release-pr does no build, so it stays on Linux.)
+    runs-on: macos-14
     permissions:
       contents: write
     steps:
