@@ -188,6 +188,62 @@ pub const NEON: Theme = Theme {
     ],
 };
 
+/// NEON on a true-black canvas: the same electric palette, but the base drops
+/// to pure `#000000` (OLED midnight) with panels only a whisper above it. The
+/// default theme. Everything below is identical to [`NEON`] except `bg` and
+/// `panel_bg` — keep them in sync if the neon accents ever change.
+pub const MIDNIGHT: Theme = Theme {
+    name: "midnight",
+    bg: Color::Rgb(0, 0, 0),
+    panel_bg: Color::Rgb(10, 10, 17),
+    text: Color::Rgb(230, 230, 240),
+    dim: Color::Rgb(105, 105, 130),
+    title: Color::Rgb(255, 45, 149),
+    accent: Color::Rgb(0, 229, 255),
+    border: Color::Rgb(50, 50, 72),
+    ok: Color::Rgb(0, 230, 118),
+    warn: Color::Rgb(255, 179, 0),
+    crit: Color::Rgb(255, 82, 82),
+    selection_bg: Color::Rgb(38, 38, 60),
+    cpu: Gradient::new(&[
+        (0.0, (0, 229, 255)),
+        (0.55, (124, 77, 255)),
+        (1.0, (255, 45, 149)),
+    ]),
+    gpu: Gradient::new(&[
+        (0.0, (124, 77, 255)),
+        (0.6, (0, 190, 255)),
+        (1.0, (0, 229, 255)),
+    ]),
+    power: Gradient::new(&[
+        (0.0, (255, 179, 0)),
+        (0.6, (255, 120, 60)),
+        (1.0, (255, 82, 82)),
+    ]),
+    mem: Gradient::new(&[
+        (0.0, (0, 230, 118)),
+        (0.6, (190, 235, 60)),
+        (1.0, (255, 234, 0)),
+    ]),
+    net_rx: Color::Rgb(0, 230, 118),
+    net_tx: Color::Rgb(64, 156, 255),
+    thermal: Gradient::new(&[
+        (0.0, (8, 10, 26)),
+        (0.22, (14, 32, 92)),
+        (0.42, (0, 105, 190)),
+        (0.58, (0, 190, 170)),
+        (0.7, (120, 215, 80)),
+        (0.8, (245, 215, 60)),
+        (0.9, (255, 130, 40)),
+        (0.97, (255, 70, 60)),
+        (1.0, (255, 240, 235)),
+    ]),
+    thermal_indexed: &[
+        232, 233, 17, 17, 18, 18, 19, 24, 24, 25, 25, 31, 31, 37, 37, 43, 43, 42, 41, 77, 113, 149,
+        185, 221, 220, 220, 214, 214, 208, 202, 203, 217,
+    ],
+};
+
 pub const NORD: Theme = Theme {
     name: "nord",
     bg: Color::Rgb(46, 52, 64),
@@ -908,7 +964,9 @@ pub const GRUVBOX_LIGHT: Theme = Theme {
 /// Every registered theme, in cycle order (`t` key). Dark themes first, the
 /// three light themes last so cycling doesn't jump to a light background
 /// mid-run. A slice, not a fixed array — new themes append without a length.
+/// `MIDNIGHT` leads as the default.
 pub const THEMES: &[Theme] = &[
+    MIDNIGHT,
     NEON,
     NORD,
     DRACULA,
@@ -933,7 +991,7 @@ pub fn by_name(name: &str) -> Theme {
         .iter()
         .copied()
         .find(|t| t.name == name)
-        .unwrap_or(NEON)
+        .unwrap_or(MIDNIGHT)
 }
 
 /// Absolute temperature → thermal-ramp position: 25 °C ambient → 110 °C

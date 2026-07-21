@@ -110,6 +110,9 @@ fn settings(
             "ICMP connectivity strip · applies at next launch",
         ),
     ];
+    // `selected` comes from the modal cursor; clamp before indexing `rows`
+    // below so the render can never panic if it ever drifts out of range.
+    let selected = selected.min(rows.len().saturating_sub(1));
     let inner = modal_box(buf, screen, 60, rows.len() as u16 + 6, "settings", th, hits);
     for (i, (label, value, _)) in rows.iter().enumerate() {
         let y = i as u16;

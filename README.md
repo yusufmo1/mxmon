@@ -1,3 +1,4 @@
+<!-- last-reviewed: 2026-07-21 by docs-update -->
 <div align="center">
 
 # ◉ mxmon
@@ -80,7 +81,7 @@ cargo build --release && ./target/release/mxmon
 |---|---|
 | `--json` | print one JSON snapshot of every metric and exit (scripting / tests) |
 | `--interval <MS>` | fast-tier sampling interval, `100`–`2000` ms |
-| `--theme <NAME>` | launch with any of the 17 built-in [themes](#themes) |
+| `--theme <NAME>` | launch with any of the 18 built-in [themes](#themes) |
 
 ## Keys
 
@@ -97,7 +98,7 @@ cargo build --release && ./target/release/mxmon
 | <kbd>p</kbd> · <kbd>+</kbd> <kbd>-</kbd> · <kbd>d</kbd> | pause · sampling speed · debug HUD |
 | <kbd>?</kbd> · <kbd>q</kbd> | help · quit |
 
-<sub>Full mouse support: click tabs, column headers, rows and footer buttons; scroll the process and sensor lists.</sub>
+<sub>Full mouse support: click tabs, column headers, rows and footer buttons; scroll the process, sensor, and connection lists.</sub>
 
 <div align="center">
 
@@ -163,9 +164,9 @@ Modern macOS quantizes and 32-bit-wraps `NET_RT_IFLIST2` byte counters for ad-ho
 
 ## Themes
 
-**17 built-in themes** — cycle live with <kbd>t</kbd>, or launch with `--theme <name>`:
+**18 built-in themes** — cycle live with <kbd>t</kbd>, or launch with `--theme <name>`:
 
-`neon` (default) · `synthwave` · `cyberpunk` · `dracula` · `tokyonight` · `catppuccin` · `nord` · `gruvbox` · `everforest` · `kanagawa` · `onedark` · `monokai` · `rosepine` · `solarized`
+`midnight` (default) · `neon` · `synthwave` · `cyberpunk` · `dracula` · `tokyonight` · `catppuccin` · `nord` · `gruvbox` · `everforest` · `kanagawa` · `onedark` · `monokai` · `rosepine` · `solarized`
 
 …plus three light themes for daylight terminals — `latte` · `solarized-light` · `gruvbox-light`.
 

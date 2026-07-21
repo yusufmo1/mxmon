@@ -336,10 +336,11 @@ fn themes_resolve_unique_and_wellformed() {
     }
     assert!(!THEMES.is_empty());
     assert_eq!(by_name("neon").name, "neon");
+    assert_eq!(by_name("midnight").name, "midnight");
     assert_eq!(
         by_name("does-not-exist").name,
-        "neon",
-        "unknown names fall back to neon"
+        "midnight",
+        "unknown names fall back to midnight"
     );
 }
 

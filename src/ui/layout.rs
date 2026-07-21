@@ -214,6 +214,51 @@ fn overview(
 
             panels::procs::render(buf, procs_area, app, th, hits, 4);
         }
+    } else if width >= 300 {
+        // Hyper-wide but short (the ultrawide branch above needs ≥30 rows): a
+        // wide, shallow strip can't afford stacked metric rows — two rows plus
+        // the process list squeeze every panel to a few lines and the heat map
+        // is dropped entirely. Here the strip becomes ONE line of full-height
+        // cards instead: each panel, the chassis heat map, and the process
+        // table (double-width) sit side by side, so nothing is squished and
+        // the width finally earns its keep. Width-hungry cards carry heavier
+        // weights; naturally-slim ones stay thin.
+        #[derive(Clone, Copy)]
+        enum Card {
+            Metric(PanelFn),
+            Heat,
+            Procs,
+        }
+        let mut cards: Vec<(u16, Card)> = vec![
+            (6, Card::Metric(panels::cpu::render)),
+            (4, Card::Metric(panels::power::render)),
+        ];
+        if app.battery.is_some() {
+            cards.push((7, Card::Metric(panels::battery::render)));
+        }
+        cards.extend([
+            (4, Card::Metric(panels::gpu::render)),
+            (4, Card::Metric(panels::mem::render)),
+            (6, Card::Metric(panels::net::render)),
+            (4, Card::Metric(panels::disk::render)),
+            (5, Card::Metric(panels::temps::render)),
+            (6, Card::Heat),
+            (18, Card::Procs),
+        ]);
+
+        let widths: Vec<Constraint> = cards.iter().map(|&(w, _)| Constraint::Fill(w)).collect();
+        let rects = Layout::horizontal(widths).split(body);
+        // Rects are computed up front, so rendering is a plain sequence — each
+        // call releases its borrow before the next, letting the `&App` metric
+        // panels sit beside the process card's `&mut App` and the heat card's
+        // `&mut RenderState`.
+        for (&(_, card), &rect) in cards.iter().zip(rects.iter()) {
+            match card {
+                Card::Metric(f) => f(buf, rect, app, th),
+                Card::Heat => thermal::map_panel(buf, rect, app, th, rs),
+                Card::Procs => panels::procs::render(buf, rect, app, th, hits, 4),
+            }
+        }
     } else if width >= 130 {
         // Wide/ultrawide: CPU+POWER on top, then metric row(s), procs bottom.
         let [top, mid, procs_area] = Layout::vertical([
