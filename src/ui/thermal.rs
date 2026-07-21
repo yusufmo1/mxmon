@@ -42,6 +42,9 @@ struct Placed {
 pub struct HeatSurface {
     map: Rect,
     theme: &'static str,
+    /// Whether the isotherm layer was computed (`config.contours`); a live
+    /// toggle flips this and forces a rebuild.
+    contours: bool,
     /// `temps_seq` of the sample the easing is currently chasing.
     seq: u64,
     /// Eased per-anchor temperatures actually on screen.
@@ -211,12 +214,6 @@ fn render_map(
     }
     fill_bg(inner, buf, th.bg);
 
-    let geom = Geometry::new(&app.soc, t, app.battery.is_some());
-    let placed = place_sensors(t, &geom);
-    if placed.is_empty() {
-        return;
-    }
-
     // Chassis proportions: base ≈ 1.45:1 (w:h); cells ≈ 9×19 px, so
     // cols/rows ≈ 1.45 × 19/9 ≈ 3.06. Margin of 1 kept for the outline.
     const COLS_PER_ROW: f32 = 3.06;
@@ -235,23 +232,47 @@ fn render_map(
         h,
     );
 
+    // The floorplan grid is the whole point of Full detail: when it fits
+    // the die, every core/cluster/region reading gets its own drawn cell
+    // and Full engages; when it doesn't, the view degrades to Mid.
+    let geom = Geometry::new(&app.soc, t, app.battery.is_some());
+    let eligible = schematic::detail(map, app.config.schematic);
+    let mut plan = (eligible != schematic::Detail::Off)
+        .then(|| schematic::Floorplan::layout(&geom, map, t))
+        .flatten();
+    let detail = match (&plan, eligible) {
+        (Some(_), _) => schematic::Detail::Full,
+        (None, schematic::Detail::Full) => schematic::Detail::Mid,
+        (None, other) => other,
+    };
+
+    let placed = place_sensors(t, &geom, plan.as_mut());
+    if placed.is_empty() {
+        return;
+    }
+
     // The silkscreen strokes go down first so the isotherm layer always
-    // wins contested cells; the etched lettering lands after the blit.
-    let detail = schematic::detail(map, app.config.schematic);
+    // wins contested cells; the reading-grid walls and etched lettering
+    // land after the blit.
     schematic::render_silkscreen(buf, map, &geom, detail, th);
 
     // Cache + easing: recompute only while the field is actually moving
-    // (new sample arriving, resize, or theme switch); idle redraws are free.
+    // (new sample arriving, resize, theme switch, or the contour toggle
+    // flipping live); idle redraws are free.
+    let contours = app.config.contours;
     let targets: Vec<f32> = placed.iter().map(|p| p.temp).collect();
-    let rebuild = rs
-        .heat
-        .as_ref()
-        .is_none_or(|hs| hs.map != map || hs.theme != th.name || hs.disp.len() != targets.len());
+    let rebuild = rs.heat.as_ref().is_none_or(|hs| {
+        hs.map != map
+            || hs.theme != th.name
+            || hs.contours != contours
+            || hs.disp.len() != targets.len()
+    });
     if rebuild {
-        let (cells, ring_labels) = compute_contours(map, &placed, &targets, th);
+        let (cells, ring_labels) = contour_layer(contours, map, &placed, &targets, th);
         rs.heat = Some(HeatSurface {
             map,
             theme: th.name,
+            contours,
             seq: app.temps_seq,
             cells,
             ring_labels,
@@ -264,8 +285,13 @@ fn render_map(
     } else if let Some(hs) = rs.heat.as_mut() {
         if hs.seq != app.temps_seq {
             hs.seq = app.temps_seq;
-            hs.settled = false;
-            hs.last_step = std::time::Instant::now();
+            // With the rings hidden nothing on screen animates: stay
+            // settled and skip the easing (toggling back on rebuilds
+            // fresh at the live temps).
+            if hs.contours {
+                hs.settled = false;
+                hs.last_step = std::time::Instant::now();
+            }
         }
         if !hs.settled {
             let dt = hs.last_step.elapsed().as_secs_f32();
@@ -280,7 +306,7 @@ fn render_map(
                 hs.disp.copy_from_slice(&targets);
                 hs.settled = true;
             }
-            (hs.cells, hs.ring_labels) = compute_contours(map, &placed, &hs.disp, th);
+            (hs.cells, hs.ring_labels) = contour_layer(hs.contours, map, &placed, &hs.disp, th);
         }
     }
     if let Some(hs) = rs.heat.as_mut() {
@@ -302,6 +328,12 @@ fn render_map(
             }
         }
     }
+    // The reading-grid boxes are data containers, so they stay whole over
+    // the rings — an isotherm crossing a zone table enters and exits around
+    // it instead of shredding its borders into glyph soup.
+    if let Some(plan) = &plan {
+        plan.render_walls(buf, th);
+    }
     for (x, y, text, ink) in &surface.ring_labels {
         for (i, ch) in text.chars().enumerate() {
             let cell = &mut buf[(x + i as u16, *y)];
@@ -311,10 +343,13 @@ fn render_map(
         }
     }
 
-    // Etched lettering and living accents (fan blades, charge waterline)
-    // over the rings but under the sensor labels; the accents skip contour
-    // cells so an isotherm is never severed by decoration.
-    let etched = schematic::render_etches(buf, map, &geom, detail, th);
+    // Etched lettering, grid readings, and living accents (fan blades,
+    // charge waterline) over the rings but under the sensor labels; the
+    // accents skip contour cells so an isotherm is never severed.
+    let mut etched = schematic::render_etches(buf, map, &geom, detail, th);
+    if let Some(plan) = &plan {
+        etched.extend(plan.render_readings(buf, th));
+    }
     schematic::render_dynamic(
         buf,
         map,
@@ -327,7 +362,18 @@ fn render_map(
         &surface.cells,
     );
 
-    draw_labels(buf, map, t, app, th, &placed, surface, &geom, &etched);
+    draw_labels(
+        buf,
+        map,
+        t,
+        app,
+        th,
+        &placed,
+        surface,
+        &geom,
+        &etched,
+        plan.is_some(),
+    );
     draw_outline(buf, inner, map, th, &surface.cells);
 }
 
@@ -423,6 +469,28 @@ fn fill_ink(th: &Theme, temp: f32) -> Color {
 /// the eased field, hot pockets past 85°/95° filled ▓/█ so a core reads
 /// as a glow instead of a black hole, and each ring labeled with its
 /// temperature on one of its own horizontal runs.
+/// The isotherm layer for the frame — or, with the rings toggled off, a
+/// blank layer of the same `w × h` shape. Every consumer (the blit, the
+/// accent skip, label dodging, outline T-junctions) indexes the full map,
+/// so the stand-in keeps them all total without special-casing, and the
+/// field math is skipped rather than merely hidden.
+fn contour_layer(
+    enabled: bool,
+    map: Rect,
+    placed: &[Placed],
+    temps: &[f32],
+    th: &Theme,
+) -> (ContourCells, RingLabels) {
+    if enabled {
+        compute_contours(map, placed, temps, th)
+    } else {
+        (
+            vec![None; map.width as usize * map.height as usize],
+            Vec::new(),
+        )
+    }
+}
+
 fn compute_contours(
     map: Rect,
     placed: &[Placed],
@@ -528,6 +596,7 @@ fn draw_labels(
     surface: &HeatSurface,
     geom: &Geometry,
     etched: &[(u16, u16, u16)],
+    grid: bool,
 ) {
     let mut field = LabelField::with_busy(map, &surface.cells);
     for (x, y, text, _) in &surface.ring_labels {
@@ -562,13 +631,17 @@ fn draw_labels(
         field.draw(buf, x, y, &format!("BATT{charge} {v:.0}°"), th.text);
     }
 
-    if map.width >= 96 {
+    if grid {
+        // Die readings live in the floorplan's cells; what remains tagged
+        // here is the board furniture (PMUs, SSD, airflow, ports, …).
         for p in placed {
             if let Some(tag) = &p.tag {
                 field.draw(buf, p.x, p.y, &format!("{tag} {:.0}°", p.temp), th.text);
             }
         }
     } else {
+        // No grid at this size — clean aggregates only, never a freeform
+        // scatter of per-sensor labels fighting for rows.
         if t.cpu_avg.0 > 0.0 {
             field.draw(
                 buf,
@@ -675,7 +748,15 @@ fn draw_outline(buf: &mut Buffer, inner: Rect, map: Rect, th: &Theme, cells: &Co
 /// clusters inside the die, die regions along its inner edges, PMUs on the
 /// board flanking the package, storage in its module, battery on the pack,
 /// airflow at the fan hubs, ports and antenna on the chassis edges.
-fn place_sensors(t: &TempSample, geom: &Geometry) -> Vec<Placed> {
+///
+/// With an active [`schematic::Floorplan`], the die-resident groups claim
+/// grid cells instead: the plan draws their readings in strict cells (never
+/// nudged), so those `Placed` carry no tag and only shape the heat field.
+fn place_sensors(
+    t: &TempSample,
+    geom: &Geometry,
+    mut plan: Option<&mut schematic::Floorplan>,
+) -> Vec<Placed> {
     let mut counts: std::collections::HashMap<u8, usize> = std::collections::HashMap::new();
     let mut out = Vec::with_capacity(t.sensors.len());
 
@@ -686,36 +767,71 @@ fn place_sensors(t: &TempSample, geom: &Geometry) -> Vec<Placed> {
             *c += 1;
             i
         };
+        // A die-grid claim wins over the freeform anchor + label.
+        let cell = |plan: &mut Option<&mut schematic::Floorplan>,
+                    zone: schematic::Zone,
+                    i: usize,
+                    tag: &str,
+                    temp: f32|
+         -> Option<(f32, f32)> {
+            plan.as_deref_mut()
+                .and_then(|p| p.claim(zone, i, tag, temp))
+        };
         // Prefer the number in the label ("Die 7" → 7); ordinal fallback.
         let n = natural_key(&s.label).1 as usize;
         let ((x, y), tag) = match s.group {
             SensorGroup::CpuECore => {
                 let i = bump(0);
-                (geom.ecore(i), Some(format!("E{}", n.max(i + 1))))
+                let tag = format!("E{}", n.max(i + 1));
+                match cell(&mut plan, schematic::Zone::ECpu, i, &tag, s.temp.0) {
+                    Some(at) => (at, None),
+                    None => (geom.ecore(i), plan.is_none().then_some(tag)),
+                }
             }
             SensorGroup::CpuPCore => {
                 let i = bump(1);
-                (geom.pcore(i), Some(format!("P{}", n.max(i + 1))))
+                let tag = format!("P{}", n.max(i + 1));
+                match cell(&mut plan, schematic::Zone::PCpu, i, &tag, s.temp.0) {
+                    Some(at) => (at, None),
+                    None => (geom.pcore(i), plan.is_none().then_some(tag)),
+                }
             }
             // GPU clusters grid 8-per-row over the GPU zone; big GPUs have
-            // dozens (32 on M3 Max), so only the first row carries tags.
+            // dozens (32 on M3 Max), so off-grid only the first row keeps tags.
             SensorGroup::Gpu if s.label.contains("Cluster") => {
                 let i = bump(2);
                 let num = n.max(i + 1);
-                (geom.gpu_cluster(i), (num <= 8).then(|| format!("G{num}")))
+                let tag = format!("G{num}");
+                match cell(&mut plan, schematic::Zone::Gpu, i, &tag, s.temp.0) {
+                    Some(at) => (at, None),
+                    None => (
+                        geom.gpu_cluster(i),
+                        (plan.is_none() && num <= 8).then_some(tag),
+                    ),
+                }
             }
             // Per-region HID GPU sensors shape the field without labels.
             SensorGroup::Gpu => (geom.gpu_region(bump(3)), None),
             SensorGroup::Soc if s.label.starts_with("Die") => {
                 let i = bump(4);
-                (geom.die_slot(i), Some(format!("D{}", n.max(i + 1))))
+                let tag = format!("D{}", n.max(i + 1));
+                match cell(&mut plan, schematic::Zone::Die, i, &tag, s.temp.0) {
+                    Some(at) => (at, None),
+                    // With the grid active but this band dropped/full, the
+                    // sensor still shapes the field — unlabeled, so nothing
+                    // freeform ever fights the grid for cells.
+                    None => (geom.die_slot(i), plan.is_none().then_some(tag)),
+                }
             }
             SensorGroup::Soc if s.label.starts_with("PMU") => {
                 let i = bump(5);
                 (geom.pmu_slot(i), Some(format!("PMU{}", n.max(i + 1))))
             }
             SensorGroup::Soc => (geom.soc_misc(bump(6)), None),
-            SensorGroup::Ane => (geom.ane(), Some("ANE".into())),
+            SensorGroup::Ane => match cell(&mut plan, schematic::Zone::Ane, 0, "ANE", s.temp.0) {
+                Some(at) => (at, None),
+                None => (geom.ane(), plan.is_none().then(|| "ANE".into())),
+            },
             SensorGroup::Ssd => (geom.ssd_anchor(), Some("SSD".into())),
             // The aggregate BATT · charge label covers the battery spot.
             SensorGroup::Battery => (geom.battery_anchor(), None),
@@ -867,7 +983,7 @@ mod tests {
             ..Default::default()
         };
         let geom = Geometry::new(&crate::collect::soc::SocInfo::default(), &t, true);
-        let placed = place_sensors(&t, &geom);
+        let placed = place_sensors(&t, &geom, None);
         let tags: Vec<Option<&str>> = placed.iter().map(|p| p.tag.as_deref()).collect();
         assert_eq!(
             tags,
@@ -926,6 +1042,26 @@ mod tests {
         let (cells, labels) = compute_contours(map, &cool, &[25.0], &crate::ui::theme::NEON);
         assert!(cells.iter().all(Option::is_none));
         assert!(labels.is_empty());
+    }
+
+    #[test]
+    fn contour_toggle_off_yields_blank_but_shaped_layer() {
+        let map = Rect::new(0, 0, 48, 14);
+        let hot = vec![Placed {
+            x: 0.5,
+            y: 0.4,
+            temp: 96.0,
+            tag: None,
+        }];
+        // Off: no glyphs, no ring labels — but the full w×h shape, because
+        // every consumer (blit, accents, labels, outline) indexes the map.
+        let (cells, labels) = contour_layer(false, map, &hot, &[96.0], &crate::ui::theme::NEON);
+        assert_eq!(cells.len(), 48 * 14);
+        assert!(cells.iter().all(Option::is_none));
+        assert!(labels.is_empty());
+        // On: identical inputs still ring — the toggle is the only gate.
+        let (on, _) = contour_layer(true, map, &hot, &[96.0], &crate::ui::theme::NEON);
+        assert!(on.iter().flatten().count() > 8);
     }
 
     #[test]

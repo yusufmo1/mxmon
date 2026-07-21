@@ -26,7 +26,7 @@ use std::f32::consts::TAU;
 
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
-use ratatui::style::Color;
+use ratatui::style::{Color, Modifier};
 
 use crate::collect::battery::BatterySample;
 use crate::collect::soc::SocInfo;
@@ -199,12 +199,15 @@ impl Geometry {
 
         Self {
             package: NRect::new(0.215, 0.065, 0.55, 0.535),
-            die: NRect::new(0.30, 0.085, 0.38, 0.46),
+            // Sized so the widest grid band (8 temp-only GPU columns) still
+            // fits the die interior on a ~105-cell map — the ultrawide
+            // overview column must carry the full floorplan.
+            die: NRect::new(0.295, 0.085, 0.405, 0.46),
             ram: vec![
                 NRect::new(0.225, 0.10, 0.06, 0.17),
                 NRect::new(0.225, 0.30, 0.06, 0.17),
-                NRect::new(0.695, 0.10, 0.06, 0.17),
-                NRect::new(0.695, 0.30, 0.06, 0.17),
+                NRect::new(0.71, 0.10, 0.05, 0.17),
+                NRect::new(0.71, 0.30, 0.05, 0.17),
             ],
             fans,
             battery,
@@ -335,8 +338,338 @@ pub enum Detail {
     Off,
     /// Package, die, RAM, fans, heat pipe, battery — outlines only.
     Mid,
-    /// Everything, plus etched zone/chip/RAM labels and speaker grilles.
+    /// The full floorplan: zone grids with per-sensor cells, etched
+    /// lettering, speaker grilles. Only reachable when a [`Floorplan`]
+    /// actually fits the die at this size.
     Full,
+}
+
+/// A sensor zone inside the die's floorplan grid.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Zone {
+    ECpu,
+    PCpu,
+    Gpu,
+    Die,
+    Ane,
+}
+
+/// One reading cell in a zone grid (absolute buffer coordinates).
+struct PlanCell {
+    x: u16,
+    y: u16,
+    w: u16,
+    /// Filled by [`Floorplan::claim`]; drawn by [`Floorplan::render_readings`].
+    text: Option<String>,
+}
+
+/// One zone block: a titled box with column dividers and rows of cells.
+struct Band {
+    rect: Rect,
+    title: &'static str,
+    /// Interior divider columns (absolute x).
+    dividers: Vec<u16>,
+    /// Cells in claim order (row-major), as indices into `Floorplan::cells`.
+    cells: std::ops::Range<usize>,
+    /// Tag column width when readings carry their tag ("P10  80°"); 0 = temp-only.
+    tag_w: usize,
+}
+
+/// The die floorplan grid: every core/cluster/region sensor gets its own
+/// drawn cell, laid out band by band (E-CPU + ANE, P-CPU, GPU, DIE regions).
+/// This is what makes the map read like the actual die shot — readings sit
+/// in a strict grid, never nudged. Built per frame from the geometry, the
+/// map rect, and the live sensor counts; `layout` returns `None` when the
+/// die can't hold the grid at this size (the view then degrades to `Mid`).
+pub struct Floorplan {
+    map: Rect,
+    bands: Vec<Band>,
+    cells: Vec<PlanCell>,
+}
+
+/// Temp field is 4 chars ("101°" / " 82°"); a divider column separates cells.
+const TEMP_W: usize = 4;
+
+impl Floorplan {
+    pub fn layout(geom: &Geometry, map: Rect, t: &TempSample) -> Option<Self> {
+        let count = |g: SensorGroup| t.sensors.iter().filter(|s| s.group == g).count();
+        let n_e = count(SensorGroup::CpuECore).min(8);
+        let n_p = count(SensorGroup::CpuPCore);
+        let n_g = t
+            .sensors
+            .iter()
+            .filter(|s| s.group == SensorGroup::Gpu && s.label.contains("Cluster"))
+            .count();
+        let n_d = t
+            .sensors
+            .iter()
+            .filter(|s| s.group == SensorGroup::Soc && s.label.starts_with("Die"))
+            .count()
+            .min(10);
+        let has_ane = count(SensorGroup::Ane) > 0;
+        if n_e == 0 && n_p == 0 && n_g == 0 {
+            return None;
+        }
+
+        let cx = |fx: f32| i32::from(map.x) + (fx * f32::from(map.width.saturating_sub(1))) as i32;
+        let cy = |fy: f32| i32::from(map.y) + (fy * f32::from(map.height.saturating_sub(1))) as i32;
+        let die = geom.die;
+        let (ix0, ix1) = (cx(die.x) + 1, cx(die.x + die.w) - 1);
+        let (iy0, iy1) = (cy(die.y) + 1, cy(die.y + die.h) - 1);
+        let iw = ix1 - ix0 + 1;
+        let ih = iy1 - iy0 + 1;
+        if iw < 10 || ih < 6 {
+            return None;
+        }
+
+        // A band's pitch: tagged cells when they fit the die width, temp-only
+        // otherwise; a zone that fits neither sinks the whole plan.
+        // `gap` is the pad between tag and temp (GPU drops it to keep
+        // eight tagged columns viable on the hero size).
+        let fit = |cols: usize, tag_w: usize, gap: usize| -> Option<(usize, usize)> {
+            if cols == 0 {
+                return Some((0, 0));
+            }
+            for (tw, g) in [(tag_w, gap), (0, 0)] {
+                let interior = tw + g + TEMP_W;
+                let block = cols * (interior + 1) + 1;
+                if block as i32 <= iw {
+                    return Some((interior, tw));
+                }
+            }
+            None
+        };
+
+        let e_cols = n_e;
+        let p_cols = if n_p == 0 { 0 } else { geom.p_per_row.min(n_p) };
+        let p_rows = if p_cols == 0 {
+            0
+        } else {
+            n_p.div_ceil(p_cols).min(4)
+        };
+        let g_cols = n_g.min(8);
+        let g_rows = if g_cols == 0 {
+            0
+        } else {
+            n_g.div_ceil(8).min(4)
+        };
+        let d_cols = n_d.div_ceil(2);
+        let d_rows = if n_d == 0 { 0 } else { 2.min(n_d) };
+
+        let (mut e_int, mut e_tag) = fit(e_cols, 2, 1)?;
+        let (p_int, p_tag) = fit(p_cols, 3, 1)?;
+        // GPU cells are always temp-only: cluster identity is positional
+        // (row-major under the GPU title), and tags up to "G32" would
+        // otherwise force the widest band wider still.
+        let (g_int, g_tag) = fit(g_cols, 0, 0)?;
+        let (d_int, d_tag) = fit(d_cols, 3, 1)?;
+        // The ANE box shares the E band's rows; when the pair overflows the
+        // die, E drops its tags first (grid position still names the cores),
+        // and the box itself is the next to go.
+        let ane_w = 7 + 2; // "ANE 45°" boxed
+        let mut ane = has_ane;
+        if ane && e_cols > 0 {
+            let pair_fits = |int: usize| (e_cols * (int + 1) + 2 + ane_w) as i32 <= iw;
+            if !pair_fits(e_int) {
+                if pair_fits(TEMP_W) {
+                    (e_int, e_tag) = (TEMP_W, 0);
+                } else {
+                    ane = false;
+                }
+            }
+        }
+
+        // Stack bands top-down; DIE regions are the first ballast dropped
+        // when rows run out, then the plan itself gives way to Mid.
+        let band_h = |rows: usize| if rows == 0 { 0 } else { rows + 2 };
+        let e_h = band_h(usize::from(e_cols > 0 || ane));
+        let p_h = band_h(p_rows);
+        let g_h = band_h(g_rows);
+        let mut d_h = band_h(d_rows);
+        let mut total = e_h + p_h + g_h + d_h;
+        if total as i32 > ih {
+            d_h = 0;
+            total = e_h + p_h + g_h;
+        }
+        if total as i32 > ih || total == 0 {
+            return None;
+        }
+        let n_bands = [e_h, p_h, g_h, d_h].iter().filter(|&&h| h > 0).count();
+        let gaps = ((ih as usize).saturating_sub(total)).min(n_bands.saturating_sub(1));
+        let mut y = iy0 + ((ih as usize - total - gaps) / 2) as i32;
+
+        let mut plan = Self {
+            map,
+            bands: Vec::new(),
+            cells: Vec::new(),
+        };
+        // One zone block: titled box + dividers + row-major cells, centered
+        // in the die interior at `y`.
+        let push_band = |plan: &mut Self,
+                         title: &'static str,
+                         cols: usize,
+                         rows: usize,
+                         interior: usize,
+                         tag_w: usize,
+                         x_override: Option<i32>,
+                         y: i32| {
+            let block_w = cols * (interior + 1) + 1;
+            let x0 = x_override.unwrap_or(ix0 + (iw - block_w as i32) / 2);
+            let start = plan.cells.len();
+            for r in 0..rows {
+                for c in 0..cols {
+                    plan.cells.push(PlanCell {
+                        x: (x0 + 1 + (c * (interior + 1)) as i32) as u16,
+                        y: (y + 1 + r as i32) as u16,
+                        w: interior as u16,
+                        text: None,
+                    });
+                }
+            }
+            plan.bands.push(Band {
+                rect: Rect::new(x0 as u16, y as u16, block_w as u16, (rows + 2) as u16),
+                title,
+                dividers: (1..cols)
+                    .map(|c| (x0 + (c * (interior + 1)) as i32) as u16)
+                    .collect(),
+                cells: start..plan.cells.len(),
+                tag_w,
+            });
+        };
+
+        if e_h > 0 {
+            let e_block = if e_cols > 0 {
+                e_cols * (e_int + 1) + 1
+            } else {
+                0
+            };
+            let ensemble = e_block
+                + if ane {
+                    usize::from(e_block > 0) + ane_w
+                } else {
+                    0
+                };
+            let x0 = ix0 + (iw - ensemble as i32) / 2;
+            if e_cols > 0 {
+                push_band(&mut plan, " E-CPU ", e_cols, 1, e_int, e_tag, Some(x0), y);
+            }
+            if ane {
+                let ax = x0 + e_block as i32 + i32::from(e_block > 0);
+                push_band(&mut plan, " ANE ", 1, 1, 7, 3, Some(ax), y);
+            }
+            y += e_h as i32 + i32::from(gaps >= 1);
+        }
+        if p_h > 0 {
+            push_band(&mut plan, " P-CPU ", p_cols, p_rows, p_int, p_tag, None, y);
+            y += p_h as i32 + i32::from(gaps >= 2);
+        }
+        if g_h > 0 {
+            push_band(&mut plan, " GPU ", g_cols, g_rows, g_int, g_tag, None, y);
+            y += g_h as i32 + i32::from(gaps >= 3);
+        }
+        if d_h > 0 {
+            push_band(&mut plan, " DIE ", d_cols, d_rows, d_int, d_tag, None, y);
+        }
+        Some(plan)
+    }
+
+    fn band_of(&self, zone: Zone) -> Option<&Band> {
+        let title = match zone {
+            Zone::ECpu => " E-CPU ",
+            Zone::PCpu => " P-CPU ",
+            Zone::Gpu => " GPU ",
+            Zone::Die => " DIE ",
+            Zone::Ane => " ANE ",
+        };
+        self.bands.iter().find(|b| b.title == title)
+    }
+
+    /// Claim cell `i` of a zone for a sensor: stores its reading text and
+    /// returns the cell's normalized anchor for the heat field. `None` when
+    /// the zone isn't drawn or is out of cells — the caller falls back to
+    /// the freeform anchor (field-shaping only).
+    pub fn claim(&mut self, zone: Zone, i: usize, tag: &str, temp: f32) -> Option<(f32, f32)> {
+        let band = self.band_of(zone)?;
+        let (range, tag_w) = (band.cells.clone(), band.tag_w);
+        let idx = range.start + i;
+        if idx >= range.end {
+            return None;
+        }
+        let cell = &mut self.cells[idx];
+        let w = cell.w as usize;
+        let text = if tag_w > 0 && !tag.is_empty() {
+            format!("{tag:<tag_w$}{temp:>rest$.0}°", rest = w - tag_w - 1)
+        } else {
+            format!("{temp:>rest$.0}°", rest = w - 1)
+        };
+        cell.text = Some(text);
+        let fx = (f32::from(cell.x) + f32::from(cell.w) / 2.0 - f32::from(self.map.x))
+            / f32::from(self.map.width.saturating_sub(1));
+        let fy = (f32::from(cell.y) - f32::from(self.map.y))
+            / f32::from(self.map.height.saturating_sub(1));
+        Some((fx, fy))
+    }
+
+    /// The zone boxes: silkscreen layer, drawn before the contour blit.
+    pub fn render_walls(&self, buf: &mut Buffer, th: &Theme) {
+        let mut p = Painter::new(buf, self.map);
+        let ink = th.border;
+        for band in &self.bands {
+            let r = band.rect;
+            let (x0, y0) = (i32::from(r.x), i32::from(r.y));
+            let (x1, y1) = (x0 + i32::from(r.width) - 1, y0 + i32::from(r.height) - 1);
+            for x in (x0 + 1)..x1 {
+                p.put(x, y0, '─', ink);
+                p.put(x, y1, '─', ink);
+            }
+            for y in (y0 + 1)..y1 {
+                p.put(x0, y, '│', ink);
+                p.put(x1, y, '│', ink);
+            }
+            p.put(x0, y0, '╭', ink);
+            p.put(x1, y0, '╮', ink);
+            p.put(x0, y1, '╰', ink);
+            p.put(x1, y1, '╯', ink);
+            for &dx in &band.dividers {
+                let dx = i32::from(dx);
+                p.put(dx, y0, '┬', ink);
+                for y in (y0 + 1)..y1 {
+                    p.put(dx, y, '│', ink);
+                }
+                p.put(dx, y1, '┴', ink);
+            }
+            if (band.title.len() as i32) < x1 - x0 {
+                for (i, ch) in band.title.chars().enumerate() {
+                    p.put(x0 + 1 + i as i32, y0, ch, th.dim);
+                }
+            }
+        }
+    }
+
+    /// The claimed readings, drawn after the contour blit (data over rings,
+    /// like every label). Returns spans for the sensor-label field.
+    pub fn render_readings(&self, buf: &mut Buffer, th: &Theme) -> Vec<(u16, u16, u16)> {
+        let mut p = Painter::new(buf, self.map);
+        let mut spans = Vec::new();
+        for cell in &self.cells {
+            let Some(text) = &cell.text else { continue };
+            for (i, ch) in text.chars().enumerate() {
+                let x = i32::from(cell.x) + i as i32;
+                let y = i32::from(cell.y);
+                p.put(x, y, ch, th.text);
+                if x >= i32::from(p.clip.x)
+                    && x < i32::from(p.clip.right())
+                    && y >= i32::from(p.clip.y)
+                    && y < i32::from(p.clip.bottom())
+                {
+                    p.buf[(x as u16, y as u16)]
+                        .set_style(ratatui::style::Style::new().add_modifier(Modifier::BOLD));
+                }
+            }
+            spans.push((cell.x, cell.y, cell.w));
+        }
+        spans
+    }
 }
 
 pub fn detail(map: Rect, enabled: bool) -> Detail {
@@ -472,23 +805,6 @@ impl<'a> Painter<'a> {
         Some((x as u16, y as u16, w as u16))
     }
 
-    /// Left-anchored etch (zone labels hug the die's inner margin).
-    fn etch_left(&mut self, fx: f32, fy: f32, text: &str, ink: Color) -> Option<(u16, u16, u16)> {
-        let w = text.chars().count() as i32;
-        let x = self.cx(fx);
-        let y = self.cy(fy);
-        if w == 0 || x + w > i32::from(self.clip.right()) {
-            return None;
-        }
-        if y < i32::from(self.clip.y) || y >= i32::from(self.clip.bottom()) {
-            return None;
-        }
-        for (i, ch) in text.chars().enumerate() {
-            self.put(x + i as i32, y, ch, ink);
-        }
-        Some((x as u16, y as u16, w as u16))
-    }
-
     /// Vertical etch reading downward from a top anchor (RAM part numbers,
     /// like the print on the real chips). Reserves one cell per row.
     fn etch_down(
@@ -618,12 +934,6 @@ pub fn render_etches(
     let ink = th.dim;
     let mut etched = Vec::new();
 
-    // Zone labels hugging the die's inner-left margin.
-    let zx = geom.die.x + 0.008;
-    etched.extend(p.etch_left(zx, E_ROW, "E-CPU", ink));
-    etched.extend(p.etch_left(zx, geom.p_row_y(0), "P-CPU", ink));
-    etched.extend(p.etch_left(zx, GPU_ROW0, "GPU", ink));
-
     // RAM part numbers printed down the chips, like the real silkscreen.
     for chip in [&geom.ram[0], &geom.ram[2]] {
         let rows = p.cy(chip.y + chip.h) - p.cy(chip.y);
@@ -744,6 +1054,10 @@ mod tests {
         for i in 0..n_gpu {
             push(&mut t, SensorGroup::Gpu, format!("GPU Cluster {}", i + 1));
         }
+        for i in 0..10 {
+            push(&mut t, SensorGroup::Soc, format!("Die {}", i + 1));
+        }
+        push(&mut t, SensorGroup::Ane, "ANE 1".into());
         if ssd {
             push(&mut t, SensorGroup::Ssd, "NAND".into());
         }
@@ -903,31 +1217,50 @@ mod tests {
 
     #[test]
     fn silkscreen_renders_and_reserves_labels() {
-        let map = Rect::new(0, 0, 150, 48);
+        let map = Rect::new(0, 0, 156, 51);
         let mut buf = Buffer::empty(map);
         let t = sample(4, 12, 32, 2, true);
         let g = Geometry::new(&soc(4, 12, 6), &t, true);
         render_silkscreen(&mut buf, map, &g, Detail::Full, &crate::ui::theme::MIDNIGHT);
+        let mut plan = Floorplan::layout(&g, map, &t).expect("hero size fits the floorplan");
+        plan.render_walls(&mut buf, &crate::ui::theme::MIDNIGHT);
         let etched = render_etches(&mut buf, map, &g, Detail::Full, &crate::ui::theme::MIDNIGHT);
-        assert!(etched.len() >= 4, "expected several etches, got {etched:?}");
-        let row_major: String = (0..48)
-            .flat_map(|y| (0..150).map(move |x| (x, y)))
+        assert!(!etched.is_empty(), "expected etches, got {etched:?}");
+        let row_major: String = (0..51)
+            .flat_map(|y| (0..156).map(move |x| (x, y)))
             .map(|(x, y)| buf[(x, y)].symbol().chars().next().unwrap_or(' '))
             .collect();
-        for needle in ["E-CPU", "P-CPU", "GPU", "APPLE M3 MAX"] {
-            assert!(row_major.contains(needle), "missing etched {needle}");
+        for needle in ["E-CPU", "P-CPU", "GPU", "DIE", "ANE", "APPLE M3 MAX"] {
+            assert!(row_major.contains(needle), "missing title/etch {needle}");
         }
         // RAM part numbers run vertically down the chips.
-        let col_major: String = (0..150)
-            .flat_map(|x| (0..48).map(move |y| (x, y)))
+        let col_major: String = (0..156)
+            .flat_map(|x| (0..51).map(move |y| (x, y)))
             .map(|(x, y)| buf[(x, y)].symbol().chars().next().unwrap_or(' '))
             .collect();
         assert!(col_major.contains("LPDDR5"), "missing vertical RAM label");
 
-        // Degenerate maps must never panic, at any tier.
+        // Claimed readings land in their cells, whole and grid-aligned.
+        let at = plan.claim(Zone::PCpu, 9, "P10", 80.0).expect("cell 10");
+        assert!((0.0..=1.0).contains(&at.0) && (0.0..=1.0).contains(&at.1));
+        assert!(plan.claim(Zone::Ane, 0, "ANE", 45.0).is_some());
+        let spans = plan.render_readings(&mut buf, &crate::ui::theme::MIDNIGHT);
+        assert_eq!(spans.len(), 2);
+        let row_major: String = (0..51)
+            .flat_map(|y| (0..156).map(move |x| (x, y)))
+            .map(|(x, y)| buf[(x, y)].symbol().chars().next().unwrap_or(' '))
+            .collect();
+        assert!(row_major.contains("P10  80°"), "tagged P cell text");
+        assert!(row_major.contains("ANE 45°"), "ANE box text");
+
+        // Degenerate maps must never panic, at any tier or plan state.
         for (w, h) in [(1, 1), (2, 2), (5, 3), (30, 4), (54, 15), (96, 26)] {
             let map = Rect::new(0, 0, w, h);
             let mut buf = Buffer::empty(map);
+            if let Some(p) = Floorplan::layout(&g, map, &t) {
+                p.render_walls(&mut buf, &crate::ui::theme::MIDNIGHT);
+                p.render_readings(&mut buf, &crate::ui::theme::MIDNIGHT);
+            }
             for d in [Detail::Off, Detail::Mid, Detail::Full] {
                 render_silkscreen(&mut buf, map, &g, d, &crate::ui::theme::MIDNIGHT);
                 render_etches(&mut buf, map, &g, d, &crate::ui::theme::MIDNIGHT);
@@ -945,5 +1278,49 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn floorplan_fits_claims_and_degrades() {
+        let t = sample(4, 12, 32, 2, true);
+        let g = Geometry::new(&soc(4, 12, 6), &t, true);
+
+        // Hero size: all four zones plus ANE, cells inside the die.
+        let plan = Floorplan::layout(&g, Rect::new(0, 0, 156, 51), &t).unwrap();
+        assert_eq!(plan.bands.len(), 5);
+        let die_x0 = (g.die.x * 155.0) as u16;
+        let die_x1 = ((g.die.x + g.die.w) * 155.0) as u16;
+        for band in &plan.bands {
+            assert!(band.rect.x > die_x0 && band.rect.right() <= die_x1 + 1);
+        }
+        // P band keeps tags at this width; GPU carries 8 tagged columns too.
+        let p_band = plan.band_of(Zone::PCpu).unwrap();
+        assert!(p_band.tag_w > 0);
+        assert_eq!(p_band.cells.len(), 12);
+        assert_eq!(plan.band_of(Zone::Gpu).unwrap().cells.len(), 32);
+
+        // Every die-resident sensor claims a distinct cell.
+        let mut plan = plan;
+        for i in 0..12 {
+            assert!(
+                plan.claim(Zone::PCpu, i, &format!("P{}", i + 1), 70.0)
+                    .is_some(),
+                "P{} claim failed",
+                i + 1
+            );
+        }
+        assert!(
+            plan.claim(Zone::PCpu, 12, "P13", 70.0).is_none(),
+            "overflow"
+        );
+
+        // Short map: the DIE band is the first ballast dropped.
+        let short = Floorplan::layout(&g, Rect::new(0, 0, 114, 36), &t).unwrap();
+        assert!(short.band_of(Zone::Die).is_none());
+        assert!(short.band_of(Zone::PCpu).is_some());
+
+        // Too narrow for the GPU grid: no plan at all.
+        assert!(Floorplan::layout(&g, Rect::new(0, 0, 96, 26), &t).is_none());
+        assert!(Floorplan::layout(&g, Rect::new(0, 0, 20, 8), &t).is_none());
     }
 }

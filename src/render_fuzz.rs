@@ -255,8 +255,12 @@ fn render_never_panics_across_sizes_views_states() {
 
     // State 1 — a real on-device snapshot.
     combos += sweep(&mut app, &th, "realistic", &last, &mut failures);
-    // State 2 — every history ring overfilled with extreme/non-finite values.
+    // State 2 — every history ring overfilled with extreme/non-finite
+    // values, with both chassis-map layers toggled off so the quiet-deck
+    // paths (blank contour layer, no silkscreen) get the full size sweep.
     fill_rings_nasty(&mut app);
+    app.config.schematic = false;
+    app.config.contours = false;
     combos += sweep(&mut app, &th, "nasty-rings", &last, &mut failures);
     // State 3 — nasty rings *and* no live metric sample (a real SourceDown
     // transient): panels must fall back without reading a stale coordinate.

@@ -25,7 +25,7 @@ source: src/ui/layout.rs
 │    302 yusuf         │   disk io  R    2M/s · W    1M/s                                       │                      ┃
 │    761 yusuf         │    net io  –                                                           │                      ┃
 │    523 root          │  cpu time  18m 39s                                                     │                      ┃
-│    285 _windowse…    │   started  169d 15h ago                                                │                      ┃
+│    285 _windowse…    │   started  169d 16h ago                                                │                      ┃
 │    744 _windowse…    │      path  /usr/bin/bird                                               │                      ┃
 │    506 yusuf         ╰────────────────────────────────────────────────────────────────────────╯                      ┃
 │    268 root          52.0  116mW    198M    105K     30K    8 R    4m 28s claude                                     ┃

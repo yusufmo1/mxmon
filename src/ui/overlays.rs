@@ -105,6 +105,15 @@ fn settings(
             "chassis silkscreen beneath the thermal contours",
         ),
         (
+            "contours",
+            if app.config.contours {
+                "on · isotherm rings over the deck".into()
+            } else {
+                "off · readings on a quiet deck".into()
+            },
+            "the heat map's temperature rings · numbers stay",
+        ),
+        (
             "sampling",
             format!("{} ms", app.config.interval_ms),
             "fast-tier interval · also + / -",
