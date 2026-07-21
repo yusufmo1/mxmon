@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 5a8425eba1ea1af9a0be389ac42a265976629bdbbece7c892cc3522fa504f616 # shrinks to names = ["IDLE", "IDLE", "IDLE", "IDLE", "IDLE"], counts = [0, 0, 256533, 0, 0], freqs = [1514, 1]

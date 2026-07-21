@@ -7,7 +7,7 @@
 #                   terminal (watchexec)
 #
 # See bacon.toml for the background checker's jobs (check/clippy/test/json/run).
-.PHONY: watch dev dev-release run json check test clippy fmt build
+.PHONY: watch dev dev-release run json check test clippy fmt build cov cov-gate
 
 watch:
 	bacon
@@ -28,8 +28,10 @@ json:
 check:
 	cargo check --all-targets
 
+# nextest: per-test process isolation + hang timeouts (.config/nextest.toml).
+# Plain `cargo test` always works too (it's what bacon runs).
 test:
-	cargo test
+	cargo nextest run
 
 clippy:
 	cargo clippy --all-targets
@@ -39,3 +41,15 @@ fmt:
 
 build:
 	cargo build --release
+
+# Coverage (local). Homebrew rustc has no rustup llvm-tools component, so
+# point cargo-llvm-cov at Homebrew LLVM's tools (same LLVM major). CI is the
+# authoritative gate — the ratcheting floor lives in .github/workflows/ci.yml.
+LLVM_TOOLS = LLVM_COV=/opt/homebrew/opt/llvm/bin/llvm-cov LLVM_PROFDATA=/opt/homebrew/opt/llvm/bin/llvm-profdata
+
+cov:
+	$(LLVM_TOOLS) cargo llvm-cov nextest --ignore-filename-regex 'src/ffi/' --open
+
+cov-gate:
+	$(LLVM_TOOLS) cargo llvm-cov nextest --ignore-filename-regex 'src/ffi/' \
+		--fail-under-lines $$(grep -oE 'COVERAGE_FLOOR: "?[0-9]+' .github/workflows/ci.yml | grep -oE '[0-9]+')

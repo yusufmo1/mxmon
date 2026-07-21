@@ -10,22 +10,43 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: always
+  # Line-coverage ratchet over src/ minus ffi/ (hardware IPC glue, validated
+  # on-device and exercised by the e2e tests). Policy: raise this as coverage
+  # rises; never lower it. It starts below the on-device figure (~92%)
+  # because virtualized runners degrade some hardware sources to SourceDown —
+  # tighten toward the observed CI number after a few runs.
+  COVERAGE_FLOOR: "85"
 
 jobs:
   check:
-    name: fmt · clippy · test · build
+    name: fmt · clippy · tests+coverage · build
     runs-on: macos-14 # Apple Silicon (aarch64)
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
-          components: rustfmt, clippy
+          components: rustfmt, clippy, llvm-tools-preview
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest,cargo-llvm-cov
       - uses: Swatinem/rust-cache@v2
       - name: rustfmt
         run: cargo fmt --all --check
       - name: clippy
         run: cargo clippy --all-targets -- -D warnings
-      - name: test
-        run: cargo test
+      - name: tests (nextest, instrumented)
+        run: cargo llvm-cov nextest --no-report
+      - name: coverage gate
+        run: |
+          cargo llvm-cov report \
+            --ignore-filename-regex 'src/ffi/' \
+            --fail-under-lines "$COVERAGE_FLOOR" \
+            --lcov --output-path lcov.info
+          cargo llvm-cov report --ignore-filename-regex 'src/ffi/' | tail -3
+      - uses: actions/upload-artifact@v4
+        with:
+          name: coverage-lcov
+          path: lcov.info
+          if-no-files-found: error
       - name: build (release)
         run: cargo build --release
