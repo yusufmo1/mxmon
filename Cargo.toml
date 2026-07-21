@@ -1,0 +1,47 @@
+[package]
+name = "mxmon"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88" # let-chains
+description = "mxmon — a beautiful, lightning-fast terminal monitor for Apple Silicon"
+repository = "https://github.com/yusufmo1/mxmon"
+readme = "README.md"
+license = "MIT"
+keywords = ["macos", "apple-silicon", "monitoring", "tui", "terminal"]
+categories = ["command-line-utilities"]
+
+[lints.rust]
+unsafe_code = "deny" # only src/ffi/ opts back in
+
+[lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+# Telemetry→display math casts counters to floats (and back) at every turn;
+# these would demand a justification at each site for no real safety.
+cast_possible_truncation = "allow"
+cast_precision_loss = "allow"
+cast_sign_loss = "allow"
+cast_possible_wrap = "allow"
+# Naming/shape heuristics that misfire on UI-state structs and math-heavy code.
+doc_markdown = "allow"
+too_many_lines = "allow"
+struct_field_names = "allow"
+struct_excessive_bools = "allow"
+similar_names = "allow"
+many_single_char_names = "allow"
+items_after_statements = "allow"
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+color-eyre = "0.6"
+core-foundation = "0.10"
+libc = "0.2"
+ratatui = "0.30"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.9"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+panic = "abort"
+strip = true

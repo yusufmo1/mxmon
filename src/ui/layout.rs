@@ -1,0 +1,355 @@
+//! Responsive layout: allocates rects to panels by terminal size.
+//!
+//! Breakpoints: ≥200 cols = ultrawide (4-across metric rows), ≥130 = wide
+//! (3-across), ≥88 = two columns, below = single stacked column. Height
+//! drives progressive disclosure — panels shrink before they disappear.
+
+use ratatui::Frame;
+use ratatui::layout::{Constraint, Layout, Rect};
+
+use crate::app::{App, View};
+use crate::ui::panels;
+use crate::ui::theme::Theme;
+use crate::ui::widgets::{HitMap, fill_bg};
+
+use super::{overlays, thermal};
+
+/// Extra UI state owned by the render layer (scroll positions, caches).
+#[derive(Default)]
+pub struct RenderState {
+    pub sensor_scroll: usize,
+    pub flows_scroll: usize,
+    /// Cached thermal-map surface; recomputed only when temps/size/theme change.
+    pub heat: Option<thermal::HeatSurface>,
+}
+
+pub fn draw(f: &mut Frame<'_>, app: &mut App, th: &Theme, hits: &mut HitMap, rs: &mut RenderState) {
+    hits.clear();
+    let screen = f.area();
+    let buf = f.buffer_mut();
+    fill_bg(screen, buf, th.bg);
+
+    let [header, body, footer] = Layout::vertical([
+        Constraint::Length(1),
+        Constraint::Min(0),
+        Constraint::Length(1),
+    ])
+    .areas(screen);
+
+    panels::header::header(buf, header, app, th);
+
+    match app.view {
+        View::Overview => overview(buf, body, app, th, hits, rs),
+        View::Processes => processes_view(buf, body, app, th, hits),
+        View::Thermal => thermal::render(buf, body, app, th, hits, rs),
+        View::Connections => panels::flows::render(buf, body, app, th, hits, rs),
+    }
+
+    panels::header::footer(buf, footer, app, th, hits);
+    overlays::render(buf, screen, app, th, hits);
+
+    // Degrade to the 256-color palette on terminals without 24-bit SGR
+    // (Terminal.app) — one pass over the buffer, before ratatui's cell diff.
+    if !super::theme::truecolor_supported() {
+        for cell in &mut buf.content {
+            cell.fg = super::theme::to_indexed(cell.fg);
+            cell.bg = super::theme::to_indexed(cell.bg);
+        }
+    }
+}
+
+/// Full-screen Processes view. When the configured pane cap leaves width
+/// the table doesn't want (`procs_panes`, default 1), the freed columns
+/// become a metric-widget grid instead of a stretched NAME column — raise
+/// the cap in settings (`o`) for the wall-of-processes look.
+fn processes_view(
+    buf: &mut ratatui::buffer::Buffer,
+    body: Rect,
+    app: &mut App,
+    th: &Theme,
+    hits: &mut HitMap,
+) {
+    let cap = app.config.procs_panes;
+    let fit = panels::procs::max_panes(body.width.saturating_sub(2));
+    let table_w = panels::procs::preferred_width(cap);
+    if fit > cap && body.width.saturating_sub(table_w) >= 40 {
+        let [table, widgets] =
+            Layout::horizontal([Constraint::Length(table_w), Constraint::Min(0)]).areas(body);
+        panels::procs::render(buf, table, app, th, hits, cap);
+        widget_grid(buf, widgets, app, th);
+    } else {
+        panels::procs::render(buf, body, app, th, hits, 4);
+    }
+}
+
+/// A row-major grid of metric panels filling whatever rect the process
+/// table left over: 1–2 columns, 2–4 rows, most-useful panels first.
+fn widget_grid(buf: &mut ratatui::buffer::Buffer, area: Rect, app: &App, th: &Theme) {
+    let cols = (area.width / 100).clamp(1, 2);
+    let rows = (area.height / 9).clamp(2, 4);
+    let mut fns: Vec<PanelFn> = vec![
+        panels::cpu::render,
+        panels::net::render,
+        panels::mem::render,
+        panels::disk::render,
+        panels::power::render,
+        panels::gpu::render,
+        panels::temps::render,
+    ];
+    if app.battery.is_some() {
+        fns.push(panels::battery::render);
+    }
+    let (cw, rh) = (area.width / cols, area.height / rows);
+    for (i, f) in fns.into_iter().take((cols * rows) as usize).enumerate() {
+        let (row, col) = (i as u16 / cols, i as u16 % cols);
+        // The last column/row absorb the division remainders.
+        let w = if col + 1 == cols {
+            area.width - col * cw
+        } else {
+            cw
+        };
+        let h = if row + 1 == rows {
+            area.height - row * rh
+        } else {
+            rh
+        };
+        f(
+            buf,
+            Rect::new(area.x + col * cw, area.y + row * rh, w, h),
+            app,
+            th,
+        );
+    }
+}
+
+fn overview(
+    buf: &mut ratatui::buffer::Buffer,
+    body: Rect,
+    app: &mut App,
+    th: &Theme,
+    hits: &mut HitMap,
+    rs: &mut RenderState,
+) {
+    let width = body.width;
+    let tall = body.height >= 44;
+
+    // Panel heights adapt to total height.
+    let cpu_h = if tall { 12 } else { 9 };
+    let mid_h = if tall { 9 } else { 7 };
+    // The network panel earns roughly double its old height (mirrored
+    // graph, connectivity strip, link details) and the whole metric row
+    // grows with it — every panel in that row stretches its graph. Graded
+    // so the process list (and the ≥16-row inline heat map) keep their
+    // space on shorter terminals.
+    let net_h = match body.height {
+        h if h >= 50 => 18,
+        h if h >= 44 => 16,
+        h if h >= 38 => 14,
+        h if h >= 32 => 12,
+        _ => mid_h,
+    };
+    let procs_min = 6;
+
+    if width >= 300 && body.height >= 30 {
+        // Ultrawide: a full-height thermal column on the right stops the
+        // metric panels from stretching into acres of dead space, and the
+        // heat map finally gets the real estate it deserves.
+        let aspect_w = (f32::from(body.height.saturating_sub(2)) * 3.06) as u16 + 4;
+        let map_w = aspect_w.min(width * 38 / 100);
+        let [left, map_col] =
+            Layout::horizontal([Constraint::Min(0), Constraint::Length(map_w)]).areas(body);
+        thermal::map_panel(buf, map_col, app, th, rs);
+
+        let [top, mid, procs_area] = Layout::vertical([
+            Constraint::Length(cpu_h),
+            Constraint::Length(net_h),
+            Constraint::Min(procs_min),
+        ])
+        .areas(left);
+
+        let [cpu_a, power_a, battery_a] = Layout::horizontal([
+            Constraint::Percentage(40),
+            Constraint::Percentage(28),
+            Constraint::Percentage(32),
+        ])
+        .areas(top);
+        panels::cpu::render(buf, cpu_a, app, th);
+        panels::power::render(buf, power_a, app, th);
+        panels::battery::render(buf, battery_a, app, th);
+
+        // With the pane cap (default 1) leaving width the process table
+        // doesn't want, DISK and TEMPS move down beside it as tall panels
+        // and the metric row relaxes from five-across to three.
+        let cap = app.config.procs_panes;
+        let fit = panels::procs::max_panes(left.width.saturating_sub(2));
+        let table_w = panels::procs::preferred_width(cap);
+        if fit > cap && left.width.saturating_sub(table_w) >= 84 {
+            let [gpu_a, mem_a, net_a] = Layout::horizontal([
+                Constraint::Percentage(33),
+                Constraint::Percentage(33),
+                Constraint::Percentage(34),
+            ])
+            .areas(mid);
+            panels::gpu::render(buf, gpu_a, app, th);
+            panels::mem::render(buf, mem_a, app, th);
+            panels::net::render(buf, net_a, app, th);
+
+            let [table, disk_a, temps_a] = Layout::horizontal([
+                Constraint::Length(table_w),
+                Constraint::Fill(1),
+                Constraint::Fill(1),
+            ])
+            .areas(procs_area);
+            panels::procs::render(buf, table, app, th, hits, cap);
+            panels::disk::render(buf, disk_a, app, th);
+            panels::temps::render(buf, temps_a, app, th);
+        } else {
+            let [gpu_a, mem_a, net_a, disk_a, temps_a] =
+                Layout::horizontal([Constraint::Percentage(20); 5]).areas(mid);
+            panels::gpu::render(buf, gpu_a, app, th);
+            panels::mem::render(buf, mem_a, app, th);
+            panels::net::render(buf, net_a, app, th);
+            panels::disk::render(buf, disk_a, app, th);
+            panels::temps::render(buf, temps_a, app, th);
+
+            panels::procs::render(buf, procs_area, app, th, hits, 4);
+        }
+    } else if width >= 130 {
+        // Wide/ultrawide: CPU+POWER on top, then metric row(s), procs bottom.
+        let [top, mid, procs_area] = Layout::vertical([
+            Constraint::Length(cpu_h),
+            Constraint::Length(net_h),
+            Constraint::Min(procs_min),
+        ])
+        .areas(body);
+
+        let [cpu_a, power_a, battery_a] = Layout::horizontal([
+            Constraint::Percentage(44),
+            Constraint::Percentage(26),
+            Constraint::Percentage(30),
+        ])
+        .areas(top);
+        panels::cpu::render(buf, cpu_a, app, th);
+        panels::power::render(buf, power_a, app, th);
+        panels::battery::render(buf, battery_a, app, th);
+
+        let [gpu_a, mem_a, net_a, disk_a, temps_a] =
+            Layout::horizontal([Constraint::Percentage(20); 5]).areas(mid);
+        panels::gpu::render(buf, gpu_a, app, th);
+        panels::mem::render(buf, mem_a, app, th);
+        panels::net::render(buf, net_a, app, th);
+        panels::disk::render(buf, disk_a, app, th);
+        panels::temps::render(buf, temps_a, app, th);
+
+        // Big terminals get the chassis heat map inline, beside the
+        // process table (sized to the chassis aspect, capped at 45%).
+        if width >= 156 && procs_area.height >= 16 {
+            let aspect_w = (f32::from(procs_area.height - 2) * 3.06) as u16 + 4;
+            let map_w = aspect_w.min(procs_area.width * 45 / 100);
+            let [procs_l, map_r] =
+                Layout::horizontal([Constraint::Min(0), Constraint::Length(map_w)])
+                    .areas(procs_area);
+            panels::procs::render(buf, procs_l, app, th, hits, 4);
+            thermal::map_panel(buf, map_r, app, th, rs);
+        } else {
+            panels::procs::render(buf, procs_area, app, th, hits, 4);
+        }
+    } else if width >= 88 {
+        // Two columns; a third metric row (disk + temps) appears when tall.
+        // The network row takes the taller grade only when there's room for
+        // the extra rows on top of the (possibly three) metric rows.
+        let net2 = match body.height {
+            h if h >= 54 => 14,
+            h if h >= 48 => 12,
+            _ => mid_h,
+        };
+        let mid_total = mid_h + net2 + if tall { mid_h } else { 0 };
+        let [top, mid, procs_area] = Layout::vertical([
+            Constraint::Length(cpu_h),
+            Constraint::Length(mid_total),
+            Constraint::Min(procs_min),
+        ])
+        .areas(body);
+
+        let [cpu_a, power_a] =
+            Layout::horizontal([Constraint::Percentage(58), Constraint::Percentage(42)]).areas(top);
+        panels::cpu::render(buf, cpu_a, app, th);
+        panels::power::render(buf, power_a, app, th);
+
+        let [mid_top, mid_bottom, mid_third] = Layout::vertical([
+            Constraint::Length(mid_h),
+            Constraint::Length(net2),
+            Constraint::Min(0), // mid_h when tall, zero otherwise
+        ])
+        .areas(mid);
+        let [gpu_a, mem_a] =
+            Layout::horizontal([Constraint::Percentage(50), Constraint::Percentage(50)])
+                .areas(mid_top);
+        panels::gpu::render(buf, gpu_a, app, th);
+        panels::mem::render(buf, mem_a, app, th);
+        let [net_a, right_a] =
+            Layout::horizontal([Constraint::Percentage(50), Constraint::Percentage(50)])
+                .areas(mid_bottom);
+        panels::net::render(buf, net_a, app, th);
+        if tall {
+            // Row 2 keeps battery (temps moves to row 3 beside disk); on
+            // desktops without a battery, disk takes the full third row.
+            if app.battery.is_some() {
+                panels::battery::render(buf, right_a, app, th);
+                let [disk_a, temps_a] =
+                    Layout::horizontal([Constraint::Percentage(50), Constraint::Percentage(50)])
+                        .areas(mid_third);
+                panels::disk::render(buf, disk_a, app, th);
+                panels::temps::render(buf, temps_a, app, th);
+            } else {
+                panels::temps::render(buf, right_a, app, th);
+                panels::disk::render(buf, mid_third, app, th);
+            }
+        } else if app.battery.is_some() && body.height < 40 {
+            panels::battery::render(buf, right_a, app, th);
+        } else {
+            panels::temps::render(buf, right_a, app, th);
+        }
+
+        panels::procs::render(buf, procs_area, app, th, hits, 4);
+    } else {
+        // Narrow: single stacked column, priority order, whatever fits.
+        let heights = [
+            cpu_h.min(9),
+            6,  // power
+            6,  // gpu
+            6,  // memory
+            10, // network (mirrored graph + connectivity need the rows)
+            6,  // disk
+            if app.battery.is_some() { 7 } else { 0 },
+        ];
+        let mut y = body.y;
+        let panels_fns: [(u16, PanelFn); 7] = [
+            (heights[0], panels::cpu::render),
+            (heights[1], panels::power::render),
+            (heights[2], panels::gpu::render),
+            (heights[3], panels::mem::render),
+            (heights[4], panels::net::render),
+            (heights[5], panels::disk::render),
+            (heights[6], panels::battery::render),
+        ];
+        for (h, render) in panels_fns {
+            if h == 0 {
+                continue;
+            }
+            // Always leave room for the process list.
+            if y + h + procs_min > body.bottom() {
+                break;
+            }
+            let area = Rect::new(body.x, y, body.width, h);
+            render(buf, area, app, th);
+            y += h;
+        }
+        if y < body.bottom() {
+            let procs_area = Rect::new(body.x, y, body.width, body.bottom() - y);
+            panels::procs::render(buf, procs_area, app, th, hits, 4);
+        }
+    }
+}
+
+type PanelFn = fn(&mut ratatui::buffer::Buffer, Rect, &App, &Theme);

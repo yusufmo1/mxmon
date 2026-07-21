@@ -1,0 +1,20 @@
+# Rust build artifacts
+/target
+
+# macOS
+.DS_Store
+
+# Editor/IDE
+.idea/
+.vscode/
+*.swp
+
+# Stray verification screenshots (intentional ones live in docs/)
+/*.png
+
+# Env/secrets
+.env
+.env.local
+
+# Local Claude Code instructions — kept out of the public repo
+/CLAUDE.md

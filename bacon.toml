@@ -1,0 +1,47 @@
+# bacon — background Rust checker for the dev loop.
+#
+# Run `bacon` in a side terminal/pane; it recompiles on every save and shows
+# errors, warnings, clippy lints, or test results instantly. Rust has no
+# stateful hot-reload, so this replaces it: the fastest possible edit→feedback
+# loop without ever leaving your editor.
+#
+# Switch jobs at runtime with the bracketed keys, or start one directly,
+# e.g. `bacon test` / `bacon json`.
+#
+#   [c] check   [k] clippy   [t] test   [j] json   [r] run
+
+default_job = "check"
+
+[jobs.check]
+command = ["cargo", "check", "--all-targets", "--color", "always"]
+need_stdout = false
+
+[jobs.clippy]
+command = ["cargo", "clippy", "--all-targets", "--color", "always"]
+need_stdout = false
+
+[jobs.test]
+command = ["cargo", "test", "--color", "always"]
+need_stdout = true
+
+# Watch every metric re-sampled as JSON on each save. Because it's plain stdout
+# (not the fullscreen UI), it renders cleanly inside bacon — the best way to
+# eyeball collector output while editing a collector.
+[jobs.json]
+command = ["cargo", "run", "--", "--json"]
+need_stdout = true
+allow_warnings = true
+
+# The fullscreen TUI. It runs, but bacon captures its output, so the alt-screen
+# UI won't render properly here — prefer `cargo dev` (cargo-watch) in its own
+# terminal for the live app. Kept for quick "does it start" checks.
+[jobs.run]
+command = ["cargo", "run"]
+need_stdout = true
+allow_warnings = true
+background = false
+
+[keybindings]
+j = "job:json"
+k = "job:clippy"
+r = "job:run"

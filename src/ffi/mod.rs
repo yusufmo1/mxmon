@@ -1,0 +1,18 @@
+//! All `unsafe` FFI lives below this module; everything exported upward is a
+//! safe, owned Rust API. No raw pointers, CF refs, or kern_return codes leak.
+
+// `unsafe_code` is denied crate-wide (Cargo.toml [lints]); this subtree is the
+// one sanctioned exception.
+#![allow(unsafe_code)]
+
+pub mod cf;
+pub mod hid;
+pub mod icmp;
+pub mod iokit;
+pub mod ioreport;
+pub mod mach;
+pub mod net;
+pub mod ntstat;
+pub mod proc;
+pub mod smc;
+pub mod sys;
