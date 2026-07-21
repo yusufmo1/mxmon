@@ -96,6 +96,15 @@ fn settings(
         ),
         ("theme", app.config.theme.clone(), "also cycles live with t"),
         (
+            "schematic",
+            if app.config.schematic {
+                "on · blueprint under the heat map".into()
+            } else {
+                "off · contours on a bare deck".into()
+            },
+            "chassis silkscreen beneath the thermal contours",
+        ),
+        (
             "sampling",
             format!("{} ms", app.config.interval_ms),
             "fast-tier interval · also + / -",

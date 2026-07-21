@@ -20,6 +20,7 @@ use crate::app::App;
 use crate::collect::temps::{SensorGroup, TempSample, natural_key};
 use crate::ui::layout::RenderState;
 use crate::ui::panels::{chrome, line};
+use crate::ui::schematic::{self, Geometry};
 use crate::ui::theme::Theme;
 use crate::ui::widgets::{HitMap, Target, fill_bg};
 
@@ -51,6 +52,9 @@ pub struct HeatSurface {
     cells: ContourCells,
     /// "45°" tags pinned onto their own rings (absolute buffer coords).
     ring_labels: RingLabels,
+    /// Fan-blade display phase per fan bay, stepped by live RPM.
+    fan_phase: [f32; 2],
+    last_spin: std::time::Instant,
 }
 
 /// Per-row occupancy so on-map labels never overwrite each other; a label
@@ -207,7 +211,8 @@ fn render_map(
     }
     fill_bg(inner, buf, th.bg);
 
-    let placed = place_sensors(t);
+    let geom = Geometry::new(&app.soc, t, app.battery.is_some());
+    let placed = place_sensors(t, &geom);
     if placed.is_empty() {
         return;
     }
@@ -230,6 +235,11 @@ fn render_map(
         h,
     );
 
+    // The silkscreen strokes go down first so the isotherm layer always
+    // wins contested cells; the etched lettering lands after the blit.
+    let detail = schematic::detail(map, app.config.schematic);
+    schematic::render_silkscreen(buf, map, &geom, detail, th);
+
     // Cache + easing: recompute only while the field is actually moving
     // (new sample arriving, resize, or theme switch); idle redraws are free.
     let targets: Vec<f32> = placed.iter().map(|p| p.temp).collect();
@@ -248,6 +258,8 @@ fn render_map(
             disp: targets,
             settled: true,
             last_step: std::time::Instant::now(),
+            fan_phase: [0.0; 2],
+            last_spin: std::time::Instant::now(),
         });
     } else if let Some(hs) = rs.heat.as_mut() {
         if hs.seq != app.temps_seq {
@@ -271,6 +283,13 @@ fn render_map(
             (hs.cells, hs.ring_labels) = compute_contours(map, &placed, &hs.disp, th);
         }
     }
+    if let Some(hs) = rs.heat.as_mut() {
+        let dt = hs.last_spin.elapsed().as_secs_f32();
+        hs.last_spin = std::time::Instant::now();
+        for (i, fan) in t.fans.iter().take(2).enumerate() {
+            hs.fan_phase[i] = schematic::spin(hs.fan_phase[i], fan.rpm, dt);
+        }
+    }
     let surface = rs.heat.as_ref().expect("surface computed above");
     let cols = map.width as usize;
     for cy in 0..map.height as usize {
@@ -292,7 +311,23 @@ fn render_map(
         }
     }
 
-    draw_labels(buf, map, t, app, th, &placed, surface);
+    // Etched lettering and living accents (fan blades, charge waterline)
+    // over the rings but under the sensor labels; the accents skip contour
+    // cells so an isotherm is never severed by decoration.
+    let etched = schematic::render_etches(buf, map, &geom, detail, th);
+    schematic::render_dynamic(
+        buf,
+        map,
+        &geom,
+        detail,
+        th,
+        t,
+        app.battery.as_ref(),
+        surface.fan_phase,
+        &surface.cells,
+    );
+
+    draw_labels(buf, map, t, app, th, &placed, surface, &geom, &etched);
     draw_outline(buf, inner, map, th, &surface.cells);
 }
 
@@ -480,7 +515,9 @@ fn compute_contours(
 
 /// On-map labels. Wide maps label every placed sensor individually;
 /// narrow maps fall back to CPU/GPU/SSD aggregates. Seeded with the
-/// isotherm layer so labels nudge away from ring lines and ring tags.
+/// isotherm layer and the schematic's etched text so labels nudge away
+/// from ring lines, ring tags, and silkscreen lettering alike.
+#[allow(clippy::too_many_arguments)]
 fn draw_labels(
     buf: &mut Buffer,
     map: Rect,
@@ -489,10 +526,15 @@ fn draw_labels(
     th: &Theme,
     placed: &[Placed],
     surface: &HeatSurface,
+    geom: &Geometry,
+    etched: &[(u16, u16, u16)],
 ) {
     let mut field = LabelField::with_busy(map, &surface.cells);
     for (x, y, text, _) in &surface.ring_labels {
         field.reserve(*x, *y, text.chars().count() as u16);
+    }
+    for &(x, y, w) in etched {
+        field.reserve(x, y, w);
     }
     let group_avg = |group: SensorGroup| -> Option<f32> {
         let matching: Vec<f32> = t
@@ -504,11 +546,11 @@ fn draw_labels(
         (!matching.is_empty()).then(|| matching.iter().sum::<f32>() / matching.len() as f32)
     };
 
-    // Fans at the top corners, battery (with charge) on the lower deck —
-    // drawn first so they always win placement.
+    // Fans above their bays, battery (with charge) on the pack — drawn
+    // first so they always win placement.
     for (i, fan) in t.fans.iter().enumerate() {
-        let x = if i == 0 { 0.10 } else { 0.90 };
-        field.draw(buf, x, 0.05, &format!("{:.0}rpm", fan.rpm), th.text);
+        let (x, y) = geom.fan_label(i);
+        field.draw(buf, x, y, &format!("{:.0}rpm", fan.rpm), th.text);
     }
     if let Some(v) = group_avg(SensorGroup::Battery) {
         let charge = app
@@ -516,7 +558,8 @@ fn draw_labels(
             .as_ref()
             .map(|b| format!(" · {:.0}%", b.charge.as_percent()))
             .unwrap_or_default();
-        field.draw(buf, 0.50, 0.72, &format!("BATT{charge} {v:.0}°"), th.text);
+        let (x, y) = geom.battery_anchor();
+        field.draw(buf, x, y, &format!("BATT{charge} {v:.0}°"), th.text);
     }
 
     if map.width >= 96 {
@@ -529,8 +572,8 @@ fn draw_labels(
         if t.cpu_avg.0 > 0.0 {
             field.draw(
                 buf,
-                0.48,
-                0.22,
+                0.49,
+                0.24,
                 &format!("CPU {:.0}°", t.cpu_avg.0),
                 th.text,
             );
@@ -538,14 +581,15 @@ fn draw_labels(
         if t.gpu_avg.0 > 0.0 {
             field.draw(
                 buf,
-                0.48,
-                0.42,
+                0.49,
+                0.43,
                 &format!("GPU {:.0}°", t.gpu_avg.0),
                 th.text,
             );
         }
         if let Some(v) = group_avg(SensorGroup::Ssd) {
-            field.draw(buf, 0.84, 0.32, &format!("SSD {v:.0}°"), th.text);
+            let (x, y) = geom.ssd_anchor();
+            field.draw(buf, x, y, &format!("SSD {v:.0}°"), th.text);
         }
     }
 }
@@ -625,42 +669,13 @@ fn draw_outline(buf: &mut Buffer, inner: Rect, map: Rect, th: &Theme, cells: &Co
     }
 }
 
-/// Ten die-region slots ringing the SoC block (left column, right column,
-/// then below the GPU rows).
-const DIE_SLOTS: [(f32, f32); 10] = [
-    (0.28, 0.13),
-    (0.70, 0.13),
-    (0.28, 0.23),
-    (0.70, 0.23),
-    (0.28, 0.33),
-    (0.70, 0.33),
-    (0.28, 0.43),
-    (0.70, 0.43),
-    (0.42, 0.54),
-    (0.58, 0.54),
-];
-
-/// PMU / power-rail slots flanking the board on both sides.
-const PMU_SLOTS: [(f32, f32); 8] = [
-    (0.18, 0.17),
-    (0.18, 0.29),
-    (0.18, 0.41),
-    (0.18, 0.53),
-    (0.78, 0.17),
-    (0.78, 0.29),
-    (0.78, 0.41),
-    (0.78, 0.53),
-];
-
-/// Pin every sensor to its physical spot on the deck (normalized coords):
-/// SoC die block center (E-cores top row, P-cores below, GPU clusters
-/// under those), die/PMU sensors ringing it, storage right, battery low,
-/// fans/airflow at the hinge corners, MagSafe & power supply on the left
-/// edge, antenna at the hinge, palm rest / trackpad at the bottom.
-fn place_sensors(t: &TempSample) -> Vec<Placed> {
-    let spread = |i: usize, n: usize, from: f32, to: f32| -> f32 {
-        from + (to - from) * (i % n) as f32 / (n - 1).max(1) as f32
-    };
+/// Pin every sensor to its physical spot on the deck. Positions come from
+/// the schematic [`Geometry`] — the single source of truth shared with the
+/// silkscreen layer — so every anchor lands on drawn hardware: cores and
+/// clusters inside the die, die regions along its inner edges, PMUs on the
+/// board flanking the package, storage in its module, battery on the pack,
+/// airflow at the fan hubs, ports and antenna on the chassis edges.
+fn place_sensors(t: &TempSample, geom: &Geometry) -> Vec<Placed> {
     let mut counts: std::collections::HashMap<u8, usize> = std::collections::HashMap::new();
     let mut out = Vec::with_capacity(t.sensors.len());
 
@@ -673,81 +688,60 @@ fn place_sensors(t: &TempSample) -> Vec<Placed> {
         };
         // Prefer the number in the label ("Die 7" → 7); ordinal fallback.
         let n = natural_key(&s.label).1 as usize;
-        let (x, y, tag) = match s.group {
+        let ((x, y), tag) = match s.group {
             SensorGroup::CpuECore => {
                 let i = bump(0);
-                let tag = format!("E{}", n.max(i + 1));
-                (spread(i, 4, 0.40, 0.58), 0.12, Some(tag))
+                (geom.ecore(i), Some(format!("E{}", n.max(i + 1))))
             }
             SensorGroup::CpuPCore => {
                 let i = bump(1);
-                let row = if i < 6 { 0.20 } else { 0.28 };
-                let tag = format!("P{}", n.max(i + 1));
-                (spread(i, 6, 0.34, 0.64), row, Some(tag))
+                (geom.pcore(i), Some(format!("P{}", n.max(i + 1))))
             }
-            // GPU clusters grid 8-per-row over the GPU block; big GPUs have
+            // GPU clusters grid 8-per-row over the GPU zone; big GPUs have
             // dozens (32 on M3 Max), so only the first row carries tags.
             SensorGroup::Gpu if s.label.contains("Cluster") => {
                 let i = bump(2);
-                let row = 0.36 + 0.045 * ((i / 8) % 4) as f32;
                 let num = n.max(i + 1);
-                let tag = (num <= 8).then(|| format!("G{num}"));
-                (spread(i, 8, 0.34, 0.63), row, tag)
+                (geom.gpu_cluster(i), (num <= 8).then(|| format!("G{num}")))
             }
             // Per-region HID GPU sensors shape the field without labels.
-            SensorGroup::Gpu => {
-                let i = bump(3);
-                let row = 0.36 + 0.04 * ((i / 6) % 4) as f32;
-                (spread(i, 6, 0.35, 0.63), row, None)
-            }
+            SensorGroup::Gpu => (geom.gpu_region(bump(3)), None),
             SensorGroup::Soc if s.label.starts_with("Die") => {
                 let i = bump(4);
-                let (x, y) = DIE_SLOTS[i % DIE_SLOTS.len()];
-                (x, y, Some(format!("D{}", n.max(i + 1))))
+                (geom.die_slot(i), Some(format!("D{}", n.max(i + 1))))
             }
             SensorGroup::Soc if s.label.starts_with("PMU") => {
                 let i = bump(5);
-                let (x, y) = PMU_SLOTS[i % PMU_SLOTS.len()];
-                (x, y, Some(format!("PMU{}", n.max(i + 1))))
+                (geom.pmu_slot(i), Some(format!("PMU{}", n.max(i + 1))))
             }
-            SensorGroup::Soc => {
-                let i = bump(6);
-                (spread(i, 3, 0.40, 0.60), 0.57, None)
-            }
-            SensorGroup::Ane => (0.64, 0.12, Some("ANE".into())),
-            SensorGroup::Ssd => (0.84, 0.32, Some("SSD".into())),
+            SensorGroup::Soc => (geom.soc_misc(bump(6)), None),
+            SensorGroup::Ane => (geom.ane(), Some("ANE".into())),
+            SensorGroup::Ssd => (geom.ssd_anchor(), Some("SSD".into())),
             // The aggregate BATT · charge label covers the battery spot.
-            SensorGroup::Battery => (0.50, 0.72, None),
+            SensorGroup::Battery => (geom.battery_anchor(), None),
             SensorGroup::Airflow => {
-                if s.label.contains("Right") {
-                    (0.90, 0.14, Some("AIR R".into()))
-                } else {
-                    (0.10, 0.14, Some("AIR L".into()))
-                }
+                let right = s.label.contains("Right");
+                let tag = if right { "AIR R" } else { "AIR L" };
+                (geom.airflow(right), Some(tag.into()))
             }
             SensorGroup::Charger => {
-                if s.label.contains("Supply") {
-                    (0.05, 0.30, Some("PSU".into()))
-                } else {
-                    (0.05, 0.16, Some("CHG".into()))
-                }
+                let supply = s.label.contains("Supply");
+                let tag = if supply { "PSU" } else { "CHG" };
+                (geom.charger(supply), Some(tag.into()))
             }
             SensorGroup::Ports => {
-                if s.label.contains("Right") {
-                    (0.97, 0.40, Some("TB R".into()))
-                } else {
-                    (0.03, 0.40, Some("TB L".into()))
-                }
+                let right = s.label.contains("Right");
+                let tag = if right { "TB R" } else { "TB L" };
+                (geom.port(right), Some(tag.into()))
             }
-            SensorGroup::Wireless => (0.50, 0.05, Some("WIFI".into())),
+            SensorGroup::Wireless => (geom.wifi(), Some("WIFI".into())),
             SensorGroup::Other => {
                 if s.label.contains("Trackpad") {
-                    (0.50, 0.90, Some("TPAD".into()))
+                    (geom.trackpad_anchor(), Some("TPAD".into()))
                 } else if s.label.contains("Palm") {
-                    (0.20, 0.90, Some("PALM".into()))
+                    (geom.palm(), Some("PALM".into()))
                 } else {
-                    let i = bump(7);
-                    (0.30 + 0.40 * (i % 2) as f32, 0.85, None)
+                    (geom.other_misc(bump(7)), None)
                 }
             }
         };
@@ -872,7 +866,8 @@ mod tests {
             ],
             ..Default::default()
         };
-        let placed = place_sensors(&t);
+        let geom = Geometry::new(&crate::collect::soc::SocInfo::default(), &t, true);
+        let placed = place_sensors(&t, &geom);
         let tags: Vec<Option<&str>> = placed.iter().map(|p| p.tag.as_deref()).collect();
         assert_eq!(
             tags,
