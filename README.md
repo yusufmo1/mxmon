@@ -28,7 +28,7 @@ The **Mx** **mon**itor — a blazing-fast, **sudoless** system monitor for Apple
 | **CPU** — per-cluster E/P meters, live DVFS frequencies from IOReport residencies, utilization history, core temps | **Power** — PKG / CPU / GPU / ANE / RAM / display rails in watts, with history, peaks, and total system power from the SMC |
 | **GPU** — Activity-Monitor-matching utilization, frequency, render/tiler meters, VRAM, temperature | **Memory** — Activity Monitor's exact formula (app + wired + compressed), cached files, swap, kernel pressure |
 | **Network** — live ↓/↑ rates, stacked graphs, session totals, primary interface, link speed, local IP | **Battery flow** — charge, health, cycles, temp + adapter → system → SoC / display power-flow diagram |
-| **Chassis heat map** — a live thermogram from 50+ die & board sensors, pinned at their physical positions | **Processes** — sortable / filterable table, real `phys_footprint` memory, CPU %, a real **watts** column, threads, kill w/ signal picker |
+| **Chassis heat map** — a live thermogram from 50+ die & board sensors over a blueprint of the machine itself: the SoC package with die and LPDDR, spinning fans, battery cells filling with charge | **Processes** — sortable / filterable table, real `phys_footprint` memory, CPU %, a real **watts** column, threads, kill w/ signal picker |
 | **Disk** — R/W throughput graphs, IOPS, and true per-op device latency from the block-storage drivers | **Connections** — every process's live TCP/UDP flows with rates, RTT and retransmit % — `nettop`-class data, plus per-process ↓/↑ columns |
 
 <sub>The <b>PWR</b> column is real physics, not a score: per-process energy counters (nanojoules, split by P/E cluster) that macOS otherwise only surfaces through <code>sudo powermetrics</code>. Sort by it to see what's actually eating the battery — a renderer at 46% CPU on E-cores can cost 76 mW while a 30% P-core process burns a full watt. <kbd>Enter</kbd> shows IPC, core mix, and disk/net IO per process.</sub>
@@ -37,7 +37,7 @@ The **Mx** **mon**itor — a blazing-fast, **sudoless** system monitor for Apple
 
 <img src="https://raw.githubusercontent.com/yusufmo1/mxmon/main/docs/thermal-view.png" width="880" alt="Full-screen chassis thermogram with named sensor list">
 
-<sub>Press <kbd>3</kbd> for the full-screen <b>thermogram</b> — 50+ sensors interpolated across a scale model of the chassis and eased between samples, with a TG-Pro-style named sensor list.</sub>
+<sub>Press <kbd>3</kbd> for the full-screen <b>thermogram</b> — 50+ sensors interpolated across a teardown blueprint of the chassis: isotherm rings bloom over the SoC die (E/P clusters, GPU, on-package LPDDR, part line etched on the package), fan blades spin with live RPM, battery cells fill with charge, and every reading is eased between samples. A TG-Pro-style named sensor list sits alongside; the blueprint adapts to the machine (no fans on Air, no battery on desktops) and can be toggled off in settings.</sub>
 
 </div>
 
