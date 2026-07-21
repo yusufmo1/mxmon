@@ -1,6 +1,11 @@
 # Rust build artifacts
 /target
 
+# Coverage + snapshot-review intermediates
+lcov.info
+*.profraw
+*.snap.new
+
 # macOS
 .DS_Store
 
