@@ -346,7 +346,7 @@ fn cycle_theme(app: &mut App, dir: i64) {
 }
 
 /// Rows of the settings modal, top to bottom (must match the overlay).
-pub const SETTINGS_ROWS: usize = 5;
+pub const SETTINGS_ROWS: usize = 6;
 
 /// Step a settings row's value forward (`dir` 1) or back (`-1`); every
 /// change applies live and persists immediately.
@@ -362,8 +362,12 @@ fn settings_step(app: &mut App, control: &Control, row: usize, dir: i64) {
             app.config.schematic = !app.config.schematic;
             app.config.save();
         }
-        3 => adjust_speed(app, control, dir * 50),
-        4 => {
+        3 => {
+            app.config.contours = !app.config.contours;
+            app.config.save();
+        }
+        4 => adjust_speed(app, control, dir * 50),
+        5 => {
             app.config.ping = !app.config.ping;
             app.config.save();
             app.toast("ping probe: applies at next launch", false);
@@ -575,13 +579,18 @@ mod tests {
         let schematic = h.app.config.schematic;
         h.key(K::Right);
         assert_eq!(h.app.config.schematic, !schematic);
-        // Row 3: speed steps apply live through the shared control.
+        // Row 3: contour rings toggle.
+        h.key(K::Char('j'));
+        let contours = h.app.config.contours;
+        h.key(K::Right);
+        assert_eq!(h.app.config.contours, !contours);
+        // Row 4: speed steps apply live through the shared control.
         h.key(K::Char('j'));
         let ms = h.app.config.interval_ms;
         h.key(K::Right);
         assert_eq!(h.app.config.interval_ms, ms + 50);
         assert_eq!(h.control.fast_ms.load(Ordering::Relaxed), ms + 50);
-        // Row 4: ping toggles with a heads-up toast.
+        // Row 5: ping toggles with a heads-up toast.
         h.key(K::Char('j'));
         let ping = h.app.config.ping;
         h.key(K::Enter);

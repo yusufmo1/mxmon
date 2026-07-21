@@ -29,6 +29,10 @@ pub struct Config {
     /// Draw the chassis blueprint (fans, SoC package, battery, …) beneath
     /// the thermal map's isotherm contours.
     pub schematic: bool,
+    /// Draw the heat map's isotherm rings and hot-core fill. Off leaves the
+    /// blueprint and every reading in place on a quiet deck — the field
+    /// math is skipped entirely, not just hidden.
+    pub contours: bool,
 }
 
 impl Default for Config {
@@ -41,6 +45,7 @@ impl Default for Config {
             ping_host: "1.1.1.1".into(),
             procs_panes: 1,
             schematic: true,
+            contours: true,
         }
     }
 }
@@ -169,6 +174,7 @@ mod tests {
             ping_host: "9.9.9.9".into(),
             procs_panes: 3,
             schematic: false,
+            contours: false,
         };
         c.save();
         let l = Config::load();
@@ -179,5 +185,6 @@ mod tests {
         assert_eq!(l.ping_host, "9.9.9.9");
         assert_eq!(l.procs_panes, 3);
         assert!(!l.schematic);
+        assert!(!l.contours);
     }
 }

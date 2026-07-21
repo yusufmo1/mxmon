@@ -17,14 +17,14 @@ source: src/ui/layout.rs
 │    812 yusuf        108.0  1│   process panes  ‹ 1 · widgets get the spare width    ›  │                             ┃
 │    574 root         106.0  6│   theme          ‹ midnight                           ›  │                             ┃
 │    336 _windowse…   104.0  2│   schematic      ‹ on · blueprint under the heat map  ›  │                             ┃
-│    795 _windowse…    95.0  1│   sampling       ‹ 250 ms                             ›  │                             ┃
-│    557 yusuf         93.0  6│   ping probe     ‹ on · 1.1.1.1                       ›  │                             ┃
-│    319 root          91.0  2│                                                          │                             ┃
-│    778 root          82.0   │   also cycles live with t                                │                             ┃
-│    540 _windowse…    80.0  5│                                                          │                             ┃
-│    302 yusuf         78.0  1│   ↑↓ select · ←→ change · esc close                      │                             ┃
-│    761 yusuf         69.0   ╰──────────────────────────────────────────────────────────╯                             ┃
-│    523 root          67.0  551mW    753M       –       –   23 S   13m 43s Safari                                     ┃
+│    795 _windowse…    95.0  1│   contours       ‹ on · isotherm rings over the deck  ›  │                             ┃
+│    557 yusuf         93.0  6│   sampling       ‹ 250 ms                             ›  │                             ┃
+│    319 root          91.0  2│   ping probe     ‹ on · 1.1.1.1                       ›  │                             ┃
+│    778 root          82.0   │                                                          │                             ┃
+│    540 _windowse…    80.0  5│   also cycles live with t                                │                             ┃
+│    302 yusuf         78.0  1│                                                          │                             ┃
+│    761 yusuf         69.0   │   ↑↓ select · ←→ change · esc close                      │                             ┃
+│    523 root          67.0  5╰──────────────────────────────────────────────────────────╯                             ┃
 │    285 _windowse…    65.0  145mW    235M       –       –    9 S    5m 05s cargo                                      ┃
 │    744 _windowse…    56.0   28mW    1.2G       –       –   13 R   21m 44s mxmon                                      ┃
 │    506 yusuf         54.0  522mW    716M       –       –   22 I   13m 06s kernel_task                                ┃
