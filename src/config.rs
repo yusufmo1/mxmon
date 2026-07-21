@@ -42,8 +42,49 @@ impl Default for Config {
 }
 
 /// `~/.config/mxmon` — home of the config and the SMC sensor-discovery cache.
+/// `MXMON_CONFIG_DIR` relocates it wholesale (the e2e tests point spawned
+/// binaries at a tempdir so runs stay hermetic).
+#[cfg(not(test))]
 pub fn dir() -> Option<PathBuf> {
+    if let Some(dir) = std::env::var_os("MXMON_CONFIG_DIR") {
+        return Some(PathBuf::from(dir));
+    }
     std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config/mxmon"))
+}
+
+/// Test builds never see the real `~/.config/mxmon`: only a per-thread
+/// tempdir installed via [`test_dir`] resolves, so no test — present or
+/// future — can read or clobber the user's actual config or sensor cache.
+#[cfg(test)]
+pub fn dir() -> Option<PathBuf> {
+    TEST_DIR.with(|d| d.borrow().clone())
+}
+
+#[cfg(test)]
+thread_local! {
+    static TEST_DIR: std::cell::RefCell<Option<PathBuf>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Point this thread's config dir at `path` until the guard drops (tests).
+#[cfg(test)]
+#[must_use]
+#[allow(dead_code, reason = "consumed by the event/config test modules")]
+pub fn test_dir(path: PathBuf) -> TestDirGuard {
+    TEST_DIR.with(|d| *d.borrow_mut() = Some(path));
+    TestDirGuard
+}
+
+/// Clears the per-thread config-dir override on drop.
+#[cfg(test)]
+#[allow(dead_code, reason = "consumed by the event/config test modules")]
+pub struct TestDirGuard;
+
+#[cfg(test)]
+impl Drop for TestDirGuard {
+    fn drop(&mut self) {
+        TEST_DIR.with(|d| *d.borrow_mut() = None);
+    }
 }
 
 fn config_path() -> Option<PathBuf> {

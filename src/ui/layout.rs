@@ -51,10 +51,7 @@ pub fn draw(f: &mut Frame<'_>, app: &mut App, th: &Theme, hits: &mut HitMap, rs:
     // Degrade to the 256-color palette on terminals without 24-bit SGR
     // (Terminal.app) — one pass over the buffer, before ratatui's cell diff.
     if !super::theme::truecolor_supported() {
-        for cell in &mut buf.content {
-            cell.fg = super::theme::to_indexed(cell.fg);
-            cell.bg = super::theme::to_indexed(cell.bg);
-        }
+        super::theme::quantize_buffer(buf);
     }
 }
 

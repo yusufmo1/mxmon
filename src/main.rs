@@ -12,6 +12,10 @@ mod units;
 #[cfg(test)]
 mod tests;
 
+/// Deterministic fixtures shared by unit, snapshot, and render-fuzz tests.
+#[cfg(test)]
+mod testutil;
+
 /// Headless render-path fuzz (macOS-only; samples the live collectors).
 #[cfg(all(test, target_os = "macos"))]
 mod render_fuzz;
