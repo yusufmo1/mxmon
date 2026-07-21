@@ -346,7 +346,7 @@ fn cycle_theme(app: &mut App, dir: i64) {
 }
 
 /// Rows of the settings modal, top to bottom (must match the overlay).
-pub const SETTINGS_ROWS: usize = 4;
+pub const SETTINGS_ROWS: usize = 5;
 
 /// Step a settings row's value forward (`dir` 1) or back (`-1`); every
 /// change applies live and persists immediately.
@@ -358,8 +358,12 @@ fn settings_step(app: &mut App, control: &Control, row: usize, dir: i64) {
             app.config.save();
         }
         1 => cycle_theme(app, dir),
-        2 => adjust_speed(app, control, dir * 50),
-        3 => {
+        2 => {
+            app.config.schematic = !app.config.schematic;
+            app.config.save();
+        }
+        3 => adjust_speed(app, control, dir * 50),
+        4 => {
             app.config.ping = !app.config.ping;
             app.config.save();
             app.toast("ping probe: applies at next launch", false);
@@ -402,4 +406,462 @@ fn adjust_speed(app: &mut App, control: &Control, delta_ms: i64) {
         .store(next, std::sync::atomic::Ordering::Relaxed);
     app.config.save();
     app.toast(format!("tick {next}ms"), false);
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+    use std::sync::atomic::Ordering;
+
+    use ratatui::crossterm::event::{
+        Event, KeyCode as K, KeyModifiers, MouseEvent, MouseEventKind,
+    };
+    use ratatui::layout::Rect;
+
+    use super::{Outcome, SETTINGS_ROWS, handle};
+    use crate::app::{App, KILL_SIGNALS, Modal, SORT_KEYS, SortKey, View};
+    use crate::collect::sampler::{Control, FAST_MS_MAX, FAST_MS_MIN, Update};
+    use crate::config;
+    use crate::testutil as tu;
+    use crate::ui::layout::RenderState;
+    use crate::ui::widgets::{HitMap, Target};
+
+    /// One-keystroke harness: fixture app, isolated config dir (so the
+    /// save-on-change paths can never touch the real `~/.config/mxmon`),
+    /// fresh control + hitmap + render state.
+    struct H {
+        app: App,
+        control: Arc<Control>,
+        hits: HitMap,
+        rs: RenderState,
+        _tmp: tempfile::TempDir,
+        _guard: config::TestDirGuard,
+    }
+
+    fn h() -> H {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let guard = config::test_dir(tmp.path().to_path_buf());
+        H {
+            app: tu::app(),
+            control: Control::new(),
+            hits: HitMap::default(),
+            rs: RenderState::default(),
+            _tmp: tmp,
+            _guard: guard,
+        }
+    }
+
+    impl H {
+        fn key(&mut self, code: K) -> Outcome {
+            self.ev(&tu::key(code))
+        }
+        fn ev(&mut self, e: &Event) -> Outcome {
+            handle(e, &mut self.app, &self.control, &self.hits, &mut self.rs)
+        }
+        fn click(&mut self, x: u16, y: u16) -> Outcome {
+            self.ev(&tu::click(x, y))
+        }
+    }
+
+    #[test]
+    fn ctrl_c_quits_from_anywhere() {
+        let mut h = h();
+        let ctrl_c = tu::key_with(K::Char('c'), KeyModifiers::CONTROL);
+        assert!(h.ev(&ctrl_c) == Outcome::Quit);
+        h.app.modal = Some(Modal::Help);
+        assert!(h.ev(&ctrl_c) == Outcome::Quit, "modals don't capture it");
+        h.app.modal = None;
+        h.app.filter_editing = true;
+        assert!(
+            h.ev(&ctrl_c) == Outcome::Quit,
+            "filter editing doesn't either"
+        );
+    }
+
+    #[test]
+    fn q_quits_globally_but_types_into_the_filter() {
+        let mut h = h();
+        h.app.filter_editing = true;
+        assert!(h.key(K::Char('q')) == Outcome::Continue);
+        assert_eq!(h.app.filter, "q");
+        h.app.filter_editing = false;
+        h.app.filter.clear();
+        assert!(h.key(K::Char('q')) == Outcome::Quit);
+    }
+
+    #[test]
+    fn view_keys_and_tab_cycle() {
+        let mut h = h();
+        h.key(K::Char('2'));
+        assert_eq!(h.app.view, View::Processes);
+        h.key(K::Char('3'));
+        assert_eq!(h.app.view, View::Thermal);
+        h.key(K::Char('4'));
+        assert_eq!(h.app.view, View::Connections);
+        h.key(K::Char('1'));
+        assert_eq!(h.app.view, View::Overview);
+        for expected in [
+            View::Processes,
+            View::Thermal,
+            View::Connections,
+            View::Overview,
+        ] {
+            h.key(K::Tab);
+            assert_eq!(h.app.view, expected);
+        }
+    }
+
+    #[test]
+    fn help_modal_opens_and_modal_captures_close_keys() {
+        let mut h = h();
+        h.key(K::Char('?'));
+        assert_eq!(h.app.modal, Some(Modal::Help));
+        // The modal captures 'q': it closes the overlay, not the app.
+        assert!(h.key(K::Char('q')) == Outcome::Continue);
+        assert_eq!(h.app.modal, None);
+    }
+
+    #[test]
+    fn sort_menu_applies_and_reapplying_toggles_direction() {
+        let mut h = h();
+        h.key(K::Char('s'));
+        assert_eq!(
+            h.app.modal,
+            Some(Modal::SortMenu { selected: 0 }),
+            "opens on the current key (Cpu)"
+        );
+        h.key(K::Char('j'));
+        h.key(K::Enter);
+        assert_eq!(h.app.modal, None);
+        assert_eq!(h.app.sort, SortKey::Memory);
+        assert!(h.app.sort_desc, "value keys default to descending");
+        // Re-applying the same key flips direction.
+        h.key(K::Char('s'));
+        h.key(K::Enter);
+        assert!(!h.app.sort_desc);
+        // The cursor clamps at the menu bottom; Esc closes without applying.
+        h.key(K::Char('s'));
+        for _ in 0..30 {
+            h.key(K::Char('j'));
+        }
+        assert_eq!(
+            h.app.modal,
+            Some(Modal::SortMenu {
+                selected: SORT_KEYS.len() - 1
+            })
+        );
+        h.key(K::Esc);
+        assert_eq!(h.app.modal, None);
+    }
+
+    #[test]
+    fn settings_rows_step_every_option() {
+        let mut h = h();
+        h.key(K::Char('o'));
+        assert_eq!(h.app.modal, Some(Modal::Settings { selected: 0 }));
+        // Row 0: pane cap wraps 1→2 forward, then 2→1→4 backward.
+        h.key(K::Right);
+        assert_eq!(h.app.config.procs_panes, 2);
+        h.key(K::Left);
+        h.key(K::Left);
+        assert_eq!(h.app.config.procs_panes, 4, "wraps under 1");
+        // Row 1: theme cycles.
+        h.key(K::Char('j'));
+        let before = h.app.config.theme.clone();
+        h.key(K::Right);
+        assert_ne!(h.app.config.theme, before);
+        // Row 2: schematic toggles.
+        h.key(K::Char('j'));
+        let schematic = h.app.config.schematic;
+        h.key(K::Right);
+        assert_eq!(h.app.config.schematic, !schematic);
+        // Row 3: speed steps apply live through the shared control.
+        h.key(K::Char('j'));
+        let ms = h.app.config.interval_ms;
+        h.key(K::Right);
+        assert_eq!(h.app.config.interval_ms, ms + 50);
+        assert_eq!(h.control.fast_ms.load(Ordering::Relaxed), ms + 50);
+        // Row 4: ping toggles with a heads-up toast.
+        h.key(K::Char('j'));
+        let ping = h.app.config.ping;
+        h.key(K::Enter);
+        assert_eq!(h.app.config.ping, !ping);
+        assert!(h.app.toast.is_some());
+        // The cursor clamps at the last row; 'o' closes.
+        for _ in 0..10 {
+            h.key(K::Char('j'));
+        }
+        assert_eq!(
+            h.app.modal,
+            Some(Modal::Settings {
+                selected: SETTINGS_ROWS - 1
+            })
+        );
+        h.key(K::Char('o'));
+        assert_eq!(h.app.modal, None);
+    }
+
+    #[test]
+    fn speed_keys_clamp_to_bounds() {
+        let mut h = h();
+        for _ in 0..100 {
+            h.key(K::Char('-'));
+        }
+        assert_eq!(h.app.config.interval_ms, FAST_MS_MAX);
+        assert_eq!(h.control.fast_ms.load(Ordering::Relaxed), FAST_MS_MAX);
+        for _ in 0..100 {
+            h.key(K::Char('+'));
+        }
+        assert_eq!(h.app.config.interval_ms, FAST_MS_MIN);
+        assert_eq!(h.control.fast_ms.load(Ordering::Relaxed), FAST_MS_MIN);
+    }
+
+    #[test]
+    fn pause_and_hud_toggles() {
+        let mut h = h();
+        h.key(K::Char('p'));
+        assert!(h.app.paused);
+        assert!(h.control.paused.load(Ordering::Relaxed));
+        h.key(K::Char('p'));
+        assert!(!h.app.paused && !h.control.paused.load(Ordering::Relaxed));
+        h.key(K::Char('d'));
+        assert!(h.app.show_hud);
+    }
+
+    #[test]
+    fn filter_editing_captures_types_and_clears() {
+        let mut h = h();
+        h.app.view = View::Thermal;
+        h.key(K::Char('/'));
+        assert!(h.app.filter_editing);
+        assert_eq!(h.app.view, View::Processes, "filter jumps to the table");
+        h.key(K::Char('m'));
+        h.key(K::Char('x'));
+        assert_eq!(h.app.filter, "mx");
+        assert!(
+            h.app
+                .visible_rows
+                .iter()
+                .all(|&i| h.app.procs.rows[i].name.to_lowercase().contains("mx"))
+        );
+        h.key(K::Backspace);
+        assert_eq!(h.app.filter, "m");
+        h.key(K::Enter);
+        assert!(!h.app.filter_editing, "Enter commits the filter");
+        assert_eq!(h.app.filter, "m");
+        // Esc outside editing clears a committed filter…
+        h.key(K::Esc);
+        assert!(h.app.filter.is_empty());
+        // …and inside editing wipes it immediately.
+        h.key(K::Char('/'));
+        h.key(K::Char('x'));
+        h.key(K::Esc);
+        assert!(h.app.filter.is_empty() && !h.app.filter_editing);
+    }
+
+    #[test]
+    fn selection_and_scroll_keys_route_by_view() {
+        let mut h = h();
+        h.app.view = View::Processes;
+        h.key(K::Char('j'));
+        assert_eq!(h.app.selected, 1);
+        h.key(K::Char('k'));
+        assert_eq!(h.app.selected, 0);
+        h.key(K::PageDown);
+        assert_eq!(h.app.selected, 15);
+        h.key(K::Char('G'));
+        assert_eq!(h.app.selected, h.app.visible_rows.len() - 1);
+        h.key(K::Char('g'));
+        assert_eq!(h.app.selected, 0);
+        // Thermal and Connections scroll their lists instead of the table.
+        h.app.view = View::Thermal;
+        h.key(K::Char('j'));
+        assert_eq!((h.rs.sensor_scroll, h.app.selected), (1, 0));
+        h.app.view = View::Connections;
+        h.key(K::Down);
+        assert_eq!(h.rs.flows_scroll, 1);
+        h.key(K::Char('G'));
+        assert_eq!(h.rs.flows_scroll, usize::MAX, "End pins; the panel clamps");
+        h.key(K::Char('g'));
+        assert_eq!(h.rs.flows_scroll, 0);
+    }
+
+    #[test]
+    fn kill_flow_error_path_never_signals_a_real_process() {
+        let mut h = h();
+        // One synthetic row whose pid can't exist on macOS (pid range tops
+        // out near 1e5): Enter must take the ESRCH error path.
+        let mut sample = tu::procs(1);
+        sample.rows[0].pid = i32::MAX - 7;
+        h.app.apply(Update::Procs(Box::new(sample)));
+        h.app.view = View::Processes;
+        h.key(K::Char('x'));
+        let Some(Modal::Kill { pid, selected, .. }) = h.app.modal.clone() else {
+            panic!("kill modal expected");
+        };
+        assert_eq!((pid, selected), (i32::MAX - 7, 0));
+        // The signal cursor clamps to the list.
+        for _ in 0..10 {
+            h.key(K::Char('j'));
+        }
+        let Some(Modal::Kill { selected, .. }) = h.app.modal.clone() else {
+            panic!("kill modal still open");
+        };
+        assert_eq!(selected, KILL_SIGNALS.len() - 1);
+        // Enter: kill(2) fails with ESRCH → error toast, modal closes.
+        h.key(K::Enter);
+        assert_eq!(h.app.modal, None);
+        let toast = h.app.toast.as_ref().expect("outcome reported");
+        assert!(toast.error, "nonexistent pid must surface as an error");
+        // Esc leaves quietly.
+        h.key(K::Char('x'));
+        h.key(K::Esc);
+        assert_eq!(h.app.modal, None);
+    }
+
+    #[test]
+    fn kill_and_details_disabled_outside_process_views() {
+        let mut h = h();
+        h.app.view = View::Thermal;
+        h.key(K::Char('x'));
+        assert_eq!(h.app.modal, None);
+        h.key(K::Enter);
+        assert_eq!(h.app.modal, None);
+    }
+
+    #[test]
+    fn details_modal_opens_on_selection() {
+        let mut h = h();
+        h.app.view = View::Processes;
+        let pid = h.app.selected_row().unwrap().pid;
+        h.key(K::Enter);
+        assert_eq!(h.app.modal, Some(Modal::Details { pid }));
+        h.key(K::Esc);
+        assert_eq!(h.app.modal, None);
+    }
+
+    #[test]
+    fn theme_key_cycles_and_wraps() {
+        let mut h = h();
+        let start = h.app.config.theme.clone();
+        for _ in 0..crate::ui::theme::THEMES.len() {
+            h.key(K::Char('t'));
+        }
+        assert_eq!(h.app.config.theme, start, "a full cycle returns home");
+        assert!(h.app.toast.is_some());
+    }
+
+    // ---- mouse -------------------------------------------------------------
+
+    #[test]
+    fn clicks_dispatch_through_the_hitmap() {
+        let mut h = h();
+        h.hits
+            .push(Rect::new(0, 0, 10, 1), Target::Tab(View::Thermal));
+        h.hits
+            .push(Rect::new(0, 2, 10, 1), Target::ProcHeader(SortKey::Memory));
+        h.hits.push(Rect::new(0, 4, 10, 1), Target::ProcRow(2));
+        h.hits.push(Rect::new(0, 6, 10, 1), Target::Pause);
+        h.hits.push(Rect::new(0, 8, 10, 1), Target::Quit);
+        h.hits.push(Rect::new(0, 9, 10, 1), Target::Filter);
+
+        h.click(1, 0);
+        assert_eq!(h.app.view, View::Thermal);
+        h.click(1, 2);
+        assert_eq!(h.app.sort, SortKey::Memory);
+        // First click selects a row; a second on the same row opens details.
+        h.click(1, 4);
+        assert_eq!(h.app.selected, 2);
+        assert_eq!(h.app.modal, None);
+        h.click(1, 4);
+        assert!(matches!(h.app.modal, Some(Modal::Details { .. })));
+        h.app.modal = None;
+        h.click(1, 6);
+        assert!(h.app.paused);
+        h.click(1, 9);
+        assert!(h.app.filter_editing);
+        h.app.filter_editing = false;
+        assert!(h.click(1, 8) == Outcome::Quit);
+        // A click on dead space changes nothing.
+        assert!(h.click(30, 30) == Outcome::Continue);
+    }
+
+    #[test]
+    fn click_outside_modal_closes_it_inside_keeps_it() {
+        let mut h = h();
+        h.hits.push(Rect::new(5, 5, 10, 5), Target::ModalBody);
+        h.app.modal = Some(Modal::Help);
+        h.click(7, 7); // inside the body
+        assert_eq!(h.app.modal, Some(Modal::Help));
+        h.click(0, 0); // outside
+        assert_eq!(h.app.modal, None);
+    }
+
+    #[test]
+    fn modal_option_clicks_apply() {
+        let mut h = h();
+        h.hits.push(Rect::new(0, 0, 10, 1), Target::SortOption(4)); // Pid
+        h.app.modal = Some(Modal::SortMenu { selected: 0 });
+        h.click(1, 0);
+        assert_eq!(h.app.modal, None);
+        assert_eq!(h.app.sort, SortKey::Pid);
+        assert!(!h.app.sort_desc, "identity keys default ascending");
+        // A settings-row click selects the row and steps its value.
+        h.hits.clear();
+        h.hits.push(Rect::new(0, 0, 10, 1), Target::SettingRow(0));
+        h.app.modal = Some(Modal::Settings { selected: 3 });
+        let panes = h.app.config.procs_panes;
+        h.click(1, 0);
+        assert_eq!(h.app.modal, Some(Modal::Settings { selected: 0 }));
+        assert_eq!(h.app.config.procs_panes, panes % 4 + 1);
+    }
+
+    #[test]
+    fn kill_signal_click_uses_the_modal_pid() {
+        let mut h = h();
+        h.app.modal = Some(Modal::Kill {
+            pid: i32::MAX - 7,
+            name: "ghost".into(),
+            selected: 0,
+        });
+        h.hits.push(Rect::new(0, 0, 10, 1), Target::KillSignal(1));
+        h.click(1, 0);
+        assert_eq!(h.app.modal, None);
+        assert!(h.app.toast.as_ref().unwrap().error, "ESRCH surfaces");
+    }
+
+    #[test]
+    fn scroll_routes_by_hit_target() {
+        let mut h = h();
+        h.hits.push(Rect::new(0, 0, 10, 5), Target::SensorList);
+        h.hits.push(Rect::new(0, 5, 10, 5), Target::FlowList);
+        h.hits.push(Rect::new(0, 10, 10, 5), Target::ProcList);
+        h.ev(&tu::scroll(1, 1, true));
+        assert_eq!(h.rs.sensor_scroll, 3);
+        h.ev(&tu::scroll(1, 1, false));
+        assert_eq!(h.rs.sensor_scroll, 0, "saturates at the top");
+        h.ev(&tu::scroll(1, 6, true));
+        assert_eq!(h.rs.flows_scroll, 3);
+        h.ev(&tu::scroll(1, 12, true));
+        assert_eq!(h.app.selected, 3);
+        // Scrolling over dead space does nothing.
+        h.ev(&tu::scroll(30, 30, true));
+        assert_eq!(
+            (h.rs.sensor_scroll, h.rs.flows_scroll, h.app.selected),
+            (0, 3, 3)
+        );
+    }
+
+    #[test]
+    fn motion_is_idle_and_resize_repaints() {
+        let mut h = h();
+        let motion = Event::Mouse(MouseEvent {
+            kind: MouseEventKind::Moved,
+            column: 3,
+            row: 3,
+            modifiers: KeyModifiers::NONE,
+        });
+        assert!(h.ev(&motion) == Outcome::Idle, "hover must not redraw");
+        assert!(h.ev(&Event::Resize(80, 24)) == Outcome::Continue);
+    }
 }

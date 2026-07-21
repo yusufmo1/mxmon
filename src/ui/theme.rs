@@ -1086,4 +1086,74 @@ mod tests {
         // Non-RGB colors pass through untouched.
         assert_eq!(to_indexed(Color::Indexed(42)), Color::Indexed(42));
     }
+
+    use super::{quantize_buffer, temp_ratio};
+
+    #[test]
+    fn temp_ratio_spans_ambient_to_throttle() {
+        assert!(temp_ratio(25.0).abs() < f32::EPSILON);
+        assert!((temp_ratio(110.0) - 1.0).abs() < f32::EPSILON);
+        assert!(temp_ratio(-40.0).abs() < f32::EPSILON, "clamped below");
+        assert!(
+            (temp_ratio(500.0) - 1.0).abs() < f32::EPSILON,
+            "clamped above"
+        );
+    }
+
+    #[test]
+    fn severity_thresholds_and_temp_color_total() {
+        let th = by_name("midnight");
+        assert_eq!(th.severity(0.0), th.ok);
+        assert_eq!(th.severity(0.69), th.ok);
+        assert_eq!(th.severity(0.7), th.warn);
+        assert_eq!(th.severity(0.9), th.crit);
+        // Non-finite sensor glitches still produce a paintable color.
+        for t in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY, -300.0, 900.0] {
+            let _ = th.temp_color(t);
+        }
+    }
+
+    #[test]
+    fn quantize_buffer_leaves_no_rgb_cell() {
+        use ratatui::buffer::Buffer;
+        use ratatui::layout::Rect;
+        let mut buf = Buffer::empty(Rect::new(0, 0, 8, 2));
+        for (i, cell) in buf.content.iter_mut().enumerate() {
+            cell.set_fg(Color::Rgb(i as u8 * 16, 100, 200));
+            cell.set_bg(Color::Rgb(30, i as u8, 90));
+        }
+        quantize_buffer(&mut buf);
+        assert!(
+            buf.content
+                .iter()
+                .all(|c| !matches!(c.fg, Color::Rgb(..)) && !matches!(c.bg, Color::Rgb(..)))
+        );
+    }
+
+    mod prop {
+        use super::super::{Gradient, temp_ratio, to_indexed};
+        use proptest::prelude::*;
+        use ratatui::style::Color;
+
+        proptest! {
+            #[test]
+            fn to_indexed_always_lands_in_palette(r in any::<u8>(), g in any::<u8>(), b in any::<u8>()) {
+                let Color::Indexed(i) = to_indexed(Color::Rgb(r, g, b)) else {
+                    return Err(TestCaseError::fail("rgb must quantize"));
+                };
+                prop_assert!(i >= 16);
+            }
+
+            #[test]
+            fn gradient_total_for_any_t(t in proptest::num::f32::ANY) {
+                let g = Gradient::new(&[(0.0, (0, 0, 0)), (0.5, (10, 200, 30)), (1.0, (255, 255, 255))]);
+                let _ = g.at(t); // NaN / ±inf included
+            }
+
+            #[test]
+            fn temp_ratio_stays_clamped(c in -1000.0f32..1000.0) {
+                prop_assert!((0.0..=1.0).contains(&temp_ratio(c)));
+            }
+        }
+    }
 }

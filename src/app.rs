@@ -422,7 +422,10 @@ impl App {
 
 #[cfg(test)]
 mod tests {
-    use super::Ring;
+    use super::{App, Ring, SortKey};
+    use crate::collect::sampler::{SlowSnapshot, Update};
+    use crate::config::Config;
+    use crate::testutil as tu;
 
     #[test]
     fn ring_windows_and_max() {
@@ -436,5 +439,230 @@ mod tests {
         assert_eq!(r.last_n(2).collect::<Vec<_>>(), vec![3.0, 4.0]);
         assert!((r.max() - 5.0).abs() < f32::EPSILON);
         assert_eq!(r.latest(), Some(4.0));
+    }
+
+    #[test]
+    fn ring_max_ignores_nan_gaps() {
+        // Ping misses are stored as NaN; the autoscale must see through them.
+        let mut r = Ring::new(8);
+        for v in [1.0, f32::NAN, 3.0, f32::NAN] {
+            r.push(v);
+        }
+        assert!((r.max() - 3.0).abs() < f32::EPSILON);
+    }
+
+    fn app() -> App {
+        App::new(tu::soc(), Config::default())
+    }
+
+    #[test]
+    fn apply_fast_pushes_every_ring() {
+        let mut app = app();
+        app.apply(Update::Fast(Box::new(tu::fast_at(3))));
+        let h = &app.hist;
+        assert!(h.cpu_total.latest().is_some());
+        assert_eq!(h.per_core.len(), 16);
+        assert!(h.per_core.iter().all(|r| r.latest().is_some()));
+        for r in [
+            &h.gpu,
+            &h.mem_used,
+            &h.net_rx,
+            &h.net_tx,
+            &h.disk_rd,
+            &h.disk_wr,
+        ] {
+            assert!(r.latest().is_some());
+        }
+        assert!(app.fast.cpu.is_some(), "snapshot retained for panels");
+    }
+
+    #[test]
+    fn apply_power_pushes_rails() {
+        let mut app = app();
+        app.apply(Update::Power(Box::new(tu::power_at(1))));
+        let h = &app.hist;
+        for r in [
+            &h.package_w,
+            &h.cpu_w,
+            &h.gpu_w,
+            &h.ane_w,
+            &h.dram_w,
+            &h.disp_w,
+            &h.ecpu_usage,
+            &h.pcpu_usage,
+        ] {
+            assert!(r.latest().is_some());
+        }
+        assert!(app.power.is_some());
+    }
+
+    #[test]
+    fn apply_slow_keeps_last_battery_and_bumps_temps_seq() {
+        let mut app = app();
+        app.apply(Update::Slow(Box::new(SlowSnapshot {
+            temps: Some(tu::temps_at(0)),
+            battery: Some(tu::battery()),
+        })));
+        assert_eq!(app.temps_seq, 1);
+        assert!(app.battery.is_some());
+        assert!(app.hist.sys_w.latest().is_some(), "PSTR feeds the SYS ring");
+        // A temps-only tick must not drop the last battery reading…
+        app.apply(Update::Slow(Box::new(SlowSnapshot {
+            temps: Some(tu::temps_at(4)),
+            battery: None,
+        })));
+        assert!(app.battery.is_some());
+        assert_eq!(app.temps_seq, 2);
+        // …and a temps-less tick must not bump the render-cache key.
+        app.apply(Update::Slow(Box::new(SlowSnapshot {
+            temps: None,
+            battery: None,
+        })));
+        assert_eq!(app.temps_seq, 2);
+    }
+
+    #[test]
+    fn apply_ping_miss_records_nan_gap() {
+        let mut app = app();
+        let mut miss = tu::ping_at(0);
+        miss.rtt_ms = None;
+        app.apply(Update::Ping(Box::new(miss)));
+        assert!(app.hist.ping_ms.latest().unwrap().is_nan());
+        app.apply(Update::Ping(Box::new(tu::ping_at(1))));
+        assert!(!app.hist.ping_ms.latest().unwrap().is_nan());
+    }
+
+    #[test]
+    fn apply_flows_resorts_only_under_net_sort() {
+        let mut app = app();
+        app.apply(Update::Procs(Box::new(tu::procs(10))));
+        let before = app.visible_rows.clone();
+        app.apply(Update::Flows(Box::new(tu::flows())));
+        assert_eq!(app.visible_rows, before, "CPU sort ignores flow churn");
+        app.sort = SortKey::Net;
+        app.apply(Update::Flows(Box::new(tu::flows())));
+        // The busiest flow among visible rows (Safari, pid 251) leads, and
+        // the whole column is ordered by per-pid rx+tx.
+        assert_eq!(app.procs.rows[app.visible_rows[0]].pid, 251);
+        let net = |pid: i32| app.flows.by_pid.get(&pid).map_or(0, |&(rx, tx)| rx + tx);
+        assert!(
+            app.visible_rows
+                .windows(2)
+                .all(|w| net(app.procs.rows[w[0]].pid) >= net(app.procs.rows[w[1]].pid))
+        );
+    }
+
+    #[test]
+    fn apply_source_down_accumulates() {
+        let mut app = app();
+        app.apply(Update::SourceDown {
+            source: "power",
+            error: "no IOReport".into(),
+        });
+        app.apply(Update::SourceDown {
+            source: "flows",
+            error: "socket".into(),
+        });
+        assert_eq!(app.source_errors.len(), 2);
+        assert_eq!(app.source_errors[0].0, "power");
+    }
+
+    #[test]
+    fn refresh_visible_filters_name_pid_and_user() {
+        let mut app = app();
+        app.apply(Update::Procs(Box::new(tu::procs(32))));
+        app.filter = "safari".into();
+        app.refresh_visible();
+        assert!(!app.visible_rows.is_empty());
+        assert!(
+            app.visible_rows
+                .iter()
+                .all(|&i| app.procs.rows[i].name == "Safari")
+        );
+        // Exact-pid match.
+        app.filter = "200".into();
+        app.refresh_visible();
+        assert_eq!(app.visible_rows.len(), 1);
+        assert_eq!(app.procs.rows[app.visible_rows[0]].pid, 200);
+        // User substring, case-insensitive.
+        app.filter = "_WindowServer".to_lowercase();
+        app.refresh_visible();
+        assert!(
+            app.visible_rows
+                .iter()
+                .all(|&i| app.procs.rows[i].user == "_windowserver")
+        );
+        // No match: selection has nothing to sit on.
+        app.filter = "zzz-no-such".into();
+        app.refresh_visible();
+        assert!(app.visible_rows.is_empty());
+        assert!(app.selected_row().is_none());
+    }
+
+    #[test]
+    fn refresh_visible_sorts_and_sinks_unreadable_rows() {
+        let mut app = app();
+        app.apply(Update::Procs(Box::new(tu::procs(24))));
+        // Default: CPU descending, unreadable (None) rows sink to the bottom.
+        let cpus: Vec<Option<f32>> = app
+            .visible_rows
+            .iter()
+            .map(|&i| app.procs.rows[i].cpu.map(|c| c.0))
+            .collect();
+        let split = cpus.iter().position(Option::is_none).unwrap_or(cpus.len());
+        assert!(split > 0, "fixture has readable rows");
+        assert!(cpus[..split].windows(2).all(|w| w[0] >= w[1]));
+        assert!(cpus[split..].iter().all(Option::is_none));
+
+        let row = |app: &App, v: usize| app.procs.rows[app.visible_rows[v]].clone();
+        // Name starts ascending (case-insensitive), Pid ascending.
+        for key in [SortKey::Name, SortKey::User, SortKey::Pid] {
+            app.sort = key;
+            app.sort_desc = false;
+            app.refresh_visible();
+        }
+        assert!(
+            app.visible_rows
+                .windows(2)
+                .all(|w| app.procs.rows[w[0]].pid <= app.procs.rows[w[1]].pid)
+        );
+        // Memory, Power, Threads: descending with None/0 last.
+        app.sort = SortKey::Memory;
+        app.sort_desc = true;
+        app.refresh_visible();
+        let m0 = row(&app, 0).memory.unwrap();
+        assert!(
+            app.visible_rows
+                .iter()
+                .all(|&i| app.procs.rows[i].memory.unwrap_or_default() <= m0)
+        );
+        app.sort = SortKey::Threads;
+        app.refresh_visible();
+        let t0 = row(&app, 0).threads.unwrap();
+        assert!(
+            app.visible_rows
+                .iter()
+                .all(|&i| app.procs.rows[i].threads.unwrap_or(0) <= t0)
+        );
+    }
+
+    #[test]
+    fn selection_movement_clamps() {
+        let mut app = app();
+        app.move_selection(5); // empty list: no panic, stays put
+        assert_eq!(app.selected, 0);
+        app.apply(Update::Procs(Box::new(tu::procs(5))));
+        app.move_selection(1000);
+        assert_eq!(app.selected, 4);
+        app.move_selection(-1000);
+        assert_eq!(app.selected, 0);
+        // A shrinking table clamps a stale selection.
+        app.selected = 4;
+        app.apply(Update::Procs(Box::new(tu::procs(2))));
+        assert_eq!(app.selected, 1);
+        assert_eq!(
+            app.selected_row().unwrap().pid,
+            app.procs.rows[app.visible_rows[1]].pid
+        );
     }
 }

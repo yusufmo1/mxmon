@@ -109,10 +109,13 @@ pub(crate) fn freq_from_residency(
         return Default::default();
     }
     // Leading buckets are idle-ish states (IDLE / DOWN / OFF); data starts after.
+    // Clamped so a malformed shape (more leading idle buckets than spare
+    // slots) degrades to skewed numbers instead of indexing out of bounds.
     let offset = residencies
         .iter()
         .position(|(name, _)| !matches!(name.as_str(), "IDLE" | "DOWN" | "OFF"))
-        .unwrap_or(0);
+        .unwrap_or(0)
+        .min(residencies.len() - freqs.len());
     let active: f64 = residencies[offset..].iter().map(|&(_, r)| r as f64).sum();
     let total: f64 = residencies.iter().map(|&(_, r)| r as f64).sum();
     if active <= 0.0 || total <= 0.0 {
@@ -273,5 +276,55 @@ mod tests {
         // M5 rename: MCPU is an efficiency-tier channel.
         assert!(parse_core_channel("MCPU010").is_some());
         assert!(parse_core_channel("GPUPH").is_none());
+    }
+
+    #[test]
+    fn freq_from_residency_survives_excess_idle_buckets() {
+        // Two leading idle buckets but only one spare slot: the offset clamp
+        // must keep every index inside the residency array.
+        let freqs = [Mhz(1000), Mhz(2000)];
+        let residencies = vec![
+            ("IDLE".to_owned(), 10),
+            ("DOWN".to_owned(), 10),
+            ("P1".to_owned(), 10),
+        ];
+        let (_, _, active) = freq_from_residency(&residencies, &freqs);
+        assert!(active.0 > 0.0);
+    }
+
+    mod prop {
+        use super::super::freq_from_residency;
+        use crate::units::Mhz;
+        use proptest::prelude::*;
+
+        proptest! {
+            // Kernel residency shapes drift across macOS releases — any
+            // shape must degrade gracefully, never panic, and keep the
+            // derived ratios in display range.
+            #[test]
+            fn freq_from_residency_total(
+                names in proptest::collection::vec(
+                    proptest::sample::select(vec!["IDLE", "DOWN", "OFF", "P1", "V2"]),
+                    0..8,
+                ),
+                counts in proptest::collection::vec(0i64..1_000_000, 0..8),
+                freqs in proptest::collection::vec(1u32..5000, 0..6),
+            ) {
+                let residencies: Vec<(String, i64)> = names
+                    .iter()
+                    .zip(&counts)
+                    .map(|(n, &c)| ((*n).to_owned(), c))
+                    .collect();
+                // DVFS tables arrive ascending (parse_dvfs sorts) — that is
+                // the input contract the ratio bounds rely on.
+                let mut freqs = freqs;
+                freqs.sort_unstable();
+                let freqs: Vec<Mhz> = freqs.into_iter().map(Mhz).collect();
+                let (f, u, a) = freq_from_residency(&residencies, &freqs);
+                prop_assert!((0.0..=1.0 + 1e-6).contains(&a.0));
+                prop_assert!((0.0..=1.0 + 1e-6).contains(&u.0));
+                prop_assert!(f.0 < 10_000);
+            }
+        }
     }
 }

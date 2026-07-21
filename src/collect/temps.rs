@@ -649,4 +649,77 @@ mod tests {
         assert!(natural_key("Die 2") < natural_key("Die 10"));
         assert!(natural_key("P-Core 9") < natural_key("P-Core 12"));
     }
+
+    use super::{
+        CachedSensor, SensorCacheFile, cache_fingerprint_matches, cache_is_trustworthy,
+        classify_smc, classify_smc_family, plausible_for, pretty_ordinal,
+    };
+
+    #[test]
+    fn smc_chassis_and_family_classification() {
+        assert_eq!(
+            classify_smc("TaLP"),
+            Some((SensorGroup::Airflow, "Airflow Left"))
+        );
+        assert_eq!(classify_smc("Ts1P"), Some((SensorGroup::Other, "Trackpad")));
+        assert_eq!(classify_smc("Txxx"), None);
+        assert_eq!(classify_smc_family("Te05"), Some(SensorGroup::CpuECore));
+        assert_eq!(classify_smc_family("Tf44"), Some(SensorGroup::CpuPCore));
+        assert_eq!(classify_smc_family("Tp01"), Some(SensorGroup::CpuPCore));
+        assert_eq!(classify_smc_family("Tg0D"), Some(SensorGroup::Gpu));
+        assert_eq!(classify_smc_family("TW0P"), None);
+        assert_eq!(classify_smc_family("T"), None, "short keys never panic");
+    }
+
+    #[test]
+    fn ordinals_prettify() {
+        assert_eq!(
+            pretty_ordinal("pACC MTR Temp Sensor12", "P-Core"),
+            "P-Core 12"
+        );
+        assert_eq!(pretty_ordinal("SOC MTR Temp Sensor", "SoC"), "SoC");
+    }
+
+    #[test]
+    fn plausibility_bands_by_group() {
+        // Die sensors sit in a tighter band than chassis sensors.
+        assert!(plausible_for(SensorGroup::CpuPCore, 95.0));
+        assert!(!plausible_for(SensorGroup::CpuPCore, 5.0));
+        assert!(!plausible_for(SensorGroup::Gpu, 130.0));
+        assert!(plausible_for(SensorGroup::Battery, 5.0));
+        assert!(!plausible_for(SensorGroup::Battery, 0.5));
+    }
+
+    #[test]
+    fn sensor_cache_gating() {
+        let file = |chip: &str, macos: &str, keys: u32, n: usize| SensorCacheFile {
+            chip: chip.into(),
+            macos: macos.into(),
+            key_count: keys,
+            sensors: (0..n)
+                .map(|i| CachedSensor {
+                    key: format!("T{i:03}"),
+                    group: SensorGroup::Soc,
+                    label: format!("S{i}"),
+                })
+                .collect(),
+        };
+        let c = file("Apple M3 Max", "26.5", 4242, 8);
+        assert!(cache_fingerprint_matches(&c, "Apple M3 Max", "26.5", 4242));
+        // Any drifted fingerprint component forces a fresh discovery scan.
+        assert!(!cache_fingerprint_matches(&c, "Apple M4", "26.5", 4242));
+        assert!(!cache_fingerprint_matches(&c, "Apple M3 Max", "26.6", 4242));
+        assert!(!cache_fingerprint_matches(&c, "Apple M3 Max", "26.5", 4243));
+        let empty = file("Apple M3 Max", "26.5", 4242, 0);
+        assert!(!cache_fingerprint_matches(
+            &empty,
+            "Apple M3 Max",
+            "26.5",
+            4242
+        ));
+        // A mostly-dead cache (under 3/4 of keys re-probing OK) is distrusted.
+        assert!(cache_is_trustworthy(6, 8));
+        assert!(!cache_is_trustworthy(5, 8));
+        assert!(cache_is_trustworthy(3, 4));
+    }
 }

@@ -715,4 +715,173 @@ mod tests {
         assert_eq!(map[&1], (150, 15));
         assert_eq!(map[&2], (7, 3));
     }
+
+    // ---- state fold (the poll_once core, minus the socket) ---------------
+
+    use super::{GC_POLLS, apply_update, build_sample, gc_stale};
+    use std::collections::HashMap;
+    use std::time::{Duration, Instant};
+
+    fn upd(srcref: u64, rx: u64, tx: u64, desc: Option<wire::DescInfo>) -> wire::SrcUpdate {
+        wire::SrcUpdate {
+            srcref,
+            counts: wire::Counts {
+                rx_bytes: rx,
+                tx_bytes: tx,
+                retx_bytes: 10,
+                avg_rtt_us: 42_000,
+                var_rtt_us: 0,
+            },
+            desc,
+        }
+    }
+
+    fn desc(pid: i32, udp: bool) -> wire::DescInfo {
+        wire::DescInfo {
+            pid,
+            pname: "proc".into(),
+            local: "10.0.0.1:1".into(),
+            remote: "10.0.0.2:2".into(),
+            tcp_state: 4,
+            udp,
+        }
+    }
+
+    #[test]
+    fn flow_fold_ema_and_dt_gate() {
+        let mut states = HashMap::new();
+        let t0 = Instant::now();
+        apply_update(&mut states, upd(1, 0, 0, None), t0, 1);
+        assert!(states[&1].ema_rx.abs() < f64::EPSILON, "seed pass: no rate");
+        // One second, 1000 rx / 500 tx bytes → EMA moves 60% of the way.
+        apply_update(
+            &mut states,
+            upd(1, 1000, 500, None),
+            t0 + Duration::from_secs(1),
+            2,
+        );
+        assert!((states[&1].ema_rx - 600.0).abs() < 1e-6);
+        assert!((states[&1].ema_tx - 300.0).abs() < 1e-6);
+        // A queued sweep 10 ms later folds counters WITHOUT a rate update —
+        // the dt gate stops a near-zero window from exploding the rate.
+        apply_update(
+            &mut states,
+            upd(1, 1400, 700, None),
+            t0 + Duration::from_millis(1010),
+            3,
+        );
+        assert!((states[&1].ema_rx - 600.0).abs() < 1e-6, "sub-50ms skipped");
+        assert_eq!(states[&1].prev.rx_bytes, 1400, "counters still fold");
+        // The next full window rates against the folded counters.
+        apply_update(
+            &mut states,
+            upd(1, 2400, 1200, None),
+            t0 + Duration::from_secs(2),
+            4,
+        );
+        assert!(
+            (states[&1].ema_rx - 840.0).abs() < 40.0,
+            "0.6·1000 + 0.4·600 ≈ 840, got {}",
+            states[&1].ema_rx
+        );
+    }
+
+    #[test]
+    fn flow_fold_keeps_descriptor_and_reseeds_after_removal() {
+        let mut states = HashMap::new();
+        let t0 = Instant::now();
+        apply_update(
+            &mut states,
+            upd(7, 5000, 5000, Some(desc(42, false))),
+            t0,
+            1,
+        );
+        // Sweeps without a descriptor keep the identity.
+        apply_update(
+            &mut states,
+            upd(7, 6000, 6000, None),
+            t0 + Duration::from_secs(1),
+            2,
+        );
+        assert_eq!(states[&7].desc.as_ref().unwrap().pid, 42);
+        // SRC_REMOVED then srcref reuse: fresh state, no rate carry-over.
+        states.remove(&7);
+        apply_update(
+            &mut states,
+            upd(7, 10, 10, Some(desc(43, true))),
+            t0 + Duration::from_secs(2),
+            3,
+        );
+        assert!(states[&7].ema_rx.abs() < f64::EPSILON);
+        assert_eq!(states[&7].desc.as_ref().unwrap().pid, 43);
+    }
+
+    #[test]
+    fn flow_gc_drops_only_stale_entries() {
+        let mut states = HashMap::new();
+        let t0 = Instant::now();
+        apply_update(&mut states, upd(1, 0, 0, None), t0, 1);
+        apply_update(&mut states, upd(2, 0, 0, None), t0, GC_POLLS + 1);
+        gc_stale(&mut states, GC_POLLS + 1);
+        assert!(!states.contains_key(&1), "unseen for GC_POLLS polls");
+        assert!(states.contains_key(&2));
+    }
+
+    #[test]
+    fn flow_sample_orders_hides_and_derives() {
+        let mut states = HashMap::new();
+        let t0 = Instant::now();
+        let t1 = t0 + Duration::from_secs(1);
+        // A slow TCP flow, a fast UDP flow, and a source never described.
+        apply_update(&mut states, upd(1, 0, 0, Some(desc(10, false))), t0, 1);
+        apply_update(&mut states, upd(1, 10_000, 2_000, None), t1, 2);
+        apply_update(&mut states, upd(2, 0, 0, Some(desc(20, true))), t0, 1);
+        apply_update(&mut states, upd(2, 100_000, 4_000, None), t1, 2);
+        apply_update(&mut states, upd(3, 0, 0, None), t0, 1);
+
+        let s = build_sample(&states);
+        assert_eq!(s.count, 3, "count includes undescribed sources");
+        assert_eq!(s.flows.len(), 2, "only described flows render");
+        assert_eq!(s.flows[0].pid, 20, "most active first");
+        // TCP derives srtt (µs → ms) and retransmit share; UDP gets neither.
+        let tcp = s.flows.iter().find(|f| !f.udp).unwrap();
+        assert_eq!(tcp.state, "ESTAB");
+        assert!((tcp.srtt_ms.unwrap() - 42.0).abs() < 1e-3);
+        assert!(
+            (tcp.retx_pct.unwrap() - 0.5).abs() < 1e-3,
+            "10 of 2000 bytes"
+        );
+        let udp = s.flows.iter().find(|f| f.udp).unwrap();
+        assert_eq!(udp.state, "UDP");
+        assert!(udp.srtt_ms.is_none() && udp.retx_pct.is_none());
+        // Footer totals equal the per-pid aggregation.
+        assert_eq!(
+            s.rx_total_rate,
+            s.by_pid.values().map(|&(r, _)| r).sum::<u64>()
+        );
+    }
+
+    mod prop {
+        use super::{canned_src_update, wire};
+        use proptest::prelude::*;
+
+        proptest! {
+            // The kernel owns this wire format and has changed it across
+            // releases — every parser must be total over arbitrary bytes.
+            #[test]
+            fn wire_parsers_never_panic(bytes in proptest::collection::vec(any::<u8>(), 0..640)) {
+                let _ = wire::parse_hdr(&bytes);
+                let _ = wire::parse_src_update(&bytes);
+                wire::for_each_msg(&bytes, |_, _| {});
+            }
+
+            #[test]
+            fn wire_bitflips_of_real_messages_never_panic(idx in 0usize..496, bit in 0u32..8) {
+                let mut m = canned_src_update(false);
+                m[idx] ^= 1 << bit;
+                let _ = wire::parse_src_update(&m);
+                wire::for_each_msg(&m, |_, _| {});
+            }
+        }
+    }
 }
