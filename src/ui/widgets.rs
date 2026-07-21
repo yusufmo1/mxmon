@@ -375,4 +375,94 @@ mod tests {
         let buf = render(&[100.0; 8], 100.0);
         assert_eq!(buf[(0, 0)].symbol(), "⣿");
     }
+
+    use super::{HitMap, Meter, Target, core_bar, fill_bg};
+
+    #[test]
+    fn hitmap_topmost_wins_and_clears() {
+        let mut hits = HitMap::default();
+        hits.push(Rect::new(0, 0, 10, 10), Target::ProcList);
+        hits.push(Rect::new(2, 2, 4, 1), Target::ProcRow(3));
+        assert_eq!(hits.hit(3, 2), Some(Target::ProcRow(3)), "later push wins");
+        assert_eq!(hits.hit(1, 1), Some(Target::ProcList));
+        assert_eq!(hits.hit(50, 50), None);
+        hits.clear();
+        assert_eq!(hits.hit(3, 2), None);
+    }
+
+    #[test]
+    fn meter_is_total_even_off_buffer() {
+        // An area wider than the buffer (squeezed modal) must clamp, not
+        // panic — render is total.
+        let screen = Rect::new(0, 0, 4, 1);
+        let mut buf = Buffer::empty(screen);
+        Meter {
+            ratio: 1.0,
+            gradient: Gradient::Solid(Color::Red),
+            track: Color::Gray,
+        }
+        .render(Rect::new(2, 0, 40, 1), &mut buf);
+        assert_eq!(buf[(3, 0)].symbol(), "█");
+        assert_eq!(
+            buf[(0, 0)].symbol(),
+            " ",
+            "cells outside the area untouched"
+        );
+        // Hostile ratios (overload, sign glitches, NaN) never panic.
+        for ratio in [0.0, -3.0, 7.0, f32::NAN] {
+            let mut buf = Buffer::empty(screen);
+            Meter {
+                ratio,
+                gradient: Gradient::Solid(Color::Red),
+                track: Color::Gray,
+            }
+            .render(screen, &mut buf);
+        }
+        // An idle meter keeps its groove instead of vanishing.
+        let mut buf = Buffer::empty(screen);
+        Meter {
+            ratio: 0.0,
+            gradient: Gradient::Solid(Color::Red),
+            track: Color::Gray,
+        }
+        .render(screen, &mut buf);
+        assert_eq!(buf[(0, 0)].symbol(), "▏");
+    }
+
+    #[test]
+    fn core_bar_clamps_and_scales() {
+        let g = || Gradient::Solid(Color::Red);
+        assert_eq!(core_bar(0.0, g()).0, ' ');
+        assert_eq!(core_bar(1.0, g()).0, '█');
+        assert_eq!(core_bar(55.0, g()).0, '█', "overload clamps");
+        assert_eq!(core_bar(-9.0, g()).0, ' ');
+        let _ = core_bar(f32::NAN, g()); // total
+    }
+
+    #[test]
+    fn fill_bg_paints_every_cell() {
+        let area = Rect::new(0, 0, 3, 2);
+        let mut buf = Buffer::empty(area);
+        fill_bg(area, &mut buf, Color::Blue);
+        assert!(buf.content.iter().all(|c| c.bg == Color::Blue));
+    }
+
+    mod prop {
+        use super::super::graph_dots;
+        use proptest::prelude::*;
+
+        proptest! {
+            // Ring data reaches graphs unfiltered — any float must map into
+            // the dot budget (this is what keeps panels panic-free).
+            #[test]
+            fn graph_dots_stays_in_budget(
+                v in proptest::num::f32::ANY,
+                max in proptest::num::f32::ANY,
+                budget in 1i64..=256,
+            ) {
+                let d = graph_dots(Some(v), max, budget);
+                prop_assert!((0..=budget).contains(&d));
+            }
+        }
+    }
 }

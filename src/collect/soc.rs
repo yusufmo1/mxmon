@@ -103,3 +103,52 @@ pub fn load() -> io::Result<SocInfo> {
         gpu_freqs,
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::parse_dvfs;
+    use crate::units::Mhz;
+
+    fn blob(pairs: &[(u32, u32)]) -> Vec<u8> {
+        let mut v = Vec::new();
+        for &(freq, volt) in pairs {
+            v.extend_from_slice(&freq.to_le_bytes());
+            v.extend_from_slice(&volt.to_le_bytes());
+        }
+        v
+    }
+
+    #[test]
+    fn dvfs_hz_scale_m1_to_m3() {
+        // M1–M3 publish Hz; zero rows are placeholder slots; output is sorted.
+        let b = blob(&[(2_064_000_000, 5), (0, 0), (600_000_000, 3)]);
+        assert_eq!(parse_dvfs(&b), vec![Mhz(600), Mhz(2064)]);
+    }
+
+    #[test]
+    fn dvfs_khz_scale_m4_plus() {
+        // M4+ publish kHz — detected by magnitude, not chip name.
+        let b = blob(&[(4_512_000, 7), (1_080_000, 2)]);
+        assert_eq!(parse_dvfs(&b), vec![Mhz(1080), Mhz(4512)]);
+    }
+
+    #[test]
+    fn dvfs_tolerates_empty_and_truncated_blobs() {
+        assert!(parse_dvfs(&[]).is_empty());
+        let mut b = blob(&[(600_000_000, 1)]);
+        b.extend_from_slice(&[1, 2, 3]); // partial trailing pair is ignored
+        assert_eq!(parse_dvfs(&b), vec![Mhz(600)]);
+    }
+
+    mod prop {
+        use proptest::prelude::*;
+
+        proptest! {
+            #[test]
+            fn dvfs_total_and_sorted(bytes in proptest::collection::vec(any::<u8>(), 0..256)) {
+                let freqs = super::super::parse_dvfs(&bytes);
+                prop_assert!(freqs.windows(2).all(|w| w[0] <= w[1]));
+            }
+        }
+    }
+}

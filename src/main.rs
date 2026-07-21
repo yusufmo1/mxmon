@@ -594,3 +594,44 @@ fn json_snapshot(soc: &collect::soc::SocInfo) -> color_eyre::Result<()> {
     println!("{}", serde_json::to_string_pretty(&json)?);
     Ok(())
 }
+
+#[cfg(test)]
+mod cli_tests {
+    use super::Cli;
+    use clap::CommandFactory as _;
+    use clap::Parser as _;
+
+    #[test]
+    fn cli_definition_is_wellformed() {
+        Cli::command().debug_assert();
+    }
+
+    #[test]
+    fn cli_parses_the_flag_matrix() {
+        let c = Cli::try_parse_from(["mxmon", "--json", "--interval", "500", "--theme", "neon"])
+            .expect("valid invocation");
+        assert!(c.json);
+        assert_eq!(c.interval, Some(500));
+        assert_eq!(c.theme.as_deref(), Some("neon"));
+        // Hidden debug flags stay reachable.
+        assert!(
+            Cli::try_parse_from(["mxmon", "--smc-debug"])
+                .unwrap()
+                .smc_debug
+        );
+        assert!(
+            Cli::try_parse_from(["mxmon", "--flows-debug"])
+                .unwrap()
+                .flows_debug
+        );
+        assert!(
+            Cli::try_parse_from(["mxmon", "--net-debug"])
+                .unwrap()
+                .net_debug
+        );
+        assert!(Cli::try_parse_from(["mxmon", "--bench"]).unwrap().bench);
+        // Malformed input is rejected, not defaulted.
+        assert!(Cli::try_parse_from(["mxmon", "--interval", "abc"]).is_err());
+        assert!(Cli::try_parse_from(["mxmon", "--no-such-flag"]).is_err());
+    }
+}

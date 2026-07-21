@@ -138,4 +138,22 @@ mod tests {
         assert_eq!(format!("{:>5}", Bytes(45 * Bytes::MIB)), "  45M");
         assert_eq!(format!("{:<5}|", Bytes(120)), "120B |");
     }
+
+    mod prop {
+        use super::super::*;
+        use proptest::prelude::*;
+
+        proptest! {
+            // Display is total — non-finite telemetry glitches must format,
+            // never panic, and integer-unit widths stay column-friendly.
+            #[test]
+            fn displays_never_panic(v in proptest::num::f32::ANY, u in any::<u64>(), m in any::<u32>()) {
+                let _ = Watts(v).to_string();
+                let _ = Celsius(v).to_string();
+                let _ = Ratio(v).to_string();
+                prop_assert!(!Bytes(u).to_string().is_empty());
+                prop_assert!(Mhz(m).to_string().len() <= 13);
+            }
+        }
+    }
 }

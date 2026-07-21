@@ -26,6 +26,9 @@ pub struct Config {
     /// the table stays a single comfortable pane and the layout hands the
     /// freed width to the metric panels instead.
     pub procs_panes: u16,
+    /// Draw the chassis blueprint (fans, SoC package, battery, …) beneath
+    /// the thermal map's isotherm contours.
+    pub schematic: bool,
 }
 
 impl Default for Config {
@@ -37,6 +40,7 @@ impl Default for Config {
             ping: true,
             ping_host: "1.1.1.1".into(),
             procs_panes: 1,
+            schematic: true,
         }
     }
 }
@@ -69,7 +73,6 @@ thread_local! {
 /// Point this thread's config dir at `path` until the guard drops (tests).
 #[cfg(test)]
 #[must_use]
-#[allow(dead_code, reason = "consumed by the event/config test modules")]
 pub fn test_dir(path: PathBuf) -> TestDirGuard {
     TEST_DIR.with(|d| *d.borrow_mut() = Some(path));
     TestDirGuard
@@ -77,7 +80,6 @@ pub fn test_dir(path: PathBuf) -> TestDirGuard {
 
 /// Clears the per-thread config-dir override on drop.
 #[cfg(test)]
-#[allow(dead_code, reason = "consumed by the event/config test modules")]
 pub struct TestDirGuard;
 
 #[cfg(test)]
@@ -111,5 +113,71 @@ impl Config {
         if let Ok(s) = toml::to_string_pretty(self) {
             let _ = std::fs::write(path, s);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Config, dir, test_dir};
+    use crate::collect::sampler::FAST_MS_DEFAULT;
+
+    #[test]
+    fn without_override_tests_see_no_config_dir() {
+        // The hermetic guarantee itself: no override → no path → load yields
+        // defaults and save has nowhere to write.
+        assert!(dir().is_none());
+        let c = Config::load();
+        assert_eq!(c.theme, "midnight");
+        assert_eq!(c.interval_ms, FAST_MS_DEFAULT);
+        c.save(); // must be a silent no-op
+    }
+
+    #[test]
+    fn load_clamps_and_tolerates_unknown_keys() {
+        let tmp = tempfile::tempdir().unwrap();
+        let _guard = test_dir(tmp.path().to_path_buf());
+        std::fs::write(
+            tmp.path().join("config.toml"),
+            "interval_ms = 5\nprocs_panes = 99\ntheme = \"neon\"\nfuture_option = true\n",
+        )
+        .unwrap();
+        let c = Config::load();
+        assert_eq!(c.interval_ms, 100, "clamped up to FAST_MS_MIN");
+        assert_eq!(c.procs_panes, 4, "clamped down to the pane cap");
+        assert_eq!(c.theme, "neon");
+        assert!(c.ping, "absent keys keep their defaults");
+    }
+
+    #[test]
+    fn load_falls_back_on_missing_or_corrupt_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let _guard = test_dir(tmp.path().to_path_buf());
+        assert_eq!(Config::load().interval_ms, FAST_MS_DEFAULT, "no file yet");
+        std::fs::write(tmp.path().join("config.toml"), "not = [valid").unwrap();
+        assert_eq!(Config::load().theme, "midnight", "corrupt file → defaults");
+    }
+
+    #[test]
+    fn save_round_trips_every_field() {
+        let tmp = tempfile::tempdir().unwrap();
+        let _guard = test_dir(tmp.path().to_path_buf());
+        let c = Config {
+            theme: "gruvbox".into(),
+            interval_ms: 750,
+            octant_graphs: true,
+            ping: false,
+            ping_host: "9.9.9.9".into(),
+            procs_panes: 3,
+            schematic: false,
+        };
+        c.save();
+        let l = Config::load();
+        assert_eq!(l.theme, "gruvbox");
+        assert_eq!(l.interval_ms, 750);
+        assert!(l.octant_graphs);
+        assert!(!l.ping);
+        assert_eq!(l.ping_host, "9.9.9.9");
+        assert_eq!(l.procs_panes, 3);
+        assert!(!l.schematic);
     }
 }

@@ -181,3 +181,15 @@ impl Drop for Smc {
         unsafe { IOServiceClose(self.conn) };
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{decode_fourcc, encode_key};
+
+    #[test]
+    fn fourcc_roundtrip() {
+        assert_eq!(encode_key("TC0P"), 0x5443_3050);
+        assert_eq!(decode_fourcc(0x5443_3050), "TC0P");
+        assert_eq!(decode_fourcc(encode_key("#KEY")), "#KEY");
+    }
+}
