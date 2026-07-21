@@ -1,0 +1,10 @@
+# release-plz manages the crates.io side: version bumps, CHANGELOG, `cargo
+# publish`, and the git tag. `dist` owns the GitHub Release + binaries + Homebrew
+# formula, so we disable release-plz's own GitHub Release here.
+[workspace]
+# Publish to crates.io (default; explicit for clarity).
+publish = true
+# Do NOT create a GitHub Release — dist does that on the tag release-plz pushes.
+git_release_enable = false
+# git_tag_enable stays true (default): the pushed `v{version}` tag is what
+# triggers dist's release workflow.

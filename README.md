@@ -10,7 +10,7 @@ The **Mx** **mon**itor — a blazing-fast, **sudoless** system monitor for Apple
 ![no sudo](https://img.shields.io/badge/sudo-not%20required-22c55e?style=for-the-badge&labelColor=0b0f17)
 [![MIT](https://img.shields.io/badge/license-MIT-a855f7?style=for-the-badge&labelColor=0b0f17)](LICENSE)
 
-<img src="docs/overview-neon.png" width="880" alt="mxmon overview — CPU, power, GPU, memory, network, battery and thermal panels in a neon terminal UI">
+<img src="https://raw.githubusercontent.com/yusufmo1/mxmon/main/docs/overview-neon.png" width="880" alt="mxmon overview — CPU, power, GPU, memory, network, battery and thermal panels in a neon terminal UI">
 
 [Features](#features) · [Install](#install) · [Keys](#keys) · [How it works](#how-it-works) · [Themes](#themes)
 
@@ -34,7 +34,7 @@ The **Mx** **mon**itor — a blazing-fast, **sudoless** system monitor for Apple
 
 <div align="center">
 
-<img src="docs/thermal-view.png" width="880" alt="Full-screen chassis thermogram with named sensor list">
+<img src="https://raw.githubusercontent.com/yusufmo1/mxmon/main/docs/thermal-view.png" width="880" alt="Full-screen chassis thermogram with named sensor list">
 
 <sub>Press <kbd>3</kbd> for the full-screen <b>thermogram</b> — 50+ sensors interpolated across a scale model of the chassis and eased between samples, with a TG-Pro-style named sensor list.</sub>
 
@@ -101,7 +101,7 @@ cargo build --release && ./target/release/mxmon
 
 <div align="center">
 
-<img src="docs/narrow-layout.png" width="380" alt="mxmon reflowed into a narrow terminal">
+<img src="https://raw.githubusercontent.com/yusufmo1/mxmon/main/docs/narrow-layout.png" width="380" alt="mxmon reflowed into a narrow terminal">
 
 <sub>Reflows cleanly all the way down to narrow terminals.</sub>
 
