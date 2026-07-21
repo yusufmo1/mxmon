@@ -187,3 +187,16 @@ impl DiskCollector {
         Ok(out)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::avg_latency_us;
+
+    #[test]
+    fn disk_latency_derivation() {
+        // 2 ms of device time across 4 ops = 500 µs each.
+        assert_eq!(avg_latency_us(2_000_000, 4), Some(500.0));
+        // An idle window has no latency, not zero latency.
+        assert_eq!(avg_latency_us(0, 0), None);
+    }
+}

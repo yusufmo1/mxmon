@@ -227,3 +227,51 @@ fn aggregate(mut cores: Vec<(u64, Mhz, Ratio)>) -> ClusterSample {
         cores: cores.into_iter().map(|(_, f, u)| (f, u)).collect(),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{freq_from_residency, parse_core_channel};
+    use crate::units::Mhz;
+
+    #[test]
+    fn freq_from_residency_weighted_mean() {
+        let freqs = [Mhz(1000), Mhz(2000), Mhz(3000)];
+        // One leading idle bucket (as on M3: IDLE/DOWN), then residencies.
+        let residencies = vec![
+            ("IDLE".to_owned(), 100),
+            ("P1".to_owned(), 0),
+            ("P2".to_owned(), 100),
+            ("P3".to_owned(), 100),
+        ];
+        let (freq, usage, active) = freq_from_residency(&residencies, &freqs);
+        assert_eq!(freq, Mhz(2500)); // (2000+3000)/2 weighted
+        assert!((active.0 - 2.0 / 3.0).abs() < 1e-4);
+        // effective = max(2500,1000)*active / 3000
+        assert!((usage.0 - (2500.0 * (2.0 / 3.0)) / 3000.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn freq_from_residency_rejects_bad_shapes() {
+        let freqs = [Mhz(1000)];
+        // Residency array must be longer than the table.
+        let (f, u, a) = freq_from_residency(&[("IDLE".into(), 5)], &freqs);
+        assert_eq!((f, u.0, a.0), (Mhz(0), 0.0, 0.0));
+    }
+
+    #[test]
+    fn core_channel_parsing() {
+        let (kind, die, ord) = parse_core_channel("ECPU030").expect("parses");
+        assert_eq!(
+            (format!("{kind:?}"), die, ord),
+            ("Efficiency".into(), 0, 30)
+        );
+        let (kind, die, ord) = parse_core_channel("DIE_1_PCPU040").expect("parses");
+        assert_eq!(
+            (format!("{kind:?}"), die, ord),
+            ("Performance".into(), 1, 40)
+        );
+        // M5 rename: MCPU is an efficiency-tier channel.
+        assert!(parse_core_channel("MCPU010").is_some());
+        assert!(parse_core_channel("GPUPH").is_none());
+    }
+}

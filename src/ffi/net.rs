@@ -288,3 +288,17 @@ pub fn ipv4_addresses() -> HashMap<String, String> {
     unsafe { libc::freeifaddrs(ifap) };
     out
 }
+
+#[cfg(test)]
+mod tests {
+    use super::mac_string;
+
+    #[test]
+    fn mac_formatting() {
+        assert_eq!(
+            mac_string(&[0xb4, 0xe9, 0xb8, 0x6d, 0x3b, 0xd6]),
+            "b4:e9:b8:6d:3b:d6"
+        );
+        assert_eq!(mac_string(&[0x00, 0x0a, 0xff]), "00:0a:ff");
+    }
+}

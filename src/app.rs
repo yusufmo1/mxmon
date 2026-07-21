@@ -419,3 +419,22 @@ impl App {
         self.selected = new as usize;
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::Ring;
+
+    #[test]
+    fn ring_windows_and_max() {
+        let mut r = Ring::new(4);
+        assert!(r.is_empty());
+        for v in [1.0, 2.0, 5.0, 3.0, 4.0] {
+            r.push(v);
+        }
+        // Capacity 4: the 1.0 fell off.
+        assert_eq!(r.last_n(10).collect::<Vec<_>>(), vec![2.0, 5.0, 3.0, 4.0]);
+        assert_eq!(r.last_n(2).collect::<Vec<_>>(), vec![3.0, 4.0]);
+        assert!((r.max() - 5.0).abs() < f32::EPSILON);
+        assert_eq!(r.latest(), Some(4.0));
+    }
+}

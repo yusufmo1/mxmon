@@ -154,3 +154,32 @@ impl Drop for Pinger {
         unsafe { libc::close(self.fd) };
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{ECHO_REPLY, build_echo, checksum, parse_reply};
+
+    #[test]
+    fn icmp_checksum_and_echo_roundtrip() {
+        // RFC 1071's worked example.
+        assert_eq!(
+            checksum(&[0x00, 0x01, 0xf2, 0x03, 0xf4, 0xf5, 0xf6, 0xf7]),
+            0x220d
+        );
+        // A packet containing its own checksum sums to zero.
+        let pkt = build_echo(0xbeef, 7);
+        assert_eq!(checksum(&pkt), 0);
+        assert_eq!(parse_reply(&pkt), Some((8, 0xbeef, 7)));
+
+        // macOS dgram-ICMP hands receivers the whole IP packet — the parser
+        // must skip a leading IPv4 header (and cope with its absence).
+        let mut reply = pkt.to_vec();
+        reply[0] = ECHO_REPLY;
+        let mut framed = vec![0u8; 20];
+        framed[0] = 0x45; // v4, ihl 5
+        framed.extend_from_slice(&reply);
+        assert_eq!(parse_reply(&framed), Some((0, 0xbeef, 7)));
+        assert_eq!(parse_reply(&reply), Some((0, 0xbeef, 7)));
+        assert_eq!(parse_reply(&[0x45, 0x00]), None, "truncated");
+    }
+}

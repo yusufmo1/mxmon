@@ -104,3 +104,38 @@ impl fmt::Display for Bytes {
         f.pad(&s)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn unit_display_formats() {
+        assert_eq!(Watts(5.234).to_string(), "5.23W");
+        assert_eq!(Watts(28.91).to_string(), "28.9W");
+        assert_eq!(Watts(0.18).to_string(), "180mW");
+        assert_eq!(Watts(0.0084).to_string(), "8mW");
+        assert_eq!(Watts(0.9999).to_string(), "1.00W");
+        assert_eq!(Watts(1.5).to_string(), "1.50W");
+        assert_eq!(Mhz(618).to_string(), "618MHz");
+        assert_eq!(Mhz(3152).to_string(), "3.15GHz");
+        assert_eq!(Celsius(83.4).to_string(), "83°C");
+        assert_eq!(Ratio(0.503).to_string(), "50.3%");
+        assert_eq!(Bytes(912 * 1024).to_string(), "912K");
+        assert_eq!(Bytes(13_900_000_000).to_string(), "12.9G");
+        assert_eq!(Bytes(120).to_string(), "120B");
+    }
+
+    #[test]
+    fn unit_display_honors_width() {
+        // Panels rely on `{:>N}` padding for jitter-free columns — the Display
+        // impls must route through Formatter::pad, not raw write!.
+        assert_eq!(format!("{:>6}", Watts(0.18)), " 180mW");
+        assert_eq!(format!("{:>7}", Mhz(748)), " 748MHz");
+        assert_eq!(format!("{:>7}", Mhz(1770)), "1.77GHz");
+        assert_eq!(format!("{:>4}", Celsius(83.4)), "83°C");
+        assert_eq!(format!("{:>7}", Ratio(0.503)), "  50.3%");
+        assert_eq!(format!("{:>5}", Bytes(45 * Bytes::MIB)), "  45M");
+        assert_eq!(format!("{:<5}|", Bytes(120)), "120B |");
+    }
+}

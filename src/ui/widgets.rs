@@ -14,8 +14,9 @@ const V_EIGHTHS: [char; 9] = [' ', '▁', '▂', '▃', '▄', '▅', '▆', '�
 /// Eighth-width blocks for horizontal meters (index 0 = blank).
 const H_EIGHTHS: [char; 9] = [' ', '▏', '▎', '▍', '▌', '▋', '▊', '▉', '█'];
 
-/// Braille dot bits by (sub-column, dot-row top→bottom).
-const BRAILLE: [[u16; 4]; 2] = [[0x01, 0x02, 0x04, 0x40], [0x08, 0x10, 0x20, 0x80]];
+/// Braille dot bits by (sub-column, dot-row top→bottom). Shared with the
+/// schematic layer's dotted fan rings.
+pub(crate) const BRAILLE: [[u16; 4]; 2] = [[0x01, 0x02, 0x04, 0x40], [0x08, 0x10, 0x20, 0x80]];
 
 /// Filled area graph rendered in braille, newest data on the right, colored
 /// with a vertical gradient (btop-style). Idle or not-yet-filled columns
@@ -292,5 +293,86 @@ impl HitMap {
             .rev()
             .find(|(r, _)| r.contains(pos))
             .map(|&(_, t)| t)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{BrailleGraph, MirrorGraph, graph_dots};
+    use crate::ui::theme::Gradient;
+    use ratatui::buffer::Buffer;
+    use ratatui::layout::Rect;
+    use ratatui::style::Color;
+
+    #[test]
+    fn mirror_graph_dots_and_geometry() {
+        // Any nonzero value paints at least one dot; NaN and gaps paint none.
+        assert_eq!(graph_dots(Some(1.0), 1e9, 8), 1);
+        assert_eq!(graph_dots(Some(1e9), 1e9, 8), 8);
+        assert_eq!(graph_dots(Some(f32::NAN), 1e9, 8), 0);
+        assert_eq!(graph_dots(None, 1e9, 8), 0);
+
+        let area = Rect::new(0, 0, 4, 4); // 2 rows up, 2 rows down
+        let render = |tx: &[f32], rx: &[f32]| {
+            let mut buf = Buffer::empty(area);
+            MirrorGraph {
+                tx,
+                rx,
+                tx_max: 1e6,
+                rx_max: 1e6,
+                up: Color::Blue,
+                down: Color::Green,
+                baseline: Color::Gray,
+            }
+            .render(area, &mut buf);
+            buf
+        };
+
+        // Saturated upload fills the top half; idle download leaves the bottom
+        // empty — and vice versa (the mirror grows downward).
+        let full = vec![1e6; 8];
+        let buf = render(&full, &[]);
+        assert_eq!(buf[(0, 0)].symbol(), "⣿");
+        assert_eq!(buf[(3, 1)].symbol(), "⣿");
+        assert_eq!(buf[(0, 2)].symbol(), " ");
+        let buf = render(&[], &full);
+        assert_eq!(buf[(0, 2)].symbol(), "⣿");
+        assert_eq!(buf[(0, 0)].symbol(), " ", "upload half stays clear");
+        // Idle columns keep a dotted axis on the boundary row, in the
+        // baseline color — the graph never renders as a blank void.
+        let buf = render(&[], &[]);
+        assert_eq!(buf[(0, 1)].symbol(), "⣀");
+        assert_eq!(buf[(0, 1)].fg, Color::Gray);
+        // A tiny download hangs its minimum dot pair just below the axis.
+        let buf = render(&[], &[1.0; 8]);
+        assert_eq!(buf[(0, 2)].symbol(), "⠉");
+        assert_eq!(buf[(0, 2)].fg, Color::Green);
+    }
+
+    #[test]
+    fn braille_graph_baseline_and_min_dot() {
+        let area = Rect::new(0, 0, 4, 2);
+        let render = |data: &[f32], max: f32| {
+            let mut buf = Buffer::empty(area);
+            BrailleGraph {
+                data,
+                max,
+                gradient: Gradient::Solid(Color::Red),
+                baseline: Color::Gray,
+            }
+            .render(area, &mut buf);
+            buf
+        };
+        // No data yet: a dotted baseline, not a void.
+        let buf = render(&[], 100.0);
+        assert_eq!(buf[(0, 1)].symbol(), "⣀");
+        assert_eq!(buf[(3, 1)].fg, Color::Gray);
+        // A sliver of activity still lands one dot, in series color.
+        let buf = render(&[0.2; 8], 100.0);
+        assert_eq!(buf[(0, 1)].symbol(), "⣀");
+        assert_eq!(buf[(0, 1)].fg, Color::Red);
+        // Saturation fills the column.
+        let buf = render(&[100.0; 8], 100.0);
+        assert_eq!(buf[(0, 0)].symbol(), "⣿");
     }
 }
