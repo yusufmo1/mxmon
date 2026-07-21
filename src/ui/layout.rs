@@ -395,3 +395,96 @@ fn overview(
 }
 
 type PanelFn = fn(&mut ratatui::buffer::Buffer, Rect, &App, &Theme);
+
+/// Golden-frame snapshots: the fixture `App` rendered through the real
+/// `draw` entry point. Glyphs only (colors are covered by theme unit tests),
+/// so the snapshots are identical across truecolor and 256-color hosts.
+/// After an intentional redesign: `cargo insta review`.
+#[cfg(test)]
+mod tests {
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+
+    use super::{RenderState, draw};
+    use crate::app::{App, Modal, View};
+    use crate::testutil as tu;
+    use crate::ui::theme;
+    use crate::ui::widgets::HitMap;
+
+    /// One frame at `w`×`h`, right-trimmed, one line per row.
+    fn frame(app: &mut App, w: u16, h: u16) -> String {
+        let th = theme::by_name(&app.config.theme);
+        let mut term = Terminal::new(TestBackend::new(w, h)).expect("backend");
+        let mut hits = HitMap::default();
+        let mut rs = RenderState::default();
+        term.draw(|f| draw(f, app, &th, &mut hits, &mut rs))
+            .expect("draw");
+        let buf = term.backend().buffer().clone();
+        let mut out = String::new();
+        for y in buf.area.top()..buf.area.bottom() {
+            let line: String = (buf.area.left()..buf.area.right())
+                .map(|x| buf[(x, y)].symbol())
+                .collect();
+            out.push_str(line.trim_end());
+            out.push('\n');
+        }
+        out
+    }
+
+    fn snap(name: &str, app: &mut App, w: u16, h: u16) {
+        insta::with_settings!({
+            // The header clock is the one wall-clock artifact in a frame.
+            filters => vec![(r"\d{2}:\d{2}:\d{2}", "HH:MM:SS")],
+            omit_expression => true,
+            prepend_module_to_snapshot => false,
+        }, {
+            insta::assert_snapshot!(name, frame(app, w, h));
+        });
+    }
+
+    #[test]
+    fn views_render_stably() {
+        let mut app = tu::app();
+        for (view, tag) in [
+            (View::Overview, "overview"),
+            (View::Processes, "processes"),
+            (View::Thermal, "thermal"),
+            (View::Connections, "connections"),
+        ] {
+            app.view = view;
+            snap(&format!("{tag}_80x24"), &mut app, 80, 24);
+            snap(&format!("{tag}_160x45"), &mut app, 160, 45);
+        }
+        // The ≥300-column overview takes the single full-height row branch.
+        app.view = View::Overview;
+        snap("overview_320x60", &mut app, 320, 60);
+    }
+
+    #[test]
+    fn modals_render_stably() {
+        let mut app = tu::app();
+        app.view = View::Processes;
+        let pid = app.selected_row().map_or(0, |r| r.pid);
+        let name = app
+            .selected_row()
+            .map_or_else(String::new, |r| r.name.clone());
+        let modals: [(&str, Modal); 5] = [
+            ("help", Modal::Help),
+            ("sort", Modal::SortMenu { selected: 2 }),
+            ("settings", Modal::Settings { selected: 1 }),
+            (
+                "kill",
+                Modal::Kill {
+                    pid,
+                    name,
+                    selected: 1,
+                },
+            ),
+            ("details", Modal::Details { pid }),
+        ];
+        for (tag, modal) in modals {
+            app.modal = Some(modal);
+            snap(&format!("modal_{tag}_120x36"), &mut app, 120, 36);
+        }
+    }
+}
