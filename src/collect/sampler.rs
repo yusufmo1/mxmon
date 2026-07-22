@@ -143,8 +143,8 @@ fn metrics_loop(soc: SocInfo, ctl: &Control, tx: &Sender<Update>) {
     };
     crate::trace::mark("metrics: gpu ready");
 
-    let chip_name = soc.chip_name.clone();
-    let macos_version = soc.macos_version.clone();
+    // Power consumes the SocInfo; the temps thread reads its own clone.
+    let soc_temps = soc.clone();
     // The IOReport subscription (~60 ms) and SMC/HID discovery (~70 ms cached,
     // ~600 ms on the first-ever run) initialize in parallel while tick 0
     // paints the fast tier. Power takes its baseline in-thread so its first
@@ -157,7 +157,7 @@ fn metrics_loop(soc: SocInfo, ctl: &Control, tx: &Sender<Update>) {
             Ok(p)
         });
         let temps = s.spawn(|| {
-            let t = TempCollector::new(&chip_name, &macos_version);
+            let t = TempCollector::new(&soc_temps);
             crate::trace::mark("metrics: temps ready");
             t
         });

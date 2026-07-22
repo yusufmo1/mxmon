@@ -11,7 +11,7 @@ use crate::app::App;
 use crate::ui::theme::Theme;
 use crate::ui::widgets::MirrorGraph;
 
-use super::{chrome, line, line_right, split_bytes_per_sec, windowed_scale};
+use super::{chrome, chrome_with, line, line_right, split_bytes_per_sec, windowed_scale};
 
 /// Autoscale floor (1 MB/s): background chatter stays low instead of
 /// filling the graph, while a light trickle still lands its minimum dot.
@@ -28,39 +28,59 @@ fn fmt_lat(us: Option<f32>) -> String {
 }
 
 pub fn render(buf: &mut Buffer, area: Rect, app: &App, th: &Theme) {
-    let inner = chrome(buf, area, "DISK", th);
-    if inner.height == 0 {
-        return;
-    }
     let dim = Style::default().fg(th.dim);
     let bold = |c| Style::default().fg(c).add_modifier(Modifier::BOLD);
     let Some(d) = &app.fast.disk else {
+        let inner = chrome(buf, area, "DISK", th);
         line(buf, inner, 0, vec![Span::styled("sampling…", dim)]);
         return;
     };
 
-    // Fixed-width values ("999.9" worst case) so the W half, the Σ chip and
-    // the graph edge never shift as rates cross unit boundaries. Squeezed
-    // panels drop the value/unit gap: 25 cells spacious, 23 tight.
-    let gap = if inner.width < 26 { "" } else { " " };
+    // Headline — R/W rates, promoted into the title bar. Fixed-width values
+    // ("999.9" worst case) so the border resume point never shifts as rates
+    // cross unit boundaries; squeezed panels drop the units entirely.
     let (rv, ru) = split_bytes_per_sec(d.read_per_sec.0);
     let (wv, wu) = split_bytes_per_sec(d.write_per_sec.0);
-    line(
-        buf,
-        inner,
-        0,
-        vec![
-            Span::styled("R ", bold(th.accent)),
-            Span::styled(format!("{rv:>5}"), bold(th.accent)),
-            Span::styled(format!("{gap}{ru:<4}"), dim),
-            Span::styled(" W ", bold(th.warn)),
-            Span::styled(format!("{wv:>5}"), bold(th.warn)),
-            Span::styled(format!("{gap}{wu:<4}"), dim),
-        ],
-    );
-    // Session totals fit only on roomier panels — the rates row is a fixed
-    // 25 cells, the Σ suffix ~13.
-    if inner.width >= 38 {
+    let roomy = area.width >= 42;
+    let mut headline = vec![
+        Span::styled("R ", bold(th.accent)),
+        Span::styled(format!("{rv:>5}"), bold(th.accent)),
+    ];
+    if roomy {
+        headline.push(Span::styled(format!(" {ru:<4}"), dim));
+    }
+    headline.push(Span::styled(" W ", bold(th.warn)));
+    headline.push(Span::styled(format!("{wv:>5}"), bold(th.warn)));
+    if roomy {
+        headline.push(Span::styled(format!(" {wu}"), dim));
+    }
+    let inner = chrome_with(buf, area, "DISK", headline, th);
+    if inner.height == 0 {
+        return;
+    }
+
+    // Row 0 — latency + IOPS left, session totals right (roomier panels
+    // only: lat is 13 cells, "  iops " + two padded counts 16 more, Σ ~13).
+    let mut spans = vec![
+        Span::styled("lat ", dim),
+        Span::styled(
+            format!(
+                "{:>4}/{:>4}",
+                fmt_lat(d.read_lat_us),
+                fmt_lat(d.write_lat_us)
+            ),
+            Style::default().fg(th.text),
+        ),
+    ];
+    if inner.width >= 30 {
+        spans.push(Span::styled("  iops ", dim));
+        spans.push(Span::styled(
+            format!("{:>4}/{:>4}", d.read_iops, d.write_iops),
+            Style::default().fg(th.text),
+        ));
+    }
+    line(buf, inner, 0, spans);
+    if inner.width >= 46 {
         line_right(
             buf,
             inner,
@@ -75,33 +95,10 @@ pub fn render(buf: &mut Buffer, area: Rect, app: &App, th: &Theme) {
         );
     }
 
-    if inner.height >= 2 {
-        let mut spans = vec![
-            Span::styled("lat ", dim),
-            Span::styled(
-                format!(
-                    "{:>4}/{:>4}",
-                    fmt_lat(d.read_lat_us),
-                    fmt_lat(d.write_lat_us)
-                ),
-                Style::default().fg(th.text),
-            ),
-        ];
-        // lat is 13 cells, "  iops " + two padded counts is 16 more.
-        if inner.width >= 30 {
-            spans.push(Span::styled("  iops ", dim));
-            spans.push(Span::styled(
-                format!("{:>4}/{:>4}", d.read_iops, d.write_iops),
-                Style::default().fg(th.text),
-            ));
-        }
-        line(buf, inner, 1, spans);
-    }
-
     // Mirrored history: writes grow up (outbound, like network upload),
     // reads hang down, each side autoscaled to its visible window.
-    if inner.height > 2 {
-        let graph = Rect::new(inner.x, inner.y + 2, inner.width, inner.height - 2);
+    if inner.height > 1 {
+        let graph = Rect::new(inner.x, inner.y + 1, inner.width, inner.height - 1);
         if graph.height >= 2 {
             let slots = graph.width as usize * 2;
             let wr: Vec<f32> = app.hist.disk_wr.last_n(slots).collect();

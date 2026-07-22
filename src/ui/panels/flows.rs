@@ -13,7 +13,7 @@ use crate::ui::layout::RenderState;
 use crate::ui::theme::Theme;
 use crate::ui::widgets::{HitMap, Target};
 
-use super::{chrome, format_bits_per_sec, line, split_bits_per_sec};
+use super::{chrome_with, format_bits_per_sec, line, split_bits_per_sec};
 
 /// Base column widths; the identity columns absorb spare width so wide
 /// terminals show full IPv6 endpoints instead of a dead right margin.
@@ -46,11 +46,18 @@ pub fn render(
     let f = &app.flows;
     let (rv, ru) = split_bits_per_sec(f.rx_total_rate);
     let (tv, tu) = split_bits_per_sec(f.tx_total_rate);
-    let title = format!(
-        "CONNECTIONS {} · Σ↓ {rv:>5} {ru} · Σ↑ {tv:>5} {tu}",
-        f.count
-    );
-    let inner = chrome(buf, area, &title, th);
+    let dim = Style::default().fg(th.dim);
+    let bold = |c| Style::default().fg(c).add_modifier(Modifier::BOLD);
+    let headline = vec![
+        Span::styled(f.count.to_string(), bold(th.text)),
+        Span::styled(" · Σ↓ ", dim),
+        Span::styled(format!("{rv:>5}"), bold(th.net_rx)),
+        Span::styled(format!(" {ru}"), dim),
+        Span::styled(" · Σ↑ ", dim),
+        Span::styled(format!("{tv:>5}"), bold(th.net_tx)),
+        Span::styled(format!(" {tu}"), dim),
+    ];
+    let inner = chrome_with(buf, area, "CONNECTIONS", headline, th);
     if inner.height < 2 {
         return;
     }
@@ -139,7 +146,18 @@ pub fn render(
         .enumerate()
     {
         let y = body.y + i as u16;
+        // Row targets carry the absolute flow index; a click opens the
+        // owning process's details. Registered after the list body so the
+        // rows win the overlap, and hover tints the row like the tables.
+        let abs = rs.flows_scroll + i;
+        hits.push(Rect::new(body.x, y, body.width, 1), Target::FlowRow(abs));
+        let hovered = app.hover == Some(Target::FlowRow(abs));
         let active = flow.rx_rate.0 + flow.tx_rate.0 > 0;
+        if hovered {
+            for x in body.left()..body.right() {
+                buf[(x, y)].set_style(Style::default().bg(th.panel_bg));
+            }
+        }
         let base = if active {
             Style::default().fg(th.text)
         } else {

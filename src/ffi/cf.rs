@@ -11,7 +11,8 @@ use core_foundation::base::{CFRelease, CFTypeRef, kCFAllocatorDefault, kCFAlloca
 use core_foundation::data::{CFDataGetBytePtr, CFDataGetLength, CFDataRef};
 use core_foundation::dictionary::{CFDictionaryGetValue, CFDictionaryRef, CFMutableDictionaryRef};
 use core_foundation::string::{
-    CFStringCreateWithBytesNoCopy, CFStringGetCString, CFStringRef, kCFStringEncodingUTF8,
+    CFStringCreateWithBytes, CFStringCreateWithBytesNoCopy, CFStringGetCString, CFStringRef,
+    kCFStringEncodingUTF8,
 };
 
 /// An owned CoreFoundation object, released on drop.
@@ -58,6 +59,22 @@ pub fn cfstr(s: &'static str) -> CfOwned {
             kCFStringEncodingUTF8,
             0,
             kCFAllocatorNull,
+        )
+    };
+    unsafe { CfOwned::from_create(ptr.cast()) }.expect("CFString allocation cannot fail")
+}
+
+/// [`cfstr`] for runtime-built keys (the M5+ pmgr table names resolved from
+/// `acc-clusters`): the bytes are copied into the CFString, so any lifetime
+/// works. Prefer [`cfstr`] for literal keys — it skips the copy.
+pub fn cfstr_copy(s: &str) -> CfOwned {
+    let ptr = unsafe {
+        CFStringCreateWithBytes(
+            kCFAllocatorDefault,
+            s.as_ptr(),
+            s.len() as isize,
+            kCFStringEncodingUTF8,
+            0,
         )
     };
     unsafe { CfOwned::from_create(ptr.cast()) }.expect("CFString allocation cannot fail")

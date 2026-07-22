@@ -9,49 +9,46 @@ use ratatui::text::Span;
 
 use crate::app::App;
 use crate::ui::theme::Theme;
-use crate::ui::widgets::{BrailleGraph, Meter};
+use crate::ui::widgets::{LineGraph, Meter, axis_window};
+use crate::units::Celsius;
 
-use super::{chrome, line, line_right};
+use super::{chrome, chrome_with, line, line_right};
 
 pub fn render(buf: &mut Buffer, area: Rect, app: &App, th: &Theme) {
-    let inner = chrome(buf, area, "TEMPS · FANS", th);
-    if inner.height == 0 {
-        return;
-    }
     let dim = Style::default().fg(th.dim);
     let bold = |c| Style::default().fg(c).add_modifier(Modifier::BOLD);
     let Some(t) = &app.temps else {
+        let inner = chrome(buf, area, "TEMPS · FANS", th);
         line(buf, inner, 0, vec![Span::styled("sampling…", dim)]);
         return;
     };
 
-    // Narrow panels drop the avg/max detail so the fan block never
-    // collides with the temperature text.
-    let wide = inner.width >= 56;
-    let mut spans = vec![
+    // Headline: the hottest CPU sensor — the number people watch.
+    let headline = vec![
+        Span::styled(
+            format!("{:>4}", t.cpu_max),
+            bold(th.temp_color(t.cpu_max.0)),
+        ),
+        Span::styled(" max", dim),
+    ];
+    let inner = chrome_with(buf, area, "TEMPS · FANS", headline, th);
+    if inner.height == 0 {
+        return;
+    }
+
+    // Averages row (max lives in the title bar; the fan block sits right).
+    let spans = vec![
         Span::styled("CPU ", dim),
         Span::styled(
             format!("{:>4}", t.cpu_avg),
             bold(th.temp_color(t.cpu_avg.0)),
         ),
-    ];
-    if wide {
-        spans.extend([
-            Span::styled(" avg ", dim),
-            Span::styled(
-                format!("{:>4}", t.cpu_max),
-                bold(th.temp_color(t.cpu_max.0)),
-            ),
-            Span::styled(" max", dim),
-        ]);
-    }
-    spans.extend([
-        Span::styled(if wide { "   GPU " } else { " GPU " }, dim),
+        Span::styled(" GPU ", dim),
         Span::styled(
             format!("{:>4}", t.gpu_avg),
             bold(th.temp_color(t.gpu_avg.0)),
         ),
-    ]);
+    ];
     line(buf, inner, 0, spans);
 
     // Fans on the right of row 0 / row 1 (skipped when they'd collide
@@ -120,22 +117,58 @@ pub fn render(buf: &mut Buffer, area: Rect, app: &App, th: &Theme) {
         line(buf, inner, 1, spans);
     }
 
-    // CPU temperature history (amber ramp: always visible, reads as heat).
+    // CPU + GPU temperature history as lines on an axis that hugs the data
+    // (5° steps, ≥10° span). A die temp never nears 0, so a fixed 0–110°
+    // axis renders as a featureless slab — the zoomed window is what makes
+    // the movement visible. Line color = absolute temp through the shared
+    // thermal ramp, so red still means hot regardless of zoom; the GPU
+    // trace stays dim so the panels' lead series is unmistakable.
     if inner.height > 2 {
         let graph = Rect::new(inner.x, inner.y + 2, inner.width, inner.height - 2);
-        let data: Vec<f32> = app.hist.cpu_temp.last_n(graph.width as usize * 2).collect();
-        BrailleGraph {
-            data: &data,
-            max: 110.0,
-            gradient: th.power,
+        let slots = graph.width as usize * 2;
+        let cpu: Vec<f32> = app.hist.cpu_temp.last_n(slots).collect();
+        let gpu: Vec<f32> = app.hist.gpu_temp.last_n(slots).collect();
+        // One window across both series so the lines share a scale.
+        let both: Vec<f32> = cpu.iter().chain(gpu.iter()).copied().collect();
+        let window = axis_window(&both, 5.0, 10.0, (0.0, 110.0));
+        let (lo, hi) = window.unwrap_or((0.0, 1.0));
+        LineGraph {
+            data: &gpu,
+            lo,
+            hi,
+            color: |_| th.dim,
             baseline: th.border,
         }
         .render(graph, buf);
+        LineGraph {
+            data: &cpu,
+            lo,
+            hi,
+            color: |v| th.temp_color(v),
+            baseline: th.border,
+        }
+        .render(graph, buf);
+        if window.is_some() {
+            line(
+                buf,
+                graph,
+                0,
+                vec![Span::styled(format!("{}", Celsius(hi)), dim)],
+            );
+            if graph.height >= 2 {
+                let label = vec![Span::styled(format!("{}", Celsius(lo)), dim)];
+                line(buf, graph, graph.height - 1, label);
+            }
+        }
         line_right(
             buf,
             graph,
             graph.height.saturating_sub(1),
-            vec![Span::styled("cpu °c history", Style::default().fg(th.dim))],
+            vec![
+                Span::styled("cpu", Style::default().fg(th.temp_color(t.cpu_avg.0))),
+                Span::styled(" · ", dim),
+                Span::styled("gpu °c", dim),
+            ],
         );
     }
 }

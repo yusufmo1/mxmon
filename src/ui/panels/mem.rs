@@ -8,36 +8,36 @@ use ratatui::text::Span;
 use crate::app::App;
 use crate::collect::mem::Pressure;
 use crate::ui::theme::Theme;
-use crate::ui::widgets::{BrailleGraph, Meter};
+use crate::ui::widgets::{LineGraph, Meter, axis_window};
 
-use super::{chrome, line, line_right};
+use super::{chrome, chrome_with, line, line_right};
 
 pub fn render(buf: &mut Buffer, area: Rect, app: &App, th: &Theme) {
-    let inner = chrome(buf, area, "MEMORY", th);
-    if inner.height == 0 {
-        return;
-    }
     let dim = Style::default().fg(th.dim);
     let bold = |c| Style::default().fg(c).add_modifier(Modifier::BOLD);
     let Some(m) = &app.fast.mem else {
+        let inner = chrome(buf, area, "MEMORY", th);
         line(buf, inner, 0, vec![Span::styled("sampling…", dim)]);
         return;
     };
 
-    // Left text is "used / total  pct" ≈ 20 cells; the pressure chip keeps
-    // its "pressure" word only when both genuinely fit, and squeezed panels
-    // drop the percent so the bare badge never overwrites the total.
+    // Headline: used percent, promoted into the title bar.
     let ratio = m.used_ratio().0;
-    let mut spans = vec![
+    let headline = vec![Span::styled(
+        format!("{:>3.0}%", ratio * 100.0),
+        bold(th.mem.at(ratio)),
+    )];
+    let inner = chrome_with(buf, area, "MEMORY", headline, th);
+    if inner.height == 0 {
+        return;
+    }
+
+    // Left text is "used / total" ≈ 14 cells; the pressure chip keeps its
+    // "pressure" word only when both genuinely fit.
+    let spans = vec![
         Span::styled(format!("{:>5}", m.used), bold(th.mem.at(ratio))),
         Span::styled(format!(" / {}", m.total), dim),
     ];
-    if inner.width >= 27 {
-        spans.push(Span::styled(
-            format!("  {:>3.0}%", ratio * 100.0),
-            Style::default().fg(th.mem.at(ratio)),
-        ));
-    }
     line(buf, inner, 0, spans);
     let (badge, color) = match m.pressure {
         Pressure::Normal => (" OK ", th.ok),
@@ -111,15 +111,36 @@ pub fn render(buf: &mut Buffer, area: Rect, app: &App, th: &Theme) {
         line(buf, inner, 3, spans);
     }
 
+    // Used-memory history as a line on an axis that hugs the data (5% steps,
+    // ≥10% span). Usage sits high and moves by single points, so a filled
+    // 0–100% graph is a featureless slab — the zoomed window shows the
+    // drift. Line color = absolute used-ratio through the same ramp as the
+    // meter above, so the hue still says how full.
     if inner.height > 4 {
         let graph = Rect::new(inner.x, inner.y + 4, inner.width, inner.height - 4);
         let data: Vec<f32> = app.hist.mem_used.last_n(graph.width as usize * 2).collect();
-        BrailleGraph {
+        let window = axis_window(&data, 0.05, 0.10, (0.0, 1.0));
+        let (lo, hi) = window.unwrap_or((0.0, 1.0));
+        LineGraph {
             data: &data,
-            max: 1.0,
-            gradient: th.mem,
+            lo,
+            hi,
+            color: |v| th.mem.at(v),
             baseline: th.border,
         }
         .render(graph, buf);
+        if window.is_some() {
+            // Axis ticks match the header's whole-percent style.
+            let tick = |r: f32| format!("{:.0}%", r * 100.0);
+            line(buf, graph, 0, vec![Span::styled(tick(hi), dim)]);
+            if graph.height >= 2 {
+                line(
+                    buf,
+                    graph,
+                    graph.height - 1,
+                    vec![Span::styled(tick(lo), dim)],
+                );
+            }
+        }
     }
 }

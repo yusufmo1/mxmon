@@ -120,7 +120,7 @@ fn main() -> color_eyre::Result<()> {
     }
 
     if cli.bench {
-        let mut temps = collect::temps::TempCollector::new(&soc.chip_name, &soc.macos_version)?;
+        let mut temps = collect::temps::TempCollector::new(&soc)?;
         let battery = collect::battery::BatteryCollector::new();
         let time = |label: &str, f: &mut dyn FnMut()| {
             f(); // warm-up
@@ -470,6 +470,8 @@ fn json_snapshot(soc: &collect::soc::SocInfo) -> color_eyre::Result<()> {
             "macos": soc.macos_version,
             "ecores": soc.ecpu_count,
             "pcores": soc.pcpu_count,
+            "tier_low": soc.tier_low.to_string(),
+            "tier_high": soc.tier_high.to_string(),
             "gpu_cores": soc.gpu_core_count,
             "memory_gb": soc.memory_bytes as f64 / 1_073_741_824.0,
             "ecpu_freqs_mhz": soc.ecpu_freqs.iter().map(|f| f.0).collect::<Vec<_>>(),
@@ -559,7 +561,7 @@ fn json_snapshot(soc: &collect::soc::SocInfo) -> color_eyre::Result<()> {
             "adapter_power_w": t.adapter_power.map(|w| w.0),
             "fans": t.fans.iter().map(|f| serde_json::json!({"label": f.label, "rpm": f.rpm, "max": f.max_rpm})).collect::<Vec<_>>(),
             "sensor_count": t.sensors.len(),
-            "sensors": t.sensors.iter().map(|s| serde_json::json!({"group": s.group.title(), "label": s.label, "c": (s.temp.0*10.0).round()/10.0})).collect::<Vec<_>>(),
+            "sensors": t.sensors.iter().map(|s| serde_json::json!({"group": s.group.title_with(soc.tier_low, soc.tier_high), "label": s.label, "c": (s.temp.0*10.0).round()/10.0})).collect::<Vec<_>>(),
         })),
         "battery": battery.as_ref().map(|b| serde_json::json!({
             "charge_pct": b.charge.as_percent(),

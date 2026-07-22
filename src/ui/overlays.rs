@@ -12,18 +12,20 @@ use crate::ui::widgets::{HitMap, Target};
 
 use super::panels::format_duration;
 
-/// Centered modal chrome; returns the inner rect.
+/// Centered modal chrome; returns the inner rect. Every modal gets a
+/// clickable `✕` in its top border (reddening under the pointer) — the
+/// mouse-only mirror of `esc`.
 fn modal_box(
     buf: &mut Buffer,
     screen: Rect,
-    w: u16,
-    h: u16,
+    size: (u16, u16),
     title: &str,
     th: &Theme,
     hits: &mut HitMap,
+    hover: Option<Target>,
 ) -> Rect {
-    let w = w.min(screen.width.saturating_sub(2));
-    let h = h.min(screen.height.saturating_sub(2));
+    let w = size.0.min(screen.width.saturating_sub(2));
+    let h = size.1.min(screen.height.saturating_sub(2));
     let area = Rect::new(
         screen.x + (screen.width - w) / 2,
         screen.y + (screen.height - h) / 2,
@@ -43,6 +45,16 @@ fn modal_box(
     let inner = block.inner(area);
     block.render(area, buf);
     hits.push(area, Target::ModalBody);
+    if area.width >= 8 {
+        let style = if hover == Some(Target::ModalClose) {
+            Style::default().fg(th.crit).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(th.dim)
+        };
+        let close_x = area.right().saturating_sub(4);
+        buf.set_span(close_x, area.y, &Span::styled(" ✕ ", style), 3);
+        hits.push(Rect::new(close_x, area.y, 3, 1), Target::ModalClose);
+    }
     inner
 }
 
@@ -59,12 +71,12 @@ fn put(buf: &mut Buffer, inner: Rect, row: u16, spans: Vec<Span<'_>>) {
 
 pub fn render(buf: &mut Buffer, screen: Rect, app: &App, th: &Theme, hits: &mut HitMap) {
     match &app.modal {
-        Some(Modal::Help) => help(buf, screen, th, hits),
+        Some(Modal::Help) => help(buf, screen, th, hits, app.hover),
         Some(Modal::Kill {
             pid,
             name,
             selected,
-        }) => kill(buf, screen, *pid, name, *selected, th, hits),
+        }) => kill(buf, screen, (*pid, name, *selected), th, hits, app.hover),
         Some(Modal::SortMenu { selected }) => sort_menu(buf, screen, app, *selected, th, hits),
         Some(Modal::Details { pid }) => details(buf, screen, app, *pid, th, hits),
         Some(Modal::Settings { selected }) => settings(buf, screen, app, *selected, th, hits),
@@ -131,17 +143,42 @@ fn settings(
     // `selected` comes from the modal cursor; clamp before indexing `rows`
     // below so the render can never panic if it ever drifts out of range.
     let selected = selected.min(rows.len().saturating_sub(1));
-    let inner = modal_box(buf, screen, 60, rows.len() as u16 + 6, "settings", th, hits);
+    let inner = modal_box(
+        buf,
+        screen,
+        (60, rows.len() as u16 + 6),
+        "settings",
+        th,
+        hits,
+        app.hover,
+    );
+    // Label column then `‹ value ›`; the arrows are their own (fatter) click
+    // targets so a step back is one click, not a lap through the cycle.
+    const LABEL_W: u16 = 17;
+    const VALUE_W: u16 = 34;
     for (i, (label, value, _)) in rows.iter().enumerate() {
         let y = i as u16;
+        let hovered = app.hover == Some(Target::SettingRow(i));
         let (row_style, val_style) = if i == selected {
             let s = Style::default()
                 .fg(th.bg)
                 .bg(th.accent)
                 .add_modifier(Modifier::BOLD);
             (s, s)
+        } else if hovered {
+            (
+                Style::default().fg(th.text).add_modifier(Modifier::BOLD),
+                Style::default().fg(th.accent).add_modifier(Modifier::BOLD),
+            )
         } else {
             (Style::default().fg(th.text), Style::default().fg(th.accent))
+        };
+        let arrow = |t: Target| {
+            if app.hover == Some(t) {
+                val_style.add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
+            } else {
+                val_style
+            }
         };
         put(
             buf,
@@ -149,12 +186,26 @@ fn settings(
             y,
             vec![
                 Span::styled(format!("  {label:<15}"), row_style),
-                Span::styled(format!("‹ {value:<34} ›"), val_style),
+                Span::styled("‹", arrow(Target::SettingDec(i))),
+                Span::styled(format!(" {value:<w$} ", w = VALUE_W as usize), val_style),
+                Span::styled("›", arrow(Target::SettingInc(i))),
             ],
         );
         hits.push(
             Rect::new(inner.x, inner.y + y, inner.width, 1),
             Target::SettingRow(i),
+        );
+        // Arrows registered after the row so they win the overlap; one cell
+        // of slack on each side keeps them easy to hit.
+        let dec_x = inner.x + 1 + LABEL_W;
+        let inc_x = dec_x + 1 + VALUE_W + 2;
+        hits.push(
+            Rect::new(dec_x.saturating_sub(1), inner.y + y, 3, 1),
+            Target::SettingDec(i),
+        );
+        hits.push(
+            Rect::new(inc_x.saturating_sub(1), inner.y + y, 3, 1),
+            Target::SettingInc(i),
         );
     }
     // The selected row's explainer, then the key hints.
@@ -173,8 +224,8 @@ fn settings(
     );
 }
 
-fn help(buf: &mut Buffer, screen: Rect, th: &Theme, hits: &mut HitMap) {
-    let inner = modal_box(buf, screen, 62, 20, "help", th, hits);
+fn help(buf: &mut Buffer, screen: Rect, th: &Theme, hits: &mut HitMap, hover: Option<Target>) {
+    let inner = modal_box(buf, screen, (62, 20), "help", th, hits, hover);
     let key = Style::default().fg(th.accent).add_modifier(Modifier::BOLD);
     let dim = Style::default().fg(th.dim);
     let entries: [(&str, &str); 17] = [
@@ -191,7 +242,7 @@ fn help(buf: &mut Buffer, screen: Rect, th: &Theme, hits: &mut HitMap) {
         ("p", "pause sampling"),
         ("+ / -", "faster / slower sampling"),
         ("d", "debug HUD"),
-        ("mouse", "click tabs, headers, rows · wheel scrolls"),
+        ("mouse", "what glows is clickable · wheel scrolls"),
         ("q or F10", "quit"),
         ("", ""),
         ("mxmon", "sudoless Apple Silicon monitor"),
@@ -209,23 +260,24 @@ fn help(buf: &mut Buffer, screen: Rect, th: &Theme, hits: &mut HitMap) {
     }
 }
 
+/// `target` is the kill modal's payload: (pid, name, selected signal row).
 fn kill(
     buf: &mut Buffer,
     screen: Rect,
-    pid: i32,
-    name: &str,
-    selected: usize,
+    target: (i32, &str, usize),
     th: &Theme,
     hits: &mut HitMap,
+    hover: Option<Target>,
 ) {
+    let (pid, name, selected) = target;
     let inner = modal_box(
         buf,
         screen,
-        44,
-        4 + KILL_SIGNALS.len() as u16 + 2,
+        (44, 4 + KILL_SIGNALS.len() as u16 + 2),
         "kill process",
         th,
         hits,
+        hover,
     );
     put(
         buf,
@@ -246,6 +298,8 @@ fn kill(
                 .fg(th.bg)
                 .bg(th.crit)
                 .add_modifier(Modifier::BOLD)
+        } else if hover == Some(Target::KillSignal(i)) {
+            Style::default().fg(th.crit).add_modifier(Modifier::BOLD)
         } else {
             Style::default().fg(th.text)
         };
@@ -282,20 +336,23 @@ fn sort_menu(
     let inner = modal_box(
         buf,
         screen,
-        30,
-        SORT_KEYS.len() as u16 + 4,
+        (30, SORT_KEYS.len() as u16 + 4),
         "sort by",
         th,
         hits,
+        app.hover,
     );
     for (i, key) in SORT_KEYS.iter().enumerate() {
         let y = i as u16;
         let active = *key == app.sort;
+        let hovered = app.hover == Some(Target::SortOption(i));
         let style = if i == selected {
             Style::default()
                 .fg(th.bg)
                 .bg(th.accent)
                 .add_modifier(Modifier::BOLD)
+        } else if hovered {
+            Style::default().fg(th.accent).add_modifier(Modifier::BOLD)
         } else if active {
             Style::default().fg(th.accent)
         } else {
@@ -332,7 +389,7 @@ fn details(buf: &mut Buffer, screen: Rect, app: &App, pid: i32, th: &Theme, hits
     let Some(r) = app.procs.rows.iter().find(|r| r.pid == pid) else {
         return;
     };
-    let inner = modal_box(buf, screen, 74, 18, "process", th, hits);
+    let inner = modal_box(buf, screen, (74, 20), "process", th, hits, app.hover);
     let label = Style::default().fg(th.dim);
     let value = Style::default().fg(th.text);
     let strong = Style::default().fg(th.accent).add_modifier(Modifier::BOLD);
@@ -368,8 +425,10 @@ fn details(buf: &mut Buffer, screen: Rect, app: &App, pid: i32, th: &Theme, hits
             "core mix".into(),
             r.p_share.map_or("–".into(), |p| {
                 format!(
-                    "P {:>3.0}% · E {:>3.0}%",
+                    "{} {:>3.0}% · {} {:>3.0}%",
+                    app.soc.tier_high,
                     p.as_percent(),
+                    app.soc.tier_low,
                     100.0 - p.as_percent()
                 )
             }),
@@ -408,6 +467,36 @@ fn details(buf: &mut Buffer, screen: Rect, app: &App, pid: i32, th: &Theme, hits
                 Span::styled(format!("{k:>9}  "), label),
                 Span::styled(v.clone(), value),
             ],
+        );
+    }
+
+    // Action row: the mouse path to the signal picker for *this* pid (the
+    // footer's kill button acts on the table selection, which may differ).
+    let kill_y = rows.len() as u16 + 3;
+    let kill_label = "✕ kill process";
+    let kill_style = if app.hover == Some(Target::KillPid(pid)) {
+        Style::default().fg(th.crit).add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(th.crit)
+    };
+    put(
+        buf,
+        inner,
+        kill_y,
+        vec![
+            Span::styled(kill_label.to_owned(), kill_style),
+            Span::styled("   enter/esc close", label),
+        ],
+    );
+    if kill_y < inner.height {
+        hits.push(
+            Rect::new(
+                inner.x + 1,
+                inner.y + kill_y,
+                (kill_label.chars().count() as u16).min(inner.width),
+                1,
+            ),
+            Target::KillPid(pid),
         );
     }
 }

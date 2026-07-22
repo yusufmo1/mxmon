@@ -120,7 +120,7 @@ Every reading comes straight from a macOS framework — no helper process, no el
 | Metric | Source |
 |---|---|
 | Power, frequencies | private `IOReport` framework (energy + DVFS residency counters) |
-| Temperatures | IOHID sensor services + SMC (per-chip key maps for M1 / M2 / M3) |
+| Temperatures | IOHID sensor services + SMC (per-chip key maps for M1 through M5) |
 | Fans, system & adapter power | SMC (`F*Ac`, `PSTR`, `PDTR`) |
 | GPU utilization | IOKit `AGXAccelerator` performance statistics |
 | Per-core CPU | `host_processor_info` tick deltas |

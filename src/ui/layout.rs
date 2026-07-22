@@ -9,8 +9,9 @@ use ratatui::layout::{Constraint, Layout, Rect};
 
 use crate::app::{App, View};
 use crate::ui::panels;
+use crate::ui::panels::nav;
 use crate::ui::theme::Theme;
-use crate::ui::widgets::{HitMap, fill_bg};
+use crate::ui::widgets::{HitMap, PanelKind, fill_bg};
 
 use super::{overlays, thermal};
 
@@ -36,7 +37,7 @@ pub fn draw(f: &mut Frame<'_>, app: &mut App, th: &Theme, hits: &mut HitMap, rs:
     ])
     .areas(screen);
 
-    panels::header::header(buf, header, app, th);
+    panels::header::header(buf, header, app, th, hits);
 
     match app.view {
         View::Overview => overview(buf, body, app, th, hits, rs),
@@ -73,7 +74,7 @@ fn processes_view(
         let [table, widgets] =
             Layout::horizontal([Constraint::Length(table_w), Constraint::Min(0)]).areas(body);
         panels::procs::render(buf, table, app, th, hits, cap);
-        widget_grid(buf, widgets, app, th);
+        widget_grid(buf, widgets, app, th, hits);
     } else {
         panels::procs::render(buf, body, app, th, hits, 4);
     }
@@ -81,23 +82,29 @@ fn processes_view(
 
 /// A row-major grid of metric panels filling whatever rect the process
 /// table left over: 1–2 columns, 2–4 rows, most-useful panels first.
-fn widget_grid(buf: &mut ratatui::buffer::Buffer, area: Rect, app: &App, th: &Theme) {
+fn widget_grid(
+    buf: &mut ratatui::buffer::Buffer,
+    area: Rect,
+    app: &App,
+    th: &Theme,
+    hits: &mut HitMap,
+) {
     let cols = (area.width / 100).clamp(1, 2);
     let rows = (area.height / 9).clamp(2, 4);
-    let mut fns: Vec<PanelFn> = vec![
-        panels::cpu::render,
-        panels::net::render,
-        panels::mem::render,
-        panels::disk::render,
-        panels::power::render,
-        panels::gpu::render,
-        panels::temps::render,
+    let mut fns: Vec<(PanelFn, PanelKind)> = vec![
+        (panels::cpu::render, PanelKind::Cpu),
+        (panels::net::render, PanelKind::Net),
+        (panels::mem::render, PanelKind::Mem),
+        (panels::disk::render, PanelKind::Disk),
+        (panels::power::render, PanelKind::Power),
+        (panels::gpu::render, PanelKind::Gpu),
+        (panels::temps::render, PanelKind::Temps),
     ];
     if app.battery.is_some() {
-        fns.push(panels::battery::render);
+        fns.push((panels::battery::render, PanelKind::Battery));
     }
     let (cw, rh) = (area.width / cols, area.height / rows);
-    for (i, f) in fns.into_iter().take((cols * rows) as usize).enumerate() {
+    for (i, (f, kind)) in fns.into_iter().take((cols * rows) as usize).enumerate() {
         let (row, col) = (i as u16 / cols, i as u16 % cols);
         // The last column/row absorb the division remainders.
         let w = if col + 1 == cols {
@@ -110,12 +117,9 @@ fn widget_grid(buf: &mut ratatui::buffer::Buffer, area: Rect, app: &App, th: &Th
         } else {
             rh
         };
-        f(
-            buf,
-            Rect::new(area.x + col * cw, area.y + row * rh, w, h),
-            app,
-            th,
-        );
+        let rect = Rect::new(area.x + col * cw, area.y + row * rh, w, h);
+        f(buf, rect, app, th);
+        nav(buf, rect, app, th, hits, kind);
     }
 }
 
@@ -156,6 +160,7 @@ fn overview(
         let [left, map_col] =
             Layout::horizontal([Constraint::Min(0), Constraint::Length(map_w)]).areas(body);
         thermal::map_panel(buf, map_col, app, th, rs);
+        nav(buf, map_col, app, th, hits, PanelKind::HeatMap);
 
         let [top, mid, procs_area] = Layout::vertical([
             Constraint::Length(cpu_h),
@@ -171,8 +176,11 @@ fn overview(
         ])
         .areas(top);
         panels::cpu::render(buf, cpu_a, app, th);
+        nav(buf, cpu_a, app, th, hits, PanelKind::Cpu);
         panels::power::render(buf, power_a, app, th);
+        nav(buf, power_a, app, th, hits, PanelKind::Power);
         panels::battery::render(buf, battery_a, app, th);
+        nav(buf, battery_a, app, th, hits, PanelKind::Battery);
 
         // With the pane cap (default 1) leaving width the process table
         // doesn't want, DISK and TEMPS move down beside it as tall panels
@@ -188,8 +196,11 @@ fn overview(
             ])
             .areas(mid);
             panels::gpu::render(buf, gpu_a, app, th);
+            nav(buf, gpu_a, app, th, hits, PanelKind::Gpu);
             panels::mem::render(buf, mem_a, app, th);
+            nav(buf, mem_a, app, th, hits, PanelKind::Mem);
             panels::net::render(buf, net_a, app, th);
+            nav(buf, net_a, app, th, hits, PanelKind::Net);
 
             let [table, disk_a, temps_a] = Layout::horizontal([
                 Constraint::Length(table_w),
@@ -199,15 +210,22 @@ fn overview(
             .areas(procs_area);
             panels::procs::render(buf, table, app, th, hits, cap);
             panels::disk::render(buf, disk_a, app, th);
+            nav(buf, disk_a, app, th, hits, PanelKind::Disk);
             panels::temps::render(buf, temps_a, app, th);
+            nav(buf, temps_a, app, th, hits, PanelKind::Temps);
         } else {
             let [gpu_a, mem_a, net_a, disk_a, temps_a] =
                 Layout::horizontal([Constraint::Percentage(20); 5]).areas(mid);
             panels::gpu::render(buf, gpu_a, app, th);
+            nav(buf, gpu_a, app, th, hits, PanelKind::Gpu);
             panels::mem::render(buf, mem_a, app, th);
+            nav(buf, mem_a, app, th, hits, PanelKind::Mem);
             panels::net::render(buf, net_a, app, th);
+            nav(buf, net_a, app, th, hits, PanelKind::Net);
             panels::disk::render(buf, disk_a, app, th);
+            nav(buf, disk_a, app, th, hits, PanelKind::Disk);
             panels::temps::render(buf, temps_a, app, th);
+            nav(buf, temps_a, app, th, hits, PanelKind::Temps);
 
             panels::procs::render(buf, procs_area, app, th, hits, 4);
         }
@@ -222,23 +240,23 @@ fn overview(
         // weights; naturally-slim ones stay thin.
         #[derive(Clone, Copy)]
         enum Card {
-            Metric(PanelFn),
+            Metric(PanelFn, PanelKind),
             Heat,
             Procs,
         }
         let mut cards: Vec<(u16, Card)> = vec![
-            (6, Card::Metric(panels::cpu::render)),
-            (4, Card::Metric(panels::power::render)),
+            (6, Card::Metric(panels::cpu::render, PanelKind::Cpu)),
+            (4, Card::Metric(panels::power::render, PanelKind::Power)),
         ];
         if app.battery.is_some() {
-            cards.push((7, Card::Metric(panels::battery::render)));
+            cards.push((7, Card::Metric(panels::battery::render, PanelKind::Battery)));
         }
         cards.extend([
-            (4, Card::Metric(panels::gpu::render)),
-            (4, Card::Metric(panels::mem::render)),
-            (6, Card::Metric(panels::net::render)),
-            (4, Card::Metric(panels::disk::render)),
-            (5, Card::Metric(panels::temps::render)),
+            (4, Card::Metric(panels::gpu::render, PanelKind::Gpu)),
+            (4, Card::Metric(panels::mem::render, PanelKind::Mem)),
+            (6, Card::Metric(panels::net::render, PanelKind::Net)),
+            (4, Card::Metric(panels::disk::render, PanelKind::Disk)),
+            (5, Card::Metric(panels::temps::render, PanelKind::Temps)),
             (6, Card::Heat),
             (18, Card::Procs),
         ]);
@@ -251,8 +269,14 @@ fn overview(
         // `&mut RenderState`.
         for (&(_, card), &rect) in cards.iter().zip(rects.iter()) {
             match card {
-                Card::Metric(f) => f(buf, rect, app, th),
-                Card::Heat => thermal::map_panel(buf, rect, app, th, rs),
+                Card::Metric(f, kind) => {
+                    f(buf, rect, app, th);
+                    nav(buf, rect, app, th, hits, kind);
+                }
+                Card::Heat => {
+                    thermal::map_panel(buf, rect, app, th, rs);
+                    nav(buf, rect, app, th, hits, PanelKind::HeatMap);
+                }
                 Card::Procs => panels::procs::render(buf, rect, app, th, hits, 4),
             }
         }
@@ -272,16 +296,24 @@ fn overview(
         ])
         .areas(top);
         panels::cpu::render(buf, cpu_a, app, th);
+        nav(buf, cpu_a, app, th, hits, PanelKind::Cpu);
         panels::power::render(buf, power_a, app, th);
+        nav(buf, power_a, app, th, hits, PanelKind::Power);
         panels::battery::render(buf, battery_a, app, th);
+        nav(buf, battery_a, app, th, hits, PanelKind::Battery);
 
         let [gpu_a, mem_a, net_a, disk_a, temps_a] =
             Layout::horizontal([Constraint::Percentage(20); 5]).areas(mid);
         panels::gpu::render(buf, gpu_a, app, th);
+        nav(buf, gpu_a, app, th, hits, PanelKind::Gpu);
         panels::mem::render(buf, mem_a, app, th);
+        nav(buf, mem_a, app, th, hits, PanelKind::Mem);
         panels::net::render(buf, net_a, app, th);
+        nav(buf, net_a, app, th, hits, PanelKind::Net);
         panels::disk::render(buf, disk_a, app, th);
+        nav(buf, disk_a, app, th, hits, PanelKind::Disk);
         panels::temps::render(buf, temps_a, app, th);
+        nav(buf, temps_a, app, th, hits, PanelKind::Temps);
 
         // Big terminals get the chassis heat map inline, beside the
         // process table (sized to the chassis aspect, capped at 45%).
@@ -293,6 +325,7 @@ fn overview(
                     .areas(procs_area);
             panels::procs::render(buf, procs_l, app, th, hits, 4);
             thermal::map_panel(buf, map_r, app, th, rs);
+            nav(buf, map_r, app, th, hits, PanelKind::HeatMap);
         } else {
             panels::procs::render(buf, procs_area, app, th, hits, 4);
         }
@@ -316,7 +349,9 @@ fn overview(
         let [cpu_a, power_a] =
             Layout::horizontal([Constraint::Percentage(58), Constraint::Percentage(42)]).areas(top);
         panels::cpu::render(buf, cpu_a, app, th);
+        nav(buf, cpu_a, app, th, hits, PanelKind::Cpu);
         panels::power::render(buf, power_a, app, th);
+        nav(buf, power_a, app, th, hits, PanelKind::Power);
 
         let [mid_top, mid_bottom, mid_third] = Layout::vertical([
             Constraint::Length(mid_h),
@@ -328,29 +363,39 @@ fn overview(
             Layout::horizontal([Constraint::Percentage(50), Constraint::Percentage(50)])
                 .areas(mid_top);
         panels::gpu::render(buf, gpu_a, app, th);
+        nav(buf, gpu_a, app, th, hits, PanelKind::Gpu);
         panels::mem::render(buf, mem_a, app, th);
+        nav(buf, mem_a, app, th, hits, PanelKind::Mem);
         let [net_a, right_a] =
             Layout::horizontal([Constraint::Percentage(50), Constraint::Percentage(50)])
                 .areas(mid_bottom);
         panels::net::render(buf, net_a, app, th);
+        nav(buf, net_a, app, th, hits, PanelKind::Net);
         if tall {
             // Row 2 keeps battery (temps moves to row 3 beside disk); on
             // desktops without a battery, disk takes the full third row.
             if app.battery.is_some() {
                 panels::battery::render(buf, right_a, app, th);
+                nav(buf, right_a, app, th, hits, PanelKind::Battery);
                 let [disk_a, temps_a] =
                     Layout::horizontal([Constraint::Percentage(50), Constraint::Percentage(50)])
                         .areas(mid_third);
                 panels::disk::render(buf, disk_a, app, th);
+                nav(buf, disk_a, app, th, hits, PanelKind::Disk);
                 panels::temps::render(buf, temps_a, app, th);
+                nav(buf, temps_a, app, th, hits, PanelKind::Temps);
             } else {
                 panels::temps::render(buf, right_a, app, th);
+                nav(buf, right_a, app, th, hits, PanelKind::Temps);
                 panels::disk::render(buf, mid_third, app, th);
+                nav(buf, mid_third, app, th, hits, PanelKind::Disk);
             }
         } else if app.battery.is_some() && body.height < 40 {
             panels::battery::render(buf, right_a, app, th);
+            nav(buf, right_a, app, th, hits, PanelKind::Battery);
         } else {
             panels::temps::render(buf, right_a, app, th);
+            nav(buf, right_a, app, th, hits, PanelKind::Temps);
         }
 
         panels::procs::render(buf, procs_area, app, th, hits, 4);
@@ -366,16 +411,16 @@ fn overview(
             if app.battery.is_some() { 7 } else { 0 },
         ];
         let mut y = body.y;
-        let panels_fns: [(u16, PanelFn); 7] = [
-            (heights[0], panels::cpu::render),
-            (heights[1], panels::power::render),
-            (heights[2], panels::gpu::render),
-            (heights[3], panels::mem::render),
-            (heights[4], panels::net::render),
-            (heights[5], panels::disk::render),
-            (heights[6], panels::battery::render),
+        let panels_fns: [(u16, PanelFn, PanelKind); 7] = [
+            (heights[0], panels::cpu::render, PanelKind::Cpu),
+            (heights[1], panels::power::render, PanelKind::Power),
+            (heights[2], panels::gpu::render, PanelKind::Gpu),
+            (heights[3], panels::mem::render, PanelKind::Mem),
+            (heights[4], panels::net::render, PanelKind::Net),
+            (heights[5], panels::disk::render, PanelKind::Disk),
+            (heights[6], panels::battery::render, PanelKind::Battery),
         ];
-        for (h, render) in panels_fns {
+        for (h, render, kind) in panels_fns {
             if h == 0 {
                 continue;
             }
@@ -385,6 +430,7 @@ fn overview(
             }
             let area = Rect::new(body.x, y, body.width, h);
             render(buf, area, app, th);
+            nav(buf, area, app, th, hits, kind);
             y += h;
         }
         if y < body.bottom() {
@@ -433,7 +479,12 @@ mod tests {
 
     fn snap(name: &str, app: &mut App, w: u16, h: u16) {
         insta::with_settings!({
-            // The header clock is the one wall-clock artifact in a frame.
+            // The header clock is the only wall-clock artifact left in a
+            // frame. The details modal's "started … ago" used to need a
+            // filter too, but redacting it only normalized the text — the
+            // padding after it still tracked the real width. The fixture
+            // pins a fixed age instead (`testutil::procs`), so the string
+            // is constant and the frame can be asserted verbatim.
             filters => vec![(r"\d{2}:\d{2}:\d{2}", "HH:MM:SS")],
             omit_expression => true,
             prepend_module_to_snapshot => false,
@@ -458,6 +509,20 @@ mod tests {
         // The ≥300-column overview takes the single full-height row branch.
         app.view = View::Overview;
         snap("overview_320x60", &mut app, 320, 60);
+    }
+
+    #[test]
+    fn hover_affordances_render_stably() {
+        use crate::ui::widgets::{PanelKind, Target};
+        // Colors are filtered from snapshots, so this locks the *glyph*
+        // affordances: the card's "▸ destination" tag in its bottom border
+        // and unchanged neighbors. One card per destination flavor.
+        let mut app = tu::app();
+        app.view = View::Overview;
+        app.hover = Some(Target::Panel(PanelKind::Cpu));
+        snap("overview_hover_cpu_160x45", &mut app, 160, 45);
+        app.hover = Some(Target::Panel(PanelKind::Net));
+        snap("overview_hover_net_160x45", &mut app, 160, 45);
     }
 
     #[test]

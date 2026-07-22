@@ -12,7 +12,7 @@ use crate::ui::theme::Theme;
 use crate::ui::widgets::MirrorGraph;
 use crate::units::Bytes;
 
-use super::{chrome, format_link_speed, line, line_right, split_bits_per_sec};
+use super::{chrome, chrome_with, format_link_speed, line, line_right, split_bits_per_sec};
 
 /// Autoscale floor ≈ 64 Kb/s: idle chatter stays small instead of filling
 /// the graph, while anything lighter still lands its minimum dot.
@@ -36,51 +36,74 @@ fn fmt_ms(ms: Option<f32>) -> String {
 }
 
 pub fn render(buf: &mut Buffer, area: Rect, app: &App, th: &Theme) {
-    let inner = chrome(buf, area, "NETWORK", th);
-    if inner.height == 0 {
-        return;
-    }
     let dim = Style::default().fg(th.dim);
     let bold = |c| Style::default().fg(c).add_modifier(Modifier::BOLD);
     let Some(n) = &app.fast.net else {
+        let inner = chrome(buf, area, "NETWORK", th);
         line(buf, inner, 0, vec![Span::styled("sampling…", dim)]);
         return;
     };
 
-    // Row 0 — rates: bold value, dim unit; link chip (status dot · name ·
-    // speed) on the right, dropped before it could overlap. Values pad to 5
-    // ("999.9" worst case) and units to 4 ("Kb/s") so nothing shifts as
-    // magnitudes change; squeezed panels (5-across mid row) drop the
-    // value/unit gap — the row is a constant 26 cells spacious, 23 tight.
-    let tight = inner.width < 27;
-    let (gap, mid) = if tight {
-        ("", " ↑ ")
-    } else {
-        (" ", "  ↑ ")
-    };
+    // Headline — the live rates, promoted into the title bar: bold value,
+    // dim unit. Values pad to 5 ("999.9" worst case) and units to 4 ("Kb/s")
+    // so the border resume point never shifts as magnitudes change; squeezed
+    // panels (5-across mid row) drop the units and gaps — "NETWORK" is the
+    // longest title, and the tight pair must still clear the border corner
+    // of a 26-cell card.
     let (rx_v, rx_u) = split_bits_per_sec(n.rx_per_sec.0);
     let (tx_v, tx_u) = split_bits_per_sec(n.tx_per_sec.0);
+    let headline = if area.width >= 42 {
+        vec![
+            Span::styled(format!("↓ {rx_v:>5}"), bold(th.net_rx)),
+            Span::styled(format!(" {rx_u:<4}"), dim),
+            Span::styled(format!(" ↑ {tx_v:>5}"), bold(th.net_tx)),
+            Span::styled(format!(" {tx_u}"), dim),
+        ]
+    } else {
+        vec![
+            Span::styled(format!("↓{rx_v:>5}"), bold(th.net_rx)),
+            Span::styled(format!(" ↑{tx_v:>5}"), bold(th.net_tx)),
+        ]
+    };
+    let inner = chrome_with(buf, area, "NETWORK", headline, th);
+    if inner.height == 0 {
+        return;
+    }
+
+    // Row 0 — session totals left; link chip (status dot · name · speed) on
+    // the right, joined by the IP on genuinely wide panels, dropped before
+    // either could overlap the totals.
     line(
         buf,
         inner,
         0,
         vec![
-            Span::styled("↓ ", bold(th.net_rx)),
-            Span::styled(format!("{rx_v:>5}"), bold(th.net_rx)),
-            Span::styled(format!("{gap}{rx_u:<4}"), dim),
-            Span::styled(mid, bold(th.net_tx)),
-            Span::styled(format!("{tx_v:>5}"), bold(th.net_tx)),
-            Span::styled(format!("{gap}{tx_u:<4}"), dim),
+            Span::styled("Σ↓ ", dim),
+            Span::styled(
+                format!("{:>5}", Bytes(n.rx_session.0)),
+                Style::default().fg(th.text),
+            ),
+            Span::styled("  Σ↑ ", dim),
+            Span::styled(
+                format!("{:>5}", Bytes(n.tx_session.0)),
+                Style::default().fg(th.text),
+            ),
         ],
     );
     if inner.width >= 38
         && let Some(p) = &n.primary
     {
         let link = if p.running { th.ok } else { th.crit };
-        let mut spans = vec![
-            Span::styled("● ", Style::default().fg(link)),
-            Span::styled(p.name.clone(), Style::default().fg(th.text)),
-        ];
+        let mut spans = Vec::new();
+        if inner.width >= 58
+            && let Some(ip) = p.ipv4.as_ref()
+        {
+            spans.push(Span::styled("ip ", dim));
+            spans.push(Span::styled(ip.clone(), Style::default().fg(th.accent)));
+            spans.push(Span::styled("  ", dim));
+        }
+        spans.push(Span::styled("● ", Style::default().fg(link)));
+        spans.push(Span::styled(p.name.clone(), Style::default().fg(th.text)));
         if p.baudrate > 0 {
             spans.push(Span::styled(
                 format!(" {}", format_link_speed(p.baudrate)),
@@ -90,40 +113,6 @@ pub fn render(buf: &mut Buffer, area: Rect, app: &App, th: &Theme) {
         line_right(buf, inner, 0, spans);
     }
 
-    // Row 1 — session totals left, IP right.
-    if inner.height >= 2 {
-        line(
-            buf,
-            inner,
-            1,
-            vec![
-                Span::styled("Σ↓ ", dim),
-                Span::styled(
-                    format!("{:>5}", Bytes(n.rx_session.0)),
-                    Style::default().fg(th.text),
-                ),
-                Span::styled("  Σ↑ ", dim),
-                Span::styled(
-                    format!("{:>5}", Bytes(n.tx_session.0)),
-                    Style::default().fg(th.text),
-                ),
-            ],
-        );
-        if inner.width >= 40
-            && let Some(ip) = n.primary.as_ref().and_then(|p| p.ipv4.as_ref())
-        {
-            line_right(
-                buf,
-                inner,
-                1,
-                vec![
-                    Span::styled("ip ", dim),
-                    Span::styled(ip.clone(), Style::default().fg(th.accent)),
-                ],
-            );
-        }
-    }
-
     // Bottom sections exist only while the prober reports (disabled or
     // failed probing simply hands the rows to the graph).
     let ping = app.ping.as_ref();
@@ -131,9 +120,9 @@ pub fn render(buf: &mut Buffer, area: Rect, app: &App, th: &Theme) {
     let stats_row = ping.is_some() && inner.height >= 8;
     let below = u16::from(strip_row) + u16::from(stats_row);
 
-    // Mirrored history graph between the header rows and the ping section.
-    if inner.height > 2 + below {
-        let graph = Rect::new(inner.x, inner.y + 2, inner.width, inner.height - 2 - below);
+    // Mirrored history graph between the header row and the ping section.
+    if inner.height > 1 + below {
+        let graph = Rect::new(inner.x, inner.y + 1, inner.width, inner.height - 1 - below);
         if graph.height >= 2 {
             let slots = graph.width as usize * 2;
             let tx: Vec<f32> = app.hist.net_tx.last_n(slots).collect();

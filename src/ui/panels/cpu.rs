@@ -11,33 +11,55 @@ use crate::ui::theme::Theme;
 use crate::ui::widgets::{BrailleGraph, core_bar};
 use crate::units::Mhz;
 
-use super::{chrome, line, line_right};
+use super::{chrome_with, line, line_right};
 
 pub fn render(buf: &mut Buffer, area: Rect, app: &App, th: &Theme) {
-    let inner = chrome(buf, area, "CPU", th);
-    if inner.height == 0 {
-        return;
-    }
     let dim = Style::default().fg(th.dim);
     let bold = |c| Style::default().fg(c).add_modifier(Modifier::BOLD);
 
     let total = app.hist.cpu_total.latest().unwrap_or(0.0);
+    // Headline: total utilization, promoted into the title bar.
+    let headline = vec![Span::styled(
+        format!("{total:5.1}%"),
+        bold(th.cpu.at(total / 100.0)),
+    )];
+    let inner = chrome_with(buf, area, "CPU", headline, th);
+    if inner.height == 0 {
+        return;
+    }
+
+    // The total-utilization history is the card's headline signal, so it
+    // bleeds across the full inner height. It renders first and the text
+    // rows paint over it: set_line only overwrites the cells its spans
+    // cover, so the right-aligned fresh data flows around the text block
+    // instead of being boxed under it.
+    let data: Vec<f32> = app
+        .hist
+        .cpu_total
+        .last_n(inner.width as usize * 2)
+        .collect();
+    BrailleGraph {
+        data: &data,
+        max: 100.0,
+        gradient: th.cpu,
+        baseline: th.border,
+    }
+    .render(inner, buf);
+
     let cpu_temp = app.temps.as_ref().map(|t| (t.cpu_avg, t.cpu_max));
 
-    // Summary row.
-    let mut spans = vec![
-        Span::styled(format!("{total:5.1}%"), bold(th.cpu.at(total / 100.0))),
-        Span::styled("  ", dim),
-    ];
+    // Summary row: cluster frequencies (the total lives in the title bar).
+    let mut spans = Vec::new();
     if let Some(p) = &app.power {
-        // Fixed-width freqs: "748MHz" ↔ "1.03GHz" must not push " · P" around.
+        // Fixed-width freqs: "748MHz" ↔ "1.03GHz" must not push the second
+        // tier around. Tier letters come from the SoC (E/P; P/S on M5).
         spans.push(Span::styled(
-            format!("E {:>7}", p.ecpu.freq),
+            format!("{} {:>7}", app.soc.tier_low, p.ecpu.freq),
             Style::default().fg(th.accent),
         ));
         spans.push(Span::styled(" · ", dim));
         spans.push(Span::styled(
-            format!("P {:>7}", p.pcpu.freq),
+            format!("{} {:>7}", app.soc.tier_high, p.pcpu.freq),
             Style::default().fg(th.accent),
         ));
     }
@@ -94,7 +116,7 @@ pub fn render(buf: &mut Buffer, area: Rect, app: &App, th: &Theme) {
     if !cores.is_empty() && inner.height > 2 {
         draw_cluster(
             row,
-            "E".into(),
+            app.soc.tier_low.to_string(),
             &cores[..e_count],
             app.power.as_ref().map(|p| p.ecpu.freq),
         );
@@ -105,25 +127,8 @@ pub fn render(buf: &mut Buffer, area: Rect, app: &App, th: &Theme) {
                 break;
             }
             let freq = app.power.as_ref().map(|p| p.pcpu.freq);
-            draw_cluster(row, format!("P{ci}"), chunk, freq);
+            draw_cluster(row, format!("{}{ci}", app.soc.tier_high), chunk, freq);
             row += 1;
         }
-    }
-
-    // History graph fills the remainder.
-    if row < inner.height {
-        let graph_area = Rect::new(inner.x, inner.y + row, inner.width, inner.height - row);
-        let data: Vec<f32> = app
-            .hist
-            .cpu_total
-            .last_n(graph_area.width as usize * 2)
-            .collect();
-        BrailleGraph {
-            data: &data,
-            max: 100.0,
-            gradient: th.cpu,
-            baseline: th.border,
-        }
-        .render(graph_area, buf);
     }
 }

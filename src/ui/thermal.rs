@@ -19,7 +19,7 @@ use ratatui::text::Span;
 use crate::app::App;
 use crate::collect::temps::{SensorGroup, TempSample, natural_key};
 use crate::ui::layout::RenderState;
-use crate::ui::panels::{chrome, line};
+use crate::ui::panels::{chrome, chrome_with, line};
 use crate::ui::schematic::{self, Geometry};
 use crate::ui::theme::Theme;
 use crate::ui::widgets::{HitMap, Target, fill_bg};
@@ -181,7 +181,15 @@ pub fn render(
     let list_area = Rect::new(map_area.right(), area.y, list_w, area.height);
 
     render_map(buf, map_area, t, app, th, rs);
-    render_sensor_list(buf, list_area, t, th, hits, rs.sensor_scroll);
+    render_sensor_list(
+        buf,
+        list_area,
+        t,
+        th,
+        hits,
+        rs.sensor_scroll,
+        (app.soc.tier_low, app.soc.tier_high),
+    );
 }
 
 /// Standalone chassis-map panel for the overview (no sensor list) — shown
@@ -208,7 +216,27 @@ fn render_map(
     th: &Theme,
     rs: &mut RenderState,
 ) {
-    let inner = chrome(buf, area, "CHASSIS HEAT MAP", th);
+    // Headline: the hottest sensor on the board.
+    let hottest = t
+        .sensors
+        .iter()
+        .map(|s| s.temp.0)
+        .filter(|v| v.is_finite())
+        .fold(f32::NAN, f32::max);
+    let headline = if hottest.is_finite() {
+        vec![
+            Span::styled(
+                format!("{:>4}", crate::units::Celsius(hottest)),
+                Style::default()
+                    .fg(th.temp_color(hottest))
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(" max", Style::default().fg(th.dim)),
+        ]
+    } else {
+        Vec::new()
+    };
+    let inner = chrome_with(buf, area, "CHASSIS HEAT MAP", headline, th);
     if inner.width < 20 || inner.height < 8 {
         return;
     }
@@ -782,7 +810,7 @@ fn place_sensors(
         let ((x, y), tag) = match s.group {
             SensorGroup::CpuECore => {
                 let i = bump(0);
-                let tag = format!("E{}", n.max(i + 1));
+                let tag = format!("{}{}", geom.tier_low, n.max(i + 1));
                 match cell(&mut plan, schematic::Zone::ECpu, i, &tag, s.temp.0) {
                     Some(at) => (at, None),
                     None => (geom.ecore(i), plan.is_none().then_some(tag)),
@@ -790,7 +818,7 @@ fn place_sensors(
             }
             SensorGroup::CpuPCore => {
                 let i = bump(1);
-                let tag = format!("P{}", n.max(i + 1));
+                let tag = format!("{}{}", geom.tier_high, n.max(i + 1));
                 match cell(&mut plan, schematic::Zone::PCpu, i, &tag, s.temp.0) {
                     Some(at) => (at, None),
                     None => (geom.pcore(i), plan.is_none().then_some(tag)),
@@ -878,6 +906,7 @@ fn render_sensor_list(
     th: &Theme,
     hits: &mut HitMap,
     scroll: usize,
+    tiers: (char, char),
 ) {
     let inner = chrome(buf, area, "SENSORS", th);
     if inner.height == 0 {
@@ -898,7 +927,7 @@ fn render_sensor_list(
             }
         }
         if last_group != Some(s.group) {
-            lines.push((s.group.title().to_owned(), None, true));
+            lines.push((s.group.title_with(tiers.0, tiers.1), None, true));
             last_group = Some(s.group);
         }
         lines.push((s.label.clone(), Some(s.temp.0), false));

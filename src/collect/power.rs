@@ -88,6 +88,22 @@ pub(crate) enum CoreKind {
     Performance,
 }
 
+/// A core whose whole window sat in powered-down states: some DOWN/OFF
+/// residency and zero everywhere else. Genuinely idle cores still accrue
+/// IDLE ticks and an all-zero window matches nothing, so neither is dropped.
+/// M5 Max publishes an entire phantom cluster of such cores (`MCPU0*`),
+/// which would otherwise render as ghost 0 MHz rows.
+pub(crate) fn parked(residencies: &[(String, i64)]) -> bool {
+    let (mut down, mut alive) = (0i64, 0i64);
+    for (name, r) in residencies {
+        match name.as_str() {
+            "DOWN" | "OFF" => down = down.saturating_add(*r),
+            _ => alive = alive.saturating_add(*r),
+        }
+    }
+    down > 0 && alive == 0
+}
+
 /// Energy counter → watts using the channel's unit label and real elapsed time.
 fn to_watts(item: &DeltaItem<'_>, dt_ms: u64) -> Watts {
     let per_second = item.integer_value() as f32 / (dt_ms as f32 / 1000.0);
@@ -181,11 +197,17 @@ impl PowerCollector {
                 }
                 "CPU Stats" => {
                     if let Some((kind, die, ord)) = parse_core_channel(name) {
+                        let residencies = item.residencies();
+                        // Parked phantom cores (all-DOWN cluster on M5 Max)
+                        // never reach the panel.
+                        if parked(&residencies) {
+                            return;
+                        }
                         let table = match kind {
                             CoreKind::Efficiency => &soc.ecpu_freqs,
                             CoreKind::Performance => &soc.pcpu_freqs,
                         };
-                        let (freq, usage, _) = freq_from_residency(&item.residencies(), table);
+                        let (freq, usage, _) = freq_from_residency(&residencies, table);
                         let key = (u64::from(die) << 32) | ord;
                         match kind {
                             CoreKind::Efficiency => ecores.push((key, freq, usage)),
@@ -259,6 +281,23 @@ mod tests {
         // Residency array must be longer than the table.
         let (f, u, a) = freq_from_residency(&[("IDLE".into(), 5)], &freqs);
         assert_eq!((f, u.0, a.0), (Mhz(0), 0.0, 0.0));
+    }
+
+    #[test]
+    fn parked_cores_detected_without_dropping_idle_ones() {
+        use super::parked;
+        let r = |pairs: &[(&str, i64)]| -> Vec<(String, i64)> {
+            pairs.iter().map(|&(n, v)| (n.to_owned(), v)).collect()
+        };
+        // M5 Max phantom cluster: the entire window in DOWN.
+        assert!(parked(&r(&[("IDLE", 0), ("DOWN", 900), ("P1", 0)])));
+        assert!(parked(&r(&[("OFF", 42)])));
+        // A real idle core accrues IDLE — kept.
+        assert!(!parked(&r(&[("IDLE", 900), ("DOWN", 100), ("P1", 0)])));
+        // Active cores and degenerate all-zero windows are kept too.
+        assert!(!parked(&r(&[("IDLE", 10), ("DOWN", 0), ("P1", 50)])));
+        assert!(!parked(&r(&[("IDLE", 0), ("DOWN", 0), ("P1", 0)])));
+        assert!(!parked(&[]));
     }
 
     #[test]

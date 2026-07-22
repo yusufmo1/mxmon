@@ -1,9 +1,11 @@
 //! Deterministic fixtures shared by unit, snapshot, and render-fuzz tests.
 //!
-//! Everything here is synthetic and machine-independent: no clocks, no
-//! sockets, no IOKit. An `App` built from these folds every update through
-//! the production `App::apply` path and draws the same frame on any host —
-//! which is exactly what the snapshot tests key on.
+//! Everything here is synthetic and machine-independent: no sockets, no
+//! IOKit. An `App` built from these folds every update through the
+//! production `App::apply` path and draws the same frame on any host —
+//! which is exactly what the snapshot tests key on. The single wall-clock
+//! read is `now_sec`, which pins process start times to a *fixed age*; see
+//! [`procs`] for why an absolute epoch would make frames drift.
 
 // Fixtures are a shared pool consumed piecemeal by test modules across the
 // crate; any single build sees only a subset of them referenced.
@@ -47,6 +49,8 @@ pub fn soc() -> SocInfo {
         macos_version: "26.5".into(),
         ecpu_count: 4,
         pcpu_count: 12,
+        tier_low: 'E',
+        tier_high: 'P',
         cores_per_pcluster: 6,
         gpu_core_count: Some(40),
         memory_bytes: 48 << 30,
@@ -257,6 +261,14 @@ pub fn ping_at(i: usize) -> PingSample {
     }
 }
 
+/// Seconds since the Unix epoch, saturating to 0 on a pre-epoch clock.
+fn now_sec() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs() as i64
+}
+
 /// `n` process rows with a deterministic spread of values; every ~7th row is
 /// "restricted" (unreadable counters → `None`s) to exercise sink-sorting.
 pub fn procs(n: usize) -> ProcSample {
@@ -285,6 +297,14 @@ pub fn procs(n: usize) -> ProcSample {
         ProcState::Idle,
         ProcState::Sleeping,
     ];
+    // Process start times are the one fixture anchored to the wall clock,
+    // because the details modal renders them as a *relative age*: a fixed
+    // epoch would drift across format_duration's width boundaries
+    // ("3d 7h" → "3d 13h") and silently rewrite every frame it appears in.
+    // Fixing the age instead makes that string constant. The offset sits
+    // half an hour off the hour boundary, so the ~ms between building the
+    // fixture and rendering it can never round differently.
+    let started = now_sec() - (3 * 86_400 + 7 * 3_600 + 1_800);
     let rows: Vec<ProcRow> = (0..n)
         .map(|i| {
             let restricted = i % 7 == 3;
@@ -305,7 +325,7 @@ pub fn procs(n: usize) -> ProcSample {
                 disk_write_rate: (!restricted).then(|| Bytes((i as u64 * 47_000) % 3_000_000)),
                 threads: Some(4 + (i as i32) % 23),
                 cpu_time_secs: Some(120 + (i as u64) * 37),
-                start_sec: 1_770_000_000 + i as i64,
+                start_sec: started + i as i64,
             }
         })
         .collect();
@@ -462,6 +482,15 @@ pub fn key_with(code: KeyCode, modifiers: KeyModifiers) -> Event {
 pub fn click(column: u16, row: u16) -> Event {
     Event::Mouse(MouseEvent {
         kind: MouseEventKind::Down(MouseButton::Left),
+        column,
+        row,
+        modifiers: KeyModifiers::NONE,
+    })
+}
+
+pub fn moved(column: u16, row: u16) -> Event {
+    Event::Mouse(MouseEvent {
+        kind: MouseEventKind::Moved,
         column,
         row,
         modifiers: KeyModifiers::NONE,

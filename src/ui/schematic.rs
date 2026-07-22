@@ -124,6 +124,10 @@ pub struct Geometry {
     /// P-cores laid out this many per row (from the cluster topology).
     p_per_row: usize,
     p_rows: usize,
+    /// CPU tier letters from the SoC (E/P; P/S on M5 Pro/Max) — band titles
+    /// and on-map sensor tags follow them.
+    pub tier_low: char,
+    pub tier_high: char,
 }
 
 impl Geometry {
@@ -187,14 +191,12 @@ impl Geometry {
             }
             parts.join(" · ")
         };
-        let ram_label = if soc.chip_name.contains("M1") {
-            "LPDDR4X"
-        } else if soc.chip_name.contains("M2") || soc.chip_name.contains("M3") {
-            "LPDDR5"
-        } else if soc.chip_name.is_empty() {
-            "LPDDR"
-        } else {
-            "LPDDR5X"
+        // Generation-parsed (digit-bounded), so "M14" never reads as M1.
+        let ram_label = match crate::collect::soc::generation(&soc.chip_name) {
+            Some(1) => "LPDDR4X",
+            Some(2 | 3) => "LPDDR5",
+            Some(_) => "LPDDR5X",
+            None => "LPDDR",
         };
 
         Self {
@@ -219,6 +221,8 @@ impl Geometry {
             ram_label,
             p_per_row,
             p_rows,
+            tier_low: soc.tier_low,
+            tier_high: soc.tier_high,
         }
     }
 
@@ -366,7 +370,9 @@ struct PlanCell {
 /// One zone block: a titled box with column dividers and rows of cells.
 struct Band {
     rect: Rect,
-    title: &'static str,
+    zone: Zone,
+    /// Drawn box title; CPU bands carry the machine's tier letters.
+    title: String,
     /// Interior divider columns (absolute x).
     dividers: Vec<u16>,
     /// Cells in claim order (row-major), as indices into `Floorplan::cells`.
@@ -506,7 +512,8 @@ impl Floorplan {
         // One zone block: titled box + dividers + row-major cells, centered
         // in the die interior at `y`.
         let push_band = |plan: &mut Self,
-                         title: &'static str,
+                         zone: Zone,
+                         title: String,
                          cols: usize,
                          rows: usize,
                          interior: usize,
@@ -528,6 +535,7 @@ impl Floorplan {
             }
             plan.bands.push(Band {
                 rect: Rect::new(x0 as u16, y as u16, block_w as u16, (rows + 2) as u16),
+                zone,
                 title,
                 dividers: (1..cols)
                     .map(|c| (x0 + (c * (interior + 1)) as i32) as u16)
@@ -551,37 +559,80 @@ impl Floorplan {
                 };
             let x0 = ix0 + (iw - ensemble as i32) / 2;
             if e_cols > 0 {
-                push_band(&mut plan, " E-CPU ", e_cols, 1, e_int, e_tag, Some(x0), y);
+                push_band(
+                    &mut plan,
+                    Zone::ECpu,
+                    format!(" {}-CPU ", geom.tier_low),
+                    e_cols,
+                    1,
+                    e_int,
+                    e_tag,
+                    Some(x0),
+                    y,
+                );
             }
             if ane {
                 let ax = x0 + e_block as i32 + i32::from(e_block > 0);
-                push_band(&mut plan, " ANE ", 1, 1, 7, 3, Some(ax), y);
+                push_band(
+                    &mut plan,
+                    Zone::Ane,
+                    " ANE ".into(),
+                    1,
+                    1,
+                    7,
+                    3,
+                    Some(ax),
+                    y,
+                );
             }
             y += e_h as i32 + i32::from(gaps >= 1);
         }
         if p_h > 0 {
-            push_band(&mut plan, " P-CPU ", p_cols, p_rows, p_int, p_tag, None, y);
+            push_band(
+                &mut plan,
+                Zone::PCpu,
+                format!(" {}-CPU ", geom.tier_high),
+                p_cols,
+                p_rows,
+                p_int,
+                p_tag,
+                None,
+                y,
+            );
             y += p_h as i32 + i32::from(gaps >= 2);
         }
         if g_h > 0 {
-            push_band(&mut plan, " GPU ", g_cols, g_rows, g_int, g_tag, None, y);
+            push_band(
+                &mut plan,
+                Zone::Gpu,
+                " GPU ".into(),
+                g_cols,
+                g_rows,
+                g_int,
+                g_tag,
+                None,
+                y,
+            );
             y += g_h as i32 + i32::from(gaps >= 3);
         }
         if d_h > 0 {
-            push_band(&mut plan, " DIE ", d_cols, d_rows, d_int, d_tag, None, y);
+            push_band(
+                &mut plan,
+                Zone::Die,
+                " DIE ".into(),
+                d_cols,
+                d_rows,
+                d_int,
+                d_tag,
+                None,
+                y,
+            );
         }
         Some(plan)
     }
 
     fn band_of(&self, zone: Zone) -> Option<&Band> {
-        let title = match zone {
-            Zone::ECpu => " E-CPU ",
-            Zone::PCpu => " P-CPU ",
-            Zone::Gpu => " GPU ",
-            Zone::Die => " DIE ",
-            Zone::Ane => " ANE ",
-        };
-        self.bands.iter().find(|b| b.title == title)
+        self.bands.iter().find(|b| b.zone == zone)
     }
 
     /// Claim cell `i` of a zone for a sensor: stores its reading text and
@@ -1322,5 +1373,24 @@ mod tests {
         // Too narrow for the GPU grid: no plan at all.
         assert!(Floorplan::layout(&g, Rect::new(0, 0, 96, 26), &t).is_none());
         assert!(Floorplan::layout(&g, Rect::new(0, 0, 20, 8), &t).is_none());
+    }
+
+    #[test]
+    fn floorplan_titles_follow_soc_tiers() {
+        // M5 Pro/Max relabel the tiers P/S; bands stay keyed by zone.
+        let t = sample(4, 12, 32, 2, true);
+        let mut m5 = soc(12, 6, 6);
+        m5.chip_name = "Apple M5 Max".into();
+        m5.tier_low = 'P';
+        m5.tier_high = 'S';
+        let g = Geometry::new(&m5, &t, true);
+        assert_eq!((g.tier_low, g.tier_high), ('P', 'S'));
+        let plan = Floorplan::layout(&g, Rect::new(0, 0, 156, 51), &t).expect("hero size");
+        assert_eq!(plan.band_of(Zone::ECpu).expect("low band").title, " P-CPU ");
+        assert_eq!(
+            plan.band_of(Zone::PCpu).expect("high band").title,
+            " S-CPU "
+        );
+        assert_eq!(plan.band_of(Zone::Gpu).expect("gpu band").title, " GPU ");
     }
 }

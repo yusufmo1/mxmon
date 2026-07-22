@@ -8,6 +8,7 @@ use std::io;
 
 use serde::{Deserialize, Serialize};
 
+use crate::collect::soc::SocInfo;
 use crate::ffi::hid::HidTemps;
 use crate::ffi::smc::{KeyInfo, Smc};
 use crate::units::{Celsius, Watts};
@@ -37,6 +38,17 @@ pub enum SensorGroup {
 }
 
 impl SensorGroup {
+    /// [`title`](Self::title) with the machine's CPU tier letters: the CPU
+    /// groups read "E-Cores"/"P-Cores" on M1–M4 and "P-Cores"/"S-Cores" on
+    /// M5 Pro/Max, everything else is unchanged.
+    pub fn title_with(self, tier_low: char, tier_high: char) -> String {
+        match self {
+            Self::CpuECore => format!("{tier_low}-Cores"),
+            Self::CpuPCore => format!("{tier_high}-Cores"),
+            other => other.title().to_owned(),
+        }
+    }
+
     pub fn title(self) -> &'static str {
         match self {
             Self::CpuECore => "E-Cores",
@@ -120,32 +132,55 @@ pub(crate) struct CoreKeys {
 }
 
 pub(crate) fn curated_core_keys(chip_name: &str) -> Option<CoreKeys> {
-    if chip_name.contains("M1") {
-        Some(CoreKeys {
+    // Digit-bounded generation parse, not substring matching — "Apple M14"
+    // must never take the M1 map.
+    match crate::collect::soc::generation(chip_name)? {
+        1 => Some(CoreKeys {
             ecores: &["Tp09", "Tp0T"],
             pcores: &[
                 "Tp01", "Tp05", "Tp0D", "Tp0H", "Tp0L", "Tp0P", "Tp0X", "Tp0b",
             ],
-        })
-    } else if chip_name.contains("M2") {
-        Some(CoreKeys {
+        }),
+        2 => Some(CoreKeys {
             ecores: &["Tp1h", "Tp1t", "Tp1p", "Tp1l"],
             pcores: &[
                 "Tp01", "Tp05", "Tp09", "Tp0D", "Tp0X", "Tp0b", "Tp0f", "Tp0j",
             ],
-        })
-    } else if chip_name.contains("M3") {
-        Some(CoreKeys {
+        }),
+        3 => Some(CoreKeys {
             ecores: &["Te05", "Te0L", "Te0P", "Te0S"],
             pcores: &[
                 "Tf04", "Tf09", "Tf0A", "Tf0B", "Tf0D", "Tf0E", // P-cluster 0
                 "Tf44", "Tf49", "Tf4A", "Tf4B", "Tf4D", "Tf4E", // P-cluster 1
             ],
-        })
-    } else {
-        None
+        }),
+        4 => Some(CoreKeys {
+            ecores: &["Te05", "Te0S", "Te09", "Te0H"],
+            pcores: &[
+                "Tp01", "Tp05", "Tp09", "Tp0D", "Tp0V", "Tp0Y", "Tp0b", "Tp0e",
+            ],
+        }),
+        // M5 buckets match IOReport's: the Super tier fills the pcpu slot
+        // (PCPU* channels), the Performance tier the ecpu slot (MCPU*) — so
+        // temps and frequencies agree on which cores are which. Base M5
+        // exposes a subset of these keys; the ≥half probe gate arbitrates.
+        5 => Some(CoreKeys {
+            ecores: &[
+                "Tp0O", "Tp0R", "Tp0U", "Tp0X", "Tp0a", "Tp0d", "Tp0g", "Tp0j", "Tp0m", "Tp0p",
+                "Tp0u", "Tp0y",
+            ],
+            pcores: &["Tp00", "Tp04", "Tp08", "Tp0C", "Tp0G", "Tp0K"],
+        }),
+        _ => None,
     }
 }
+
+/// Base-M3 GPU cluster keys — Tf-prefixed, unlike every other generation's
+/// Tg family, so the dynamic scan misses them. Probed only when that scan
+/// finds nothing (M3 Max exposes dozens of Tg keys and never gets here).
+const M3_GPU_KEYS: [&str; 8] = [
+    "Tf14", "Tf18", "Tf19", "Tf1A", "Tf24", "Tf28", "Tf29", "Tf2A",
+];
 
 /// Fallback family classification for chips without a curated map.
 fn classify_smc_family(key: &str) -> Option<SensorGroup> {
@@ -216,9 +251,9 @@ type SensorKey = (String, KeyInfo, SensorGroup, String);
 /// Full SMC discovery: curated per-core keys, then a scan of every key on the
 /// machine for chassis and family sensors. Expensive (one IOKit call per key)
 /// — runs once per (chip, macOS, key-set) and is cached by [`save_sensor_cache`].
-fn discover_sensors(smc: &Smc, chip_name: &str) -> Vec<SensorKey> {
+fn discover_sensors(smc: &Smc, soc: &SocInfo) -> Vec<SensorKey> {
     let mut smc_sensors = Vec::new();
-    let curated = curated_core_keys(chip_name);
+    let curated = curated_core_keys(&soc.chip_name);
     // Try a curated key; returns the entry when it exists and reads sane.
     let probe = |key: &str, group: SensorGroup, label: String| {
         let info = smc.key_info(key).ok()?;
@@ -234,14 +269,14 @@ fn discover_sensors(smc: &Smc, chip_name: &str) -> Vec<SensorKey> {
             found.extend(probe(
                 key,
                 SensorGroup::CpuECore,
-                format!("E-Core {}", i + 1),
+                format!("{}-Core {}", soc.tier_low, i + 1),
             ));
         }
         for (i, key) in ck.pcores.iter().enumerate() {
             found.extend(probe(
                 key,
                 SensorGroup::CpuPCore,
-                format!("P-Core {}", i + 1),
+                format!("{}-Core {}", soc.tier_high, i + 1),
             ));
         }
         // Trust the curated map only if it mostly matches this machine.
@@ -289,14 +324,29 @@ fn discover_sensors(smc: &Smc, chip_name: &str) -> Vec<SensorKey> {
                         let n = family_counts.entry(group).or_insert(0);
                         *n += 1;
                         let label = match group {
-                            SensorGroup::CpuECore => format!("E Region {n}"),
-                            _ => format!("P Region {n}"),
+                            SensorGroup::CpuECore => format!("{} Region {n}", soc.tier_low),
+                            _ => format!("{} Region {n}", soc.tier_high),
                         };
                         smc_sensors.push((key, info, group, label));
                     }
                 }
                 _ => {}
             }
+        }
+    }
+
+    // Base M3's Tf-prefixed GPU keys, invisible to the Tg family scan.
+    if crate::collect::soc::generation(&soc.chip_name) == Some(3)
+        && !smc_sensors
+            .iter()
+            .any(|(.., group, _)| *group == SensorGroup::Gpu)
+    {
+        for (i, key) in M3_GPU_KEYS.iter().enumerate() {
+            smc_sensors.extend(probe(
+                key,
+                SensorGroup::Gpu,
+                format!("GPU Cluster {}", i + 1),
+            ));
         }
     }
     smc_sensors
@@ -413,7 +463,7 @@ pub struct TempCollector {
 }
 
 impl TempCollector {
-    pub fn new(chip_name: &str, macos_version: &str) -> io::Result<Self> {
+    pub fn new(soc: &SocInfo) -> io::Result<Self> {
         let mut hid = HidTemps::new().ok();
         if let Some(h) = &mut hid {
             // Non-display channels (e.g. "tcal" calibration references) would
@@ -434,14 +484,14 @@ impl TempCollector {
             // the cached keys (~2 cheap calls each).
             let key_count = smc.key_count().unwrap_or(0);
             smc_sensors = if let Some(sensors) =
-                load_sensor_cache(smc, chip_name, macos_version, key_count)
+                load_sensor_cache(smc, &soc.chip_name, &soc.macos_version, key_count)
             {
                 crate::trace::mark("temps: sensor cache hit");
                 sensors
             } else {
-                let discovered = discover_sensors(smc, chip_name);
+                let discovered = discover_sensors(smc, soc);
                 crate::trace::mark("temps: smc scan done");
-                save_sensor_cache(chip_name, macos_version, key_count, &discovered);
+                save_sensor_cache(&soc.chip_name, &soc.macos_version, key_count, &discovered);
                 discovered
             };
             for n in 0..4 {
@@ -642,6 +692,28 @@ mod tests {
             curated_core_keys("Apple M9 Ultra").is_none(),
             "unknown chips fall back"
         );
+    }
+
+    #[test]
+    fn m4_m5_curated_keys_and_generation_bounds() {
+        let m4 = curated_core_keys("Apple M4 Pro").expect("M4 curated");
+        assert_eq!((m4.ecores.len(), m4.pcores.len()), (4, 8));
+        // M5: pcores carry the 6 Super cores, ecores the 12 Performance
+        // cores — the same bucketing IOReport's PCPU*/MCPU* channels use.
+        let m5 = curated_core_keys("Apple M5 Max").expect("M5 curated");
+        assert_eq!((m5.ecores.len(), m5.pcores.len()), (12, 6));
+        assert!(m5.pcores.contains(&"Tp00") && m5.ecores.contains(&"Tp0y"));
+        // Digit-bounded generation matching: no substring bleed.
+        assert!(curated_core_keys("Apple M14 Ultra").is_none());
+        assert!(curated_core_keys("Apple Silicon").is_none());
+    }
+
+    #[test]
+    fn tier_aware_group_titles() {
+        assert_eq!(SensorGroup::CpuECore.title_with('E', 'P'), "E-Cores");
+        assert_eq!(SensorGroup::CpuECore.title_with('P', 'S'), "P-Cores");
+        assert_eq!(SensorGroup::CpuPCore.title_with('P', 'S'), "S-Cores");
+        assert_eq!(SensorGroup::Gpu.title_with('P', 'S'), "GPU");
     }
 
     #[test]

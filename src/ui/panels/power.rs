@@ -10,7 +10,7 @@ use crate::ui::theme::Theme;
 use crate::ui::widgets::{BrailleGraph, Meter};
 use crate::units::Watts;
 
-use super::{chrome, line, line_right, windowed_scale};
+use super::{chrome, chrome_with, line, line_right, windowed_scale};
 
 /// Package-graph autoscale floor: idle draw (~2 W) reads low but visible,
 /// and the scale relaxes again once a burst leaves the visible window.
@@ -22,12 +22,9 @@ const RAIL_FLOOR: f32 = 20.0;
 const RAIL_PEAK_WINDOW: usize = 120;
 
 pub fn render(buf: &mut Buffer, area: Rect, app: &App, th: &Theme) {
-    let inner = chrome(buf, area, "POWER", th);
-    if inner.height == 0 {
-        return;
-    }
     let dim = Style::default().fg(th.dim);
     let Some(p) = &app.power else {
+        let inner = chrome(buf, area, "POWER", th);
         line(buf, inner, 0, vec![Span::styled("sampling…", dim)]);
         return;
     };
@@ -35,6 +32,24 @@ pub fn render(buf: &mut Buffer, area: Rect, app: &App, th: &Theme) {
     let pkg = p.package();
     let sys = app.temps.as_ref().and_then(|t| t.sys_power);
     let pkg_peak = app.hist.package_w.max();
+
+    // Headline: total system draw (the SMC wall number), package when the
+    // SMC rail is unavailable — labeled so the two never read as each other.
+    let (hl_label, hl_watts) = match sys {
+        Some(sys) => ("SYS ", sys),
+        None => ("PKG ", pkg),
+    };
+    let headline = vec![
+        Span::styled(hl_label, dim),
+        Span::styled(
+            format!("{hl_watts:>6}"),
+            Style::default().fg(th.warn).add_modifier(Modifier::BOLD),
+        ),
+    ];
+    let inner = chrome_with(buf, area, "POWER", headline, th);
+    if inner.height == 0 {
+        return;
+    }
 
     line(
         buf,
@@ -51,20 +66,6 @@ pub fn render(buf: &mut Buffer, area: Rect, app: &App, th: &Theme) {
             Span::styled(format!("  peak {pkg_peak:>4.1}W"), dim),
         ],
     );
-    if let Some(sys) = sys {
-        line_right(
-            buf,
-            inner,
-            0,
-            vec![
-                Span::styled("SYS ", dim),
-                Span::styled(
-                    format!("{sys:>6}"),
-                    Style::default().fg(th.warn).add_modifier(Modifier::BOLD),
-                ),
-            ],
-        );
-    }
 
     // Package history graph (3 rows if space allows).
     let graph_h = if inner.height >= 10 {
