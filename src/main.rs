@@ -328,14 +328,29 @@ fn ui_loop(
     trace::mark("first frame drawn");
     loop {
         // Block for the next message, then drain the queue so a burst of
-        // updates costs one redraw.
-        let first = rx.recv()?;
-        let mut outcome = apply_msg(first, app, control, hits, rs);
-        while let Ok(msg) = rx.try_recv() {
-            match apply_msg(msg, app, control, hits, rs) {
-                Outcome::Quit => outcome = Outcome::Quit,
-                Outcome::Continue if outcome != Outcome::Quit => outcome = Outcome::Continue,
-                _ => {}
+        // updates costs one redraw. While a graph interpolation is in
+        // flight (fluid motion), the block becomes a ~30 fps frame budget:
+        // a timeout is simply "advance the animation and repaint" — the
+        // moment every tier settles, `animating` goes false and the loop
+        // is back to costing nothing at idle.
+        let first = if ui::motion::animating(app) {
+            match rx.recv_timeout(ui::motion::FRAME) {
+                Ok(msg) => Some(msg),
+                Err(mpsc::RecvTimeoutError::Timeout) => None,
+                Err(mpsc::RecvTimeoutError::Disconnected) => return Err(mpsc::RecvError.into()),
+            }
+        } else {
+            Some(rx.recv()?)
+        };
+        let mut outcome = Outcome::Continue;
+        if let Some(first) = first {
+            outcome = apply_msg(first, app, control, hits, rs);
+            while let Ok(msg) = rx.try_recv() {
+                match apply_msg(msg, app, control, hits, rs) {
+                    Outcome::Quit => outcome = Outcome::Quit,
+                    Outcome::Continue if outcome != Outcome::Quit => outcome = Outcome::Continue,
+                    _ => {}
+                }
             }
         }
         if outcome == Outcome::Quit {
@@ -382,6 +397,9 @@ fn draw(
     rs: &mut RenderState,
 ) -> color_eyre::Result<()> {
     let started = std::time::Instant::now();
+    // One shared "now" per frame: every graph interpolates against the same
+    // instant, and tests can pin it directly.
+    app.frame_now = started;
     let theme = ui::theme::resolve(&app.config);
     terminal.draw(|f| ui::layout::draw(f, app, &theme, hits, rs))?;
     app.last_frame_us = started.elapsed().as_micros() as u64;

@@ -63,6 +63,10 @@ pub struct Config {
     /// advances a quarter as fast, showing 4× the history. The settings
     /// modal steps ×1/×2/×4/×8; hand-edited in-between values are honored.
     pub graph_window: u16,
+    /// Fluid graphs: interpolate the live head and the bucket-shift between
+    /// ticks (~30 fps while values move, zero frames at rest). Off renders
+    /// exactly one frame per sample.
+    pub motion: bool,
 }
 
 impl Default for Config {
@@ -79,6 +83,7 @@ impl Default for Config {
             schematic: true,
             contours: true,
             graph_window: 4,
+            motion: true,
         }
     }
 }
@@ -227,6 +232,7 @@ mod tests {
             // Odd on purpose: only the modal is limited to the ×1/2/4/8
             // stops — a hand-tuned value must survive the round trip.
             graph_window: 7,
+            motion: false,
         };
         c.save();
         let l = Config::load();
@@ -241,5 +247,6 @@ mod tests {
         assert!(!l.schematic);
         assert!(!l.contours);
         assert_eq!(l.graph_window, 7);
+        assert!(!l.motion);
     }
 }

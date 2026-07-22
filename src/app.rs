@@ -87,6 +87,12 @@ impl Ring {
         out
     }
 
+    /// Monotonic push count — the motion layer phase-aligns its head/shift
+    /// interpolation to the same absolute counter [`Ring::buckets`] uses.
+    pub(crate) fn pushes(&self) -> u64 {
+        self.total
+    }
+
     #[cfg(test)]
     pub fn is_empty(&self) -> bool {
         self.buf.is_empty()
@@ -357,6 +363,13 @@ pub struct App {
     // Perf HUD numbers.
     pub last_frame_us: u64,
     pub frames: u64,
+
+    /// Per-tier arrival stamps for the fluid-graph interpolation.
+    pub motion_clock: crate::ui::motion::MotionClock,
+    /// The wall-clock instant of the frame being rendered — set once per
+    /// frame by the draw loop so every panel interpolates against the same
+    /// moment (tests set it directly; no sleeping).
+    pub frame_now: std::time::Instant,
 }
 
 impl App {
@@ -390,6 +403,8 @@ impl App {
             visible_rows: Vec::new(),
             last_frame_us: 0,
             frames: 0,
+            motion_clock: crate::ui::motion::MotionClock::default(),
+            frame_now: std::time::Instant::now(),
         }
     }
 
@@ -397,6 +412,48 @@ impl App {
     /// clamped ≥ 1 so a hand-edited 0 can't wedge the resampler).
     pub fn graph_k(&self) -> usize {
         usize::from(self.config.graph_window.max(1))
+    }
+
+    /// The display vector for one graph: [`Ring::buckets`] carried by the
+    /// motion layer's constant-velocity conveyor (each slot a convex blend
+    /// of two adjacent real bucket values, the live head fold eased). With
+    /// motion off — or at a completed bucket's settled instant — this is
+    /// bit-identical to `buckets`, so rendering at rest never shows a value
+    /// that wasn't sampled.
+    pub fn series(
+        &self,
+        ring: &Ring,
+        slots: usize,
+        agg: Agg,
+        tier: crate::ui::motion::Tier,
+    ) -> Vec<f32> {
+        let k = self.graph_k();
+        if !self.config.motion {
+            return ring.buckets(slots, k, agg);
+        }
+        let phase = crate::ui::motion::phase(
+            self.frame_now,
+            self.motion_clock.last(tier),
+            tier.interval(self.config.interval_ms),
+        );
+        crate::ui::motion::series(ring, slots, k, agg, phase)
+    }
+
+    /// The scale basis for one graph: the *raw* bucket window a drifting
+    /// [`Self::series`] samples from. Autoscales and axis windows must read
+    /// this, never the interpolated series — otherwise the axis pumps with
+    /// the blend every frame (a lone spike's windowed max dips toward half
+    /// mid-drift, so the whole waveform breathes at bucket cadence). Every
+    /// interpolated value is a convex blend of two adjacent entries here,
+    /// so a scale from this window can never clip the drawn data — and it
+    /// only ever changes when a sample actually lands.
+    pub fn series_span(&self, ring: &Ring, slots: usize, agg: Agg) -> Vec<f32> {
+        let k = self.graph_k();
+        if !self.config.motion {
+            return ring.buckets(slots, k, agg);
+        }
+        // One extra bucket to the left: the conveyor's full source window.
+        ring.buckets(slots.saturating_add(1), k, agg)
     }
 
     /// Fold a sampler update into state + histories.
@@ -429,6 +486,7 @@ impl App {
                     self.hist.disk_wr.push(disk.write_per_sec.0 as f32);
                 }
                 self.fast = *f;
+                self.motion_clock.fast = Some(std::time::Instant::now());
             }
             Update::Power(p) => {
                 self.hist.package_w.push(p.package().0);
@@ -442,6 +500,7 @@ impl App {
                 self.hist.ecpu_usage.push(p.ecpu.usage.0);
                 self.hist.pcpu_usage.push(p.pcpu.usage.0);
                 self.power = Some(*p);
+                self.motion_clock.power = Some(std::time::Instant::now());
             }
             Update::Slow(s) => {
                 if let Some(t) = &s.temps {
@@ -457,6 +516,7 @@ impl App {
                 if let Some(t) = s.temps {
                     self.temps = Some(t);
                     self.temps_seq += 1;
+                    self.motion_clock.temps = Some(std::time::Instant::now());
                 }
                 // Battery arrives on a slower cadence than temps; a None
                 // between readings means "unchanged", so keep the last one.
@@ -773,6 +833,93 @@ mod tests {
             assert!(r.latest().is_some());
         }
         assert!(app.fast.cpu.is_some(), "snapshot retained for panels");
+    }
+
+    #[test]
+    fn apply_stamps_the_motion_clock_per_tier() {
+        use crate::ui::motion::Tier;
+        let mut app = app();
+        for t in [Tier::Fast, Tier::Power, Tier::Temps] {
+            assert!(app.motion_clock.last(t).is_none(), "fresh app: no stamps");
+        }
+        app.apply(Update::Fast(Box::new(tu::fast_at(0))));
+        assert!(app.motion_clock.last(Tier::Fast).is_some());
+        assert!(app.motion_clock.last(Tier::Power).is_none());
+        app.apply(Update::Power(Box::new(tu::power_at(0))));
+        assert!(app.motion_clock.last(Tier::Power).is_some());
+        // A Slow update without temps (battery-only) must not stamp temps.
+        app.apply(Update::Slow(Box::new(SlowSnapshot {
+            temps: None,
+            battery: Some(tu::battery()),
+        })));
+        assert!(app.motion_clock.last(Tier::Temps).is_none());
+        app.apply(Update::Slow(Box::new(SlowSnapshot {
+            temps: Some(tu::temps_at(0)),
+            battery: None,
+        })));
+        assert!(app.motion_clock.last(Tier::Temps).is_some());
+    }
+
+    #[test]
+    fn series_is_buckets_when_motion_is_off() {
+        use crate::ui::motion::Tier;
+        let mut app = tu::app(); // fixture: motion pinned off, rings full
+        app.motion_clock.fast = Some(std::time::Instant::now());
+        app.frame_now = std::time::Instant::now();
+        let ring = &app.hist.cpu_total;
+        assert_eq!(
+            app.series(ring, 40, Agg::Max, Tier::Fast),
+            ring.buckets(40, app.graph_k(), Agg::Max),
+            "motion off is a pure buckets passthrough"
+        );
+        // Motion on but settled (stamp older than the interval) is also
+        // exactly buckets — the honesty-at-rest contract end to end.
+        app.config.motion = true;
+        app.motion_clock.fast = app
+            .frame_now
+            .checked_sub(std::time::Duration::from_secs(60));
+        assert_eq!(
+            app.series(&app.hist.cpu_total, 40, Agg::Max, Tier::Fast),
+            app.hist.cpu_total.buckets(40, app.graph_k(), Agg::Max),
+        );
+        // Mid-tick, the interpolated head differs only in the last slot at
+        // most — and stays inside the ring's value range.
+        app.motion_clock.fast = app
+            .frame_now
+            .checked_sub(std::time::Duration::from_millis(50));
+        let eased = app.series(&app.hist.cpu_total, 40, Agg::Max, Tier::Fast);
+        assert_eq!(eased.len(), 40);
+    }
+
+    #[test]
+    fn series_span_is_the_raw_scale_basis() {
+        let mut app = tu::app(); // fixture: motion pinned off
+        let ring = &app.hist.cpu_total;
+        let k = app.graph_k();
+        // Motion off: identical to the drawn buckets — scale == old behavior.
+        assert_eq!(
+            app.series_span(ring, 40, Agg::Max),
+            ring.buckets(40, k, Agg::Max)
+        );
+        // Motion on: the conveyor's full source window (one extra bucket),
+        // independent of phase — so an axis built on it never moves between
+        // ticks, and max(span) bounds every convex blend the drift draws.
+        app.config.motion = true;
+        let span = app.series_span(&app.hist.cpu_total, 40, Agg::Max);
+        assert_eq!(span, app.hist.cpu_total.buckets(41, k, Agg::Max));
+        app.motion_clock.fast = Some(std::time::Instant::now());
+        app.frame_now = std::time::Instant::now();
+        let drawn = app.series(
+            &app.hist.cpu_total,
+            40,
+            Agg::Max,
+            crate::ui::motion::Tier::Fast,
+        );
+        let bound = span.iter().copied().fold(f32::MIN, f32::max);
+        assert!(
+            drawn.iter().all(|&v| v <= bound + 1e-3),
+            "span bounds blend"
+        );
     }
 
     #[test]

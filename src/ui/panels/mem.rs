@@ -7,6 +7,7 @@ use ratatui::text::Span;
 
 use crate::app::{Agg, App};
 use crate::collect::mem::Pressure;
+use crate::ui::motion::Tier;
 use crate::ui::theme::Theme;
 use crate::ui::widgets::{LineGraph, Meter, axis_window};
 
@@ -118,11 +119,16 @@ pub fn render(buf: &mut Buffer, area: Rect, app: &App, th: &Theme) {
     // meter above, so the hue still says how full.
     if inner.height > 4 {
         let graph = Rect::new(inner.x, inner.y + 4, inner.width, inner.height - 4);
-        let data = app
-            .hist
-            .mem_used
-            .buckets(graph.width as usize * 2, app.graph_k(), Agg::Mean);
-        let window = axis_window(&data, 0.05, 0.10, (0.0, 1.0));
+        let data = app.series(
+            &app.hist.mem_used,
+            graph.width as usize * 2,
+            Agg::Mean,
+            Tier::Fast,
+        );
+        // Axis from the raw bucket span, not the drawn blend — the window
+        // holds still while the line drifts (App::series_span).
+        let span = app.series_span(&app.hist.mem_used, graph.width as usize * 2, Agg::Mean);
+        let window = axis_window(&span, 0.05, 0.10, (0.0, 1.0));
         let (lo, hi) = window.unwrap_or((0.0, 1.0));
         LineGraph {
             data: &data,

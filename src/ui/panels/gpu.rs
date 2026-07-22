@@ -6,6 +6,7 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::Span;
 
 use crate::app::{Agg, App};
+use crate::ui::motion::Tier;
 use crate::ui::theme::Theme;
 use crate::ui::widgets::{BrailleGraph, Meter};
 
@@ -119,10 +120,12 @@ pub fn render(buf: &mut Buffer, area: Rect, app: &App, th: &Theme) {
             inner.width,
             inner.height - graph_top - detail_rows,
         );
-        let data = app
-            .hist
-            .gpu
-            .buckets(graph.width as usize * 2, app.graph_k(), Agg::Max);
+        let data = app.series(
+            &app.hist.gpu,
+            graph.width as usize * 2,
+            Agg::Max,
+            Tier::Fast,
+        );
         BrailleGraph {
             data: &data,
             max: 1.0,

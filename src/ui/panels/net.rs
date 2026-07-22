@@ -8,6 +8,7 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::Span;
 
 use crate::app::{Agg, App};
+use crate::ui::motion::Tier;
 use crate::ui::theme::Theme;
 use crate::ui::widgets::MirrorGraph;
 use crate::units::Bytes;
@@ -125,9 +126,14 @@ pub fn render(buf: &mut Buffer, area: Rect, app: &App, th: &Theme) {
         let graph = Rect::new(inner.x, inner.y + 1, inner.width, inner.height - 1 - below);
         if graph.height >= 2 {
             let slots = graph.width as usize * 2;
-            let tx = app.hist.net_tx.buckets(slots, app.graph_k(), Agg::Max);
-            let rx = app.hist.net_rx.buckets(slots, app.graph_k(), Agg::Max);
-            let (tx_max, rx_max) = (scale(&tx), scale(&rx));
+            let tx = app.series(&app.hist.net_tx, slots, Agg::Max, Tier::Fast);
+            let rx = app.series(&app.hist.net_rx, slots, Agg::Max, Tier::Fast);
+            // Scale from the raw bucket window, not the drawn blend — the
+            // axis holds still while the waveform drifts (App::series_span).
+            let (tx_max, rx_max) = (
+                scale(&app.series_span(&app.hist.net_tx, slots, Agg::Max)),
+                scale(&app.series_span(&app.hist.net_rx, slots, Agg::Max)),
+            );
             MirrorGraph {
                 tx: &tx,
                 rx: &rx,
@@ -169,7 +175,10 @@ pub fn render(buf: &mut Buffer, area: Rect, app: &App, th: &Theme) {
         let pad = width - history.len();
         for x in 0..width {
             let color = match x.checked_sub(pad).and_then(|i| history.get(i)) {
+                // Never probed and never observed are the same dim track;
+                // only a probe that was due and missed goes red.
                 None => th.border, // no probe yet — dim track
+                Some(v) if crate::app::is_unobserved(*v) => th.border,
                 Some(v) if v.is_nan() => th.crit,
                 Some(v) if *v > SLOW_MS => th.warn,
                 Some(_) => th.ok,

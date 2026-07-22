@@ -6,6 +6,7 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::Span;
 
 use crate::app::{Agg, App, Ring};
+use crate::ui::motion::Tier;
 use crate::ui::theme::Theme;
 use crate::ui::widgets::{BrailleGraph, Meter};
 use crate::units::Watts;
@@ -77,28 +78,36 @@ pub fn render(buf: &mut Buffer, area: Rect, app: &App, th: &Theme) {
     };
     if graph_h > 0 {
         let graph = Rect::new(inner.x, inner.y + 1, inner.width, graph_h);
-        let data = app
-            .hist
-            .package_w
-            .buckets(graph.width as usize * 2, app.graph_k(), Agg::Max);
+        let data = app.series(
+            &app.hist.package_w,
+            graph.width as usize * 2,
+            Agg::Max,
+            Tier::Power,
+        );
         // Scale to the visible window (the all-time session peak already
-        // lives in the header text).
+        // lives in the header text), from the raw bucket span so the axis
+        // holds still while the waveform drifts (App::series_span).
+        let span = app.series_span(&app.hist.package_w, graph.width as usize * 2, Agg::Max);
         BrailleGraph {
             data: &data,
-            max: windowed_scale(&data, PKG_FLOOR),
+            max: windowed_scale(&span, PKG_FLOOR),
             gradient: th.power,
             baseline: th.border,
         }
         .render(graph, buf);
     }
 
-    // Rails.
-    let rails: [(&str, Watts, &Ring); 5] = [
+    // Rails, in the order they drop off a shortening panel: the compute and
+    // memory rails first, then the memory-system rails that only a tall panel
+    // has room for. FAB and PHY are separate rails from RAM, not slices of it.
+    let rails: [(&str, Watts, &Ring); 7] = [
         ("CPU", p.cpu, &app.hist.cpu_w),
         ("GPU", p.gpu, &app.hist.gpu_w),
         ("ANE", p.ane, &app.hist.ane_w),
         ("RAM", p.dram, &app.hist.dram_w),
         ("DSP", p.display, &app.hist.disp_w),
+        ("FAB", p.amcc, &app.hist.amcc_w),
+        ("PHY", p.dcs, &app.hist.dcs_w),
     ];
     let base_row = 1 + graph_h;
     for (i, (label, watts, ring)) in rails.into_iter().enumerate() {

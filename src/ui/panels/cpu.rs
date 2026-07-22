@@ -7,6 +7,7 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::Span;
 
 use crate::app::{Agg, App};
+use crate::ui::motion::Tier;
 use crate::ui::theme::Theme;
 use crate::ui::widgets::{BrailleGraph, CoreBands, core_bar, stacked_bands};
 use crate::units::{Mhz, Watts};
@@ -130,10 +131,12 @@ pub fn render(buf: &mut Buffer, area: Rect, app: &App, th: &Theme) {
     // rows paint over it: set_line only overwrites the cells its spans
     // cover, so the right-aligned fresh data flows around the text block
     // instead of being boxed under it.
-    let data = app
-        .hist
-        .cpu_total
-        .buckets(body.width as usize * 2, app.graph_k(), Agg::Max);
+    let data = app.series(
+        &app.hist.cpu_total,
+        body.width as usize * 2,
+        Agg::Max,
+        Tier::Fast,
+    );
     BrailleGraph {
         data: &data,
         max: 100.0,

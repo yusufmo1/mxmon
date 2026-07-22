@@ -8,6 +8,7 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::Span;
 
 use crate::app::{Agg, App};
+use crate::ui::motion::Tier;
 use crate::ui::theme::Theme;
 use crate::ui::widgets::{LineGraph, Meter, axis_window};
 use crate::units::Celsius;
@@ -126,10 +127,16 @@ pub fn render(buf: &mut Buffer, area: Rect, app: &App, th: &Theme) {
     if inner.height > 2 {
         let graph = Rect::new(inner.x, inner.y + 2, inner.width, inner.height - 2);
         let slots = graph.width as usize * 2;
-        let cpu = app.hist.cpu_temp.buckets(slots, app.graph_k(), Agg::Mean);
-        let gpu = app.hist.gpu_temp.buckets(slots, app.graph_k(), Agg::Mean);
-        // One window across both series so the lines share a scale.
-        let both: Vec<f32> = cpu.iter().chain(gpu.iter()).copied().collect();
+        let cpu = app.series(&app.hist.cpu_temp, slots, Agg::Mean, Tier::Temps);
+        let gpu = app.series(&app.hist.gpu_temp, slots, Agg::Mean, Tier::Temps);
+        // One window across both series so the lines share a scale — from
+        // the raw bucket spans, not the drawn blends, so the axis holds
+        // still while the lines drift (App::series_span).
+        let both: Vec<f32> = app
+            .series_span(&app.hist.cpu_temp, slots, Agg::Mean)
+            .into_iter()
+            .chain(app.series_span(&app.hist.gpu_temp, slots, Agg::Mean))
+            .collect();
         let window = axis_window(&both, 5.0, 10.0, (0.0, 110.0));
         let (lo, hi) = window.unwrap_or((0.0, 1.0));
         LineGraph {

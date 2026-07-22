@@ -8,6 +8,7 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::Span;
 
 use crate::app::{Agg, App};
+use crate::ui::motion::Tier;
 use crate::ui::theme::Theme;
 use crate::ui::widgets::MirrorGraph;
 
@@ -101,11 +102,19 @@ pub fn render(buf: &mut Buffer, area: Rect, app: &App, th: &Theme) {
         let graph = Rect::new(inner.x, inner.y + 1, inner.width, inner.height - 1);
         if graph.height >= 2 {
             let slots = graph.width as usize * 2;
-            let wr = app.hist.disk_wr.buckets(slots, app.graph_k(), Agg::Max);
-            let rd = app.hist.disk_rd.buckets(slots, app.graph_k(), Agg::Max);
+            let wr = app.series(&app.hist.disk_wr, slots, Agg::Max, Tier::Fast);
+            let rd = app.series(&app.hist.disk_rd, slots, Agg::Max, Tier::Fast);
+            // Scale from the raw bucket window, not the drawn blend — the
+            // axis holds still while the waveform drifts (App::series_span).
             let (wr_max, rd_max) = (
-                windowed_scale(&wr, SCALE_FLOOR),
-                windowed_scale(&rd, SCALE_FLOOR),
+                windowed_scale(
+                    &app.series_span(&app.hist.disk_wr, slots, Agg::Max),
+                    SCALE_FLOOR,
+                ),
+                windowed_scale(
+                    &app.series_span(&app.hist.disk_rd, slots, Agg::Max),
+                    SCALE_FLOOR,
+                ),
             );
             MirrorGraph {
                 tx: &wr,

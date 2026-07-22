@@ -2,6 +2,7 @@
 
 pub mod glyphs;
 pub mod layout;
+pub mod motion;
 pub mod overlays;
 pub mod panels;
 pub mod schematic;
