@@ -16,6 +16,25 @@ fn mxmon(tmp: &tempfile::TempDir) -> Command {
     c
 }
 
+/// Whether this host is real Apple Silicon rather than a VM.
+///
+/// The `--json` path drives Apple's private telemetry frameworks, and
+/// IOReport has no providers under a hypervisor: the first call into it
+/// traps (the process dies on SIGTRAP with no stdout, stderr, or panic log
+/// — the trap is raised inside the framework, so there is nothing for
+/// mxmon to catch or degrade). GitHub's macOS runners are VMs, so the
+/// snapshot assertions below can only mean anything on real silicon.
+///
+/// Positive confirmation only: anything we can't read resolves to `false`
+/// and skips, so an unknown environment reports "not verified" instead of
+/// failing a test it was never able to run.
+fn on_real_silicon() -> bool {
+    Command::new("sysctl")
+        .args(["-n", "kern.hv_vmm_present"])
+        .output()
+        .is_ok_and(|o| String::from_utf8_lossy(&o.stdout).trim() == "0")
+}
+
 /// Everything a failed spawn knows about itself. A bare "it failed" is
 /// useless when the run only reproduces on another machine: a process that
 /// dies on a signal has no stderr at all, and the exit code is the only
@@ -64,16 +83,21 @@ fn glyphs_flag_validates_its_value() {
     let tmp = tempfile::tempdir().unwrap();
     std::fs::write(tmp.path().join("config.toml"), "ping = false\n").unwrap();
     // A valid mode rides along with --json (the flag only shapes TUI frames,
-    // so the snapshot path just proves it's accepted end-to-end).
-    let out = mxmon(&tmp)
-        .args(["--json", "--glyphs", "braille"])
-        .output()
-        .unwrap();
-    assert!(
-        out.status.success(),
-        "{}",
-        diagnose("--json --glyphs braille", &out, &tmp)
-    );
+    // so the snapshot path just proves it's accepted end-to-end). That half
+    // needs real telemetry; the rejection half below is pure clap.
+    if on_real_silicon() {
+        let out = mxmon(&tmp)
+            .args(["--json", "--glyphs", "braille"])
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{}",
+            diagnose("--json --glyphs braille", &out, &tmp)
+        );
+    } else {
+        eprintln!("SKIP: --json half needs real Apple Silicon (no IOReport under a hypervisor)");
+    }
     // Clap rejects values outside the enum, not the code downstream.
     let out = mxmon(&tmp).args(["--glyphs", "sixel"]).output().unwrap();
     assert!(!out.status.success());
@@ -85,6 +109,10 @@ fn glyphs_flag_validates_its_value() {
 
 #[test]
 fn json_snapshot_honors_the_source_contract() {
+    if !on_real_silicon() {
+        eprintln!("SKIP: --json needs real Apple Silicon (no IOReport under a hypervisor)");
+        return;
+    }
     let tmp = tempfile::tempdir().unwrap();
     // Fully passive run: the ping prober is the only thing that ever emits
     // network traffic, and this also proves the config override reaches the
