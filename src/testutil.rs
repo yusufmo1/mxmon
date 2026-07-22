@@ -24,8 +24,8 @@ use crate::collect::gpu::GpuSample;
 use crate::collect::mem::{MemSample, Pressure};
 use crate::collect::net::{NetSample, PrimaryIf};
 use crate::collect::ping::PingSample;
-use crate::collect::power::{ClusterSample, PowerSample};
-use crate::collect::procs::{ProcRow, ProcSample, ProcState};
+use crate::collect::power::{ClusterSample, CoreSample, PowerSample};
+use crate::collect::procs::{KernelRates, ProcRow, ProcSample, ProcState};
 use crate::collect::sampler::{FastSnapshot, SlowSnapshot, Update};
 use crate::collect::soc::SocInfo;
 use crate::collect::temps::{Fan, Sensor, SensorGroup, TempSample};
@@ -106,6 +106,8 @@ pub fn fast_at(i: usize) -> FastSnapshot {
             }),
         }),
         disk: Some(DiskSample {
+            root_total: Bytes(3_996_300_000_000),
+            root_available: Bytes(991_400_000_000),
             read_per_sec: Bytes((9_400_000.0 * tri(i + 2, 16)) as u64),
             write_per_sec: Bytes((3_100_000.0 * tri(i + 11, 20)) as u64),
             read_iops: 220,
@@ -124,20 +126,18 @@ pub fn fast_at(i: usize) -> FastSnapshot {
 
 /// One power-tier sample at synthetic tick `i`.
 pub fn power_at(i: usize) -> PowerSample {
-    let e_cores: Vec<(Mhz, Ratio)> = (0..4)
-        .map(|c| {
-            (
-                Mhz(1044 + 400 * c as u32 / 3),
-                Ratio(0.2 + 0.6 * tri(i + c * 5, 18)),
-            )
+    let e_cores: Vec<CoreSample> = (0..4)
+        .map(|c| CoreSample {
+            freq: Mhz(1044 + 400 * c as u32 / 3),
+            usage: Ratio(0.2 + 0.6 * tri(i + c * 5, 18)),
+            watts: Some(Watts(0.04 + 0.09 * tri(i + c * 5, 18))),
         })
         .collect();
-    let p_cores: Vec<(Mhz, Ratio)> = (0..12)
-        .map(|c| {
-            (
-                Mhz(1800 + 180 * c as u32),
-                Ratio((0.05 + 0.85 * tri(i + c * 2, 22)).min(1.0)),
-            )
+    let p_cores: Vec<CoreSample> = (0..12)
+        .map(|c| CoreSample {
+            freq: Mhz(1800 + 180 * c as u32),
+            usage: Ratio((0.05 + 0.85 * tri(i + c * 2, 22)).min(1.0)),
+            watts: Some(Watts(0.2 + 1.1 * tri(i + c * 2, 22))),
         })
         .collect();
     PowerSample {
@@ -160,6 +160,13 @@ pub fn power_at(i: usize) -> PowerSample {
         gpu_freq: Mhz(808 + ((i as u32 * 53) % 500)),
         gpu_usage: Ratio(0.18 + 0.4 * tri(i + 7, 26)),
         gpu_active: Ratio(0.4 + 0.4 * tri(i + 7, 26)),
+        amcc: Watts(0.8 + 0.6 * tri(i + 2, 16)),
+        dcs: Watts(0.5 + 0.4 * tri(i + 5, 16)),
+        video: Watts(0.018),
+        isp: Watts(0.014),
+        scaler: Watts(0.017),
+        gpu_cs: Watts(0.1),
+        display_ext: Watts(1.9),
     }
 }
 
@@ -213,6 +220,7 @@ pub fn temps_at(i: usize) -> TempSample {
     sensors.push(s("Trackpad", SensorGroup::Other, 27.9, 33));
     let cpu_avg = 57.0 + 9.0 * tri(i, 12);
     TempSample {
+        pressure: Some(crate::ffi::notify::Pressure::Light),
         cpu_avg: Celsius(cpu_avg),
         cpu_max: Celsius(cpu_avg + 7.5),
         gpu_avg: Celsius(53.0 + 8.0 * tri(i + 5, 14)),
@@ -232,11 +240,21 @@ pub fn temps_at(i: usize) -> TempSample {
         ],
         sys_power: Some(Watts(21.0 + 14.0 * tri(i, 20))),
         adapter_power: Some(Watts(64.8)),
+        // Over the flow panel's sink gate, so goldens show the BKLT ribbon.
+        backlight_power: Some(Watts(6.3)),
     }
 }
 
 pub fn battery() -> BatterySample {
     BatterySample {
+        design_cycles: Some(1000),
+        cell_voltages: vec![4096, 4096, 4088],
+        not_charging_reason: Some(0),
+        thermally_limited_secs: Some(0),
+        daily_soc: Some((81, 88)),
+        lifetime_max_temp: Some(Celsius(45.0)),
+        raw_capacity_mah: Some(5792),
+        raw_max_capacity_mah: Some(7150),
         charge: Ratio(0.78),
         charging: true,
         external_power: true,
@@ -326,6 +344,13 @@ pub fn procs(n: usize) -> ProcSample {
                 threads: Some(4 + (i as i32) % 23),
                 cpu_time_secs: Some(120 + (i as u64) * 37),
                 start_sec: started + i as i64,
+                csw_rate: (!restricted).then(|| ((i * 311) % 4000) as f64),
+                syscall_rate: (!restricted).then(|| ((i * 907) % 25000) as f64),
+                wakeup_rate: (!restricted).then(|| ((i * 53) % 900) as f64),
+                runnable: (!restricted).then(|| ((i * 7) % 120) as f64 / 100.0),
+                logical_write_rate: (!restricted).then(|| Bytes((i as u64 * 133_000) % 6_000_000)),
+                qos_interactive: (!restricted).then(|| Ratio(((i * 23) % 100) as f32 / 100.0)),
+                qos_background: (!restricted).then(|| Ratio(((i * 41) % 100) as f32 / 100.0)),
             }
         })
         .collect();
@@ -339,6 +364,13 @@ pub fn procs(n: usize) -> ProcSample {
         running,
         threads,
         restricted: true,
+        kernel: KernelRates {
+            context_switches: 62_400.0,
+            syscalls: 148_900.0,
+            mach_messages: 43_800.0,
+            interrupt_wakeups: 9_120.0,
+            runnable: 1.35,
+        },
         rows,
     }
 }
@@ -455,6 +487,10 @@ pub fn flows() -> FlowSample {
 pub fn app() -> App {
     let mut config = Config::default();
     config.glyphs = crate::config::Glyphs::Braille;
+    // Motion interpolates against wall-clock phases; frames must not depend
+    // on when a test runs. Tests that exercise the interpolation pin phases
+    // explicitly (see `ui::motion`).
+    config.motion = false;
     let mut app = App::new(soc(), config);
     // Deep enough that every ring fills every dot column at the ×8 graph
     // window across all snapshot widths (the 320-col overview included) —

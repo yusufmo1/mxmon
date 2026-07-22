@@ -23,10 +23,12 @@ use std::time::{Duration, Instant};
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 
-use crate::app::{App, HISTORY, Modal, Ring, View};
+use crate::app::{App, Edit, HISTORY, Modal, Ring, SettingsUi, View};
 use crate::collect::sampler::{self, Control, FastSnapshot, Update};
 use crate::collect::soc;
 use crate::config::Config;
+use crate::keys;
+use crate::settings;
 use crate::ui::layout::{self, RenderState};
 use crate::ui::theme::{self, Theme};
 use crate::ui::widgets::{HitMap, PanelKind, Target};
@@ -117,6 +119,7 @@ fn fill_rings_nasty(app: &mut App) {
         &mut h.disk_wr,
         &mut h.cpu_temp,
         &mut h.gpu_temp,
+        &mut h.backlight_w,
     ] {
         fill(r);
     }
@@ -144,21 +147,15 @@ fn sweep(
     ];
     // Modal overlays, several with deliberately out-of-range `selected` cursors
     // and an oversized multibyte name to stress overlay layout/truncation.
-    let modals: [(&str, Option<Modal>); 6] = [
+    let modals: [(&str, Option<Modal>); 5] = [
         ("none", None),
-        ("help", Some(Modal::Help)),
         (
             "sort",
             Some(Modal::SortMenu {
                 selected: usize::MAX,
             }),
         ),
-        (
-            "settings",
-            Some(Modal::Settings {
-                selected: usize::MAX,
-            }),
-        ),
+        ("settings", Some(Modal::Settings)),
         (
             "kill",
             Some(Modal::Kill {
@@ -170,11 +167,33 @@ fn sweep(
         ("details", Some(Modal::Details { pid: i32::MIN })),
     ];
 
+    // The settings card's own cursor axis: every page, plus hostile indices
+    // and both capture modes. Rotated with the combo counter like hover, so
+    // each state still gets the full size sweep without a nested loop.
+    let cards: Vec<SettingsUi> = std::iter::once(SettingsUi {
+        section: usize::MAX,
+        row: usize::MAX,
+        edit: Some(Edit::Text {
+            id: settings::Id::PingHost,
+            // Longer than any card is wide, multibyte, and on a page the
+            // cursor may not even be on.
+            buf: "日本語🔥".repeat(50),
+        }),
+    })
+    .chain((0..settings::SECTIONS.len()).map(|section| SettingsUi {
+        section,
+        row: section * 3, // walks in and out of range across the pages
+        edit: (section % 3 == 0).then_some(Edit::Capture {
+            action: keys::ACTIONS[section % keys::ACTIONS.len()],
+        }),
+    }))
+    .collect();
+
     // Hover states rotate with the combo counter: every glow/affordance
     // render path (card borders, nav tags, arrow underlines, row tints, the
     // modal ✕) gets the full size sweep without multiplying the matrix.
     // Stale indices are deliberate — hover always races data refreshes.
-    const HOVERS: [Option<Target>; 9] = [
+    const HOVERS: [Option<Target>; 14] = [
         None,
         Some(Target::Panel(PanelKind::Cpu)),
         Some(Target::Panel(PanelKind::HeatMap)),
@@ -182,8 +201,13 @@ fn sweep(
         Some(Target::FlowRow(usize::MAX)),
         Some(Target::SettingInc(2)),
         Some(Target::SettingDec(usize::MAX)),
-        Some(Target::ModalClose),
-        Some(Target::KillPid(i32::MIN)),
+        Some(Target::SettingSection(usize::MAX)),
+        Some(Target::SettingOption(usize::MAX, usize::MAX)),
+        Some(Target::SettingReset(1)),
+        Some(Target::SettingEdit(usize::MAX)),
+        Some(Target::KeyChord(usize::MAX, usize::MAX)),
+        Some(Target::KeyAdd(0)),
+        Some(Target::AboutAction(usize::MAX)),
     ];
 
     let mut combos = 0;
@@ -206,6 +230,7 @@ fn sweep(
                         };
                         let hover = HOVERS[combos % HOVERS.len()];
                         app.hover = hover;
+                        app.settings = cards[combos % cards.len()].clone();
                         // Graph-window zoom rotates with the combo counter
                         // like hover does; 5 is deliberately off the modal's
                         // power-of-two stops (a hand-edited config is legal).
@@ -241,7 +266,7 @@ fn sweep(
 #[test]
 fn render_never_panics_across_sizes_views_states() {
     let mut app = sampled_app();
-    let th = theme::by_name(&app.config.theme);
+    let th = theme::resolve(&app.config);
 
     // Capture each panic's message *and* the first frame in our own code
     // (ratatui's index panic points at its buffer, not the panel that overran
@@ -286,6 +311,13 @@ fn render_never_panics_across_sizes_views_states() {
     app.config.schematic = false;
     app.config.contours = false;
     app.config.glyphs = crate::config::Glyphs::Octant;
+    // Arm the motion interpolator mid-tick so `App::series` runs its eased
+    // paths (not the settled identity) over the hostile rings.
+    app.config.motion = true;
+    app.motion_clock.fast = Some(std::time::Instant::now());
+    app.motion_clock.power = Some(std::time::Instant::now());
+    app.motion_clock.temps = Some(std::time::Instant::now());
+    app.frame_now = std::time::Instant::now();
     combos += sweep(&mut app, &th, "nasty-rings", &last, &mut failures);
     // State 3 — nasty rings *and* no live metric sample (a real SourceDown
     // transient): panels must fall back without reading a stale coordinate.
