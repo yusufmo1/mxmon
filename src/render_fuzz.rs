@@ -23,7 +23,8 @@ use std::time::{Duration, Instant};
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 
-use crate::app::{App, Edit, HISTORY, Modal, Ring, SettingsUi, View};
+use crate::app::{App, Arranging, Edit, HISTORY, Modal, Ring, SettingsUi, View};
+use crate::arrange::{self, Arrangement};
 use crate::collect::sampler::{self, Control, FastSnapshot, Update};
 use crate::collect::soc;
 use crate::config::Config;
@@ -212,6 +213,44 @@ fn sweep(
         Some(Target::AboutAction(usize::MAX)),
     ];
 
+    // Where the cards sit: shipped, one swap that moves the process table
+    // into a metric slot (and a metric card into the table's), and a full
+    // reversal so every slot hosts a different tenant at once.
+    let arrangements: [Arrangement; 3] = [
+        Arrangement::default(),
+        {
+            let mut a = Arrangement::default();
+            a.swap(PanelKind::Cpu, PanelKind::Procs);
+            a
+        },
+        {
+            let mut a = Arrangement::default();
+            for (i, &x) in arrange::PANELS.iter().enumerate() {
+                a.swap(x, arrange::PANELS[arrange::PANELS.len() - 1 - i]);
+            }
+            a
+        },
+    ];
+    let arrangements = &arrangements;
+    // What is being moved: nothing, a mouse drag with a hostile drop target,
+    // and the keyboard mode both empty-handed and carrying a card.
+    const ARRANGING: [Option<Arranging>; 4] = [
+        None,
+        Some(Arranging::Drag {
+            from: PanelKind::Procs,
+            over: Some(PanelKind::HeatMap),
+            moved: true,
+        }),
+        Some(Arranging::Mode {
+            cursor: PanelKind::Battery,
+            held: None,
+        }),
+        Some(Arranging::Mode {
+            cursor: PanelKind::Cpu,
+            held: Some(PanelKind::Temps),
+        }),
+    ];
+
     let mut combos = 0;
     for &view in &views {
         for (mlabel, modal) in &modals {
@@ -233,6 +272,14 @@ fn sweep(
                         let hover = HOVERS[combos % HOVERS.len()];
                         app.hover = hover;
                         app.settings = cards[combos % cards.len()].clone();
+                        // Card rearrangement rotates on two axes: where the
+                        // cards ended up, and what is being moved right now.
+                        // Between them these reach the swapped-tenant render
+                        // (the process table drawn in a metric slot and back),
+                        // the drag/cursor/held affordances, and the dashed
+                        // placeholder a hidden slot leaves while arranging.
+                        app.config.arrangement = arrangements[combos % arrangements.len()].clone();
+                        app.arrange = ARRANGING[combos % ARRANGING.len()];
                         // Graph-window zoom rotates with the combo counter
                         // like hover does; 5 is deliberately off the modal's
                         // power-of-two stops (a hand-edited config is legal).

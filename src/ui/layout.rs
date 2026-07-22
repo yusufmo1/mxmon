@@ -6,12 +6,14 @@
 
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
+use ratatui::style::Style;
+use ratatui::text::Span;
 
 use crate::app::{App, View};
 use crate::ui::panels;
 use crate::ui::panels::nav;
 use crate::ui::theme::Theme;
-use crate::ui::widgets::{HitMap, PanelKind, fill_bg};
+use crate::ui::widgets::{HitMap, PanelKind, Target, fill_bg};
 
 use super::{overlays, thermal};
 
@@ -41,7 +43,7 @@ pub fn draw(f: &mut Frame<'_>, app: &mut App, th: &Theme, hits: &mut HitMap, rs:
 
     match app.view {
         View::Overview => overview(buf, body, app, th, hits, rs),
-        View::Processes => processes_view(buf, body, app, th, hits),
+        View::Processes => processes_view(buf, body, app, th, hits, rs),
         View::Thermal => thermal::render(buf, body, app, th, hits, rs),
         View::Connections => panels::flows::render(buf, body, app, th, hits, rs),
     }
@@ -72,6 +74,7 @@ fn processes_view(
     app: &mut App,
     th: &Theme,
     hits: &mut HitMap,
+    rs: &mut RenderState,
 ) {
     let cap = app.config.procs_panes;
     let fit = panels::procs::max_panes(body.width.saturating_sub(2));
@@ -80,7 +83,7 @@ fn processes_view(
         let [table, widgets] =
             Layout::horizontal([Constraint::Length(table_w), Constraint::Min(0)]).areas(body);
         panels::procs::render(buf, table, app, th, hits, cap);
-        widget_grid(buf, widgets, app, th, hits);
+        widget_grid(buf, widgets, app, th, hits, rs);
     } else {
         panels::procs::render(buf, body, app, th, hits, 4);
     }
@@ -91,13 +94,14 @@ fn processes_view(
 fn widget_grid(
     buf: &mut ratatui::buffer::Buffer,
     area: Rect,
-    app: &App,
+    app: &mut App,
     th: &Theme,
     hits: &mut HitMap,
+    rs: &mut RenderState,
 ) {
     let cols = (area.width / 100).clamp(1, 2);
     let rows = (area.height / 9).clamp(2, 4);
-    let mut fns: Vec<PanelKind> = vec![
+    let mut slots: Vec<PanelKind> = vec![
         PanelKind::Cpu,
         PanelKind::Net,
         PanelKind::Mem,
@@ -107,10 +111,13 @@ fn widget_grid(
         PanelKind::Temps,
     ];
     if app.battery.is_some() {
-        fns.push(PanelKind::Battery);
+        slots.push(PanelKind::Battery);
     }
+    // The table is this view's own subject, so a slot that now resolves to it
+    // yields to the next panel rather than drawing a second copy beside it.
+    slots.retain(|&slot| app.config.arrangement.at(slot) != PanelKind::Procs);
     let (cw, rh) = (area.width / cols, area.height / rows);
-    for (i, kind) in fns.into_iter().take((cols * rows) as usize).enumerate() {
+    for (i, slot) in slots.into_iter().take((cols * rows) as usize).enumerate() {
         let (row, col) = (i as u16 / cols, i as u16 % cols);
         // The last column/row absorb the division remainders.
         let w = if col + 1 == cols {
@@ -124,7 +131,7 @@ fn widget_grid(
             rh
         };
         let rect = Rect::new(area.x + col * cw, area.y + row * rh, w, h);
-        card(buf, rect, app, th, hits, kind);
+        card(buf, rect, app, th, hits, rs, slot);
     }
 }
 
@@ -171,10 +178,7 @@ fn overview(
         let map_w = aspect_w.min(width * 38 / 100);
         let [left, map_col] =
             Layout::horizontal([Constraint::Min(0), Constraint::Length(map_w)]).areas(body);
-        if app.config.panel_visible(PanelKind::HeatMap) {
-            thermal::map_panel(buf, map_col, app, th, rs);
-            nav(buf, map_col, app, th, hits, PanelKind::HeatMap);
-        }
+        card(buf, map_col, app, th, hits, rs, PanelKind::HeatMap);
 
         let [top, mid, procs_area] = Layout::vertical([
             Constraint::Length(cpu_h),
@@ -189,9 +193,9 @@ fn overview(
             Constraint::Percentage(32),
         ])
         .areas(top);
-        card(buf, cpu_a, app, th, hits, PanelKind::Cpu);
-        card(buf, power_a, app, th, hits, PanelKind::Power);
-        card(buf, battery_a, app, th, hits, PanelKind::Battery);
+        card(buf, cpu_a, app, th, hits, rs, PanelKind::Cpu);
+        card(buf, power_a, app, th, hits, rs, PanelKind::Power);
+        card(buf, battery_a, app, th, hits, rs, PanelKind::Battery);
 
         // With the pane cap (default 1) leaving width the process table
         // doesn't want, DISK and TEMPS move down beside it as tall panels
@@ -206,9 +210,9 @@ fn overview(
                 Constraint::Percentage(34),
             ])
             .areas(mid);
-            card(buf, gpu_a, app, th, hits, PanelKind::Gpu);
-            card(buf, mem_a, app, th, hits, PanelKind::Mem);
-            card(buf, net_a, app, th, hits, PanelKind::Net);
+            card(buf, gpu_a, app, th, hits, rs, PanelKind::Gpu);
+            card(buf, mem_a, app, th, hits, rs, PanelKind::Mem);
+            card(buf, net_a, app, th, hits, rs, PanelKind::Net);
 
             let [table, disk_a, temps_a] = Layout::horizontal([
                 Constraint::Length(table_w),
@@ -216,19 +220,19 @@ fn overview(
                 Constraint::Fill(1),
             ])
             .areas(procs_area);
-            panels::procs::render(buf, table, app, th, hits, cap);
-            card(buf, disk_a, app, th, hits, PanelKind::Disk);
-            card(buf, temps_a, app, th, hits, PanelKind::Temps);
+            card_capped(buf, table, app, th, hits, rs, PanelKind::Procs, cap);
+            card(buf, disk_a, app, th, hits, rs, PanelKind::Disk);
+            card(buf, temps_a, app, th, hits, rs, PanelKind::Temps);
         } else {
             let [gpu_a, mem_a, net_a, disk_a, temps_a] =
                 Layout::horizontal([Constraint::Percentage(20); 5]).areas(mid);
-            card(buf, gpu_a, app, th, hits, PanelKind::Gpu);
-            card(buf, mem_a, app, th, hits, PanelKind::Mem);
-            card(buf, net_a, app, th, hits, PanelKind::Net);
-            card(buf, disk_a, app, th, hits, PanelKind::Disk);
-            card(buf, temps_a, app, th, hits, PanelKind::Temps);
+            card(buf, gpu_a, app, th, hits, rs, PanelKind::Gpu);
+            card(buf, mem_a, app, th, hits, rs, PanelKind::Mem);
+            card(buf, net_a, app, th, hits, rs, PanelKind::Net);
+            card(buf, disk_a, app, th, hits, rs, PanelKind::Disk);
+            card(buf, temps_a, app, th, hits, rs, PanelKind::Temps);
 
-            panels::procs::render(buf, procs_area, app, th, hits, 4);
+            card(buf, procs_area, app, th, hits, rs, PanelKind::Procs);
         }
     } else if width >= 300 {
         // Hyper-wide but short (the ultrawide branch above needs ≥30 rows): a
@@ -239,49 +243,26 @@ fn overview(
         // table (double-width) sit side by side, so nothing is squished and
         // the width finally earns its keep. Width-hungry cards carry heavier
         // weights; naturally-slim ones stay thin.
-        #[derive(Clone, Copy)]
-        enum Card {
-            Metric(PanelFn, PanelKind),
-            Heat,
-            Procs,
+        let mut slots: Vec<(u16, PanelKind)> = vec![(6, PanelKind::Cpu), (4, PanelKind::Power)];
+        if card_present(app, PanelKind::Battery) {
+            slots.push((7, PanelKind::Battery));
         }
-        let mut cards: Vec<(u16, Card)> = vec![
-            (6, Card::Metric(panels::cpu::render, PanelKind::Cpu)),
-            (4, Card::Metric(panels::power::render, PanelKind::Power)),
-        ];
-        if app.battery.is_some() {
-            cards.push((7, Card::Metric(panels::battery::render, PanelKind::Battery)));
-        }
-        cards.extend([
-            (4, Card::Metric(panels::gpu::render, PanelKind::Gpu)),
-            (4, Card::Metric(panels::mem::render, PanelKind::Mem)),
-            (6, Card::Metric(panels::net::render, PanelKind::Net)),
-            (4, Card::Metric(panels::disk::render, PanelKind::Disk)),
-            (5, Card::Metric(panels::temps::render, PanelKind::Temps)),
-            (6, Card::Heat),
-            (18, Card::Procs),
+        slots.extend([
+            (4, PanelKind::Gpu),
+            (4, PanelKind::Mem),
+            (6, PanelKind::Net),
+            (4, PanelKind::Disk),
+            (5, PanelKind::Temps),
+            (6, PanelKind::HeatMap),
+            (18, PanelKind::Procs),
         ]);
 
-        let widths: Vec<Constraint> = cards.iter().map(|&(w, _)| Constraint::Fill(w)).collect();
+        let widths: Vec<Constraint> = slots.iter().map(|&(w, _)| Constraint::Fill(w)).collect();
         let rects = Layout::horizontal(widths).split(body);
         // Rects are computed up front, so rendering is a plain sequence — each
-        // call releases its borrow before the next, letting the `&App` metric
-        // panels sit beside the process card's `&mut App` and the heat card's
-        // `&mut RenderState`.
-        for (&(_, card), &rect) in cards.iter().zip(rects.iter()) {
-            match card {
-                Card::Metric(f, kind) => {
-                    f(buf, rect, app, th);
-                    nav(buf, rect, app, th, hits, kind);
-                }
-                Card::Heat => {
-                    if app.config.panel_visible(PanelKind::HeatMap) {
-                        thermal::map_panel(buf, rect, app, th, rs);
-                        nav(buf, rect, app, th, hits, PanelKind::HeatMap);
-                    }
-                }
-                Card::Procs => panels::procs::render(buf, rect, app, th, hits, 4),
-            }
+        // call releases its borrow before the next.
+        for (&(_, slot), &rect) in slots.iter().zip(rects.iter()) {
+            card(buf, rect, app, th, hits, rs, slot);
         }
     } else if width >= 130 {
         // Wide/ultrawide: CPU+POWER on top, then metric row(s), procs bottom.
@@ -298,17 +279,17 @@ fn overview(
             Constraint::Percentage(30),
         ])
         .areas(top);
-        card(buf, cpu_a, app, th, hits, PanelKind::Cpu);
-        card(buf, power_a, app, th, hits, PanelKind::Power);
-        card(buf, battery_a, app, th, hits, PanelKind::Battery);
+        card(buf, cpu_a, app, th, hits, rs, PanelKind::Cpu);
+        card(buf, power_a, app, th, hits, rs, PanelKind::Power);
+        card(buf, battery_a, app, th, hits, rs, PanelKind::Battery);
 
         let [gpu_a, mem_a, net_a, disk_a, temps_a] =
             Layout::horizontal([Constraint::Percentage(20); 5]).areas(mid);
-        card(buf, gpu_a, app, th, hits, PanelKind::Gpu);
-        card(buf, mem_a, app, th, hits, PanelKind::Mem);
-        card(buf, net_a, app, th, hits, PanelKind::Net);
-        card(buf, disk_a, app, th, hits, PanelKind::Disk);
-        card(buf, temps_a, app, th, hits, PanelKind::Temps);
+        card(buf, gpu_a, app, th, hits, rs, PanelKind::Gpu);
+        card(buf, mem_a, app, th, hits, rs, PanelKind::Mem);
+        card(buf, net_a, app, th, hits, rs, PanelKind::Net);
+        card(buf, disk_a, app, th, hits, rs, PanelKind::Disk);
+        card(buf, temps_a, app, th, hits, rs, PanelKind::Temps);
 
         // Big terminals get the chassis heat map inline, beside the
         // process table (sized to the chassis aspect, capped at 45%).
@@ -318,13 +299,10 @@ fn overview(
             let [procs_l, map_r] =
                 Layout::horizontal([Constraint::Min(0), Constraint::Length(map_w)])
                     .areas(procs_area);
-            panels::procs::render(buf, procs_l, app, th, hits, 4);
-            if app.config.panel_visible(PanelKind::HeatMap) {
-                thermal::map_panel(buf, map_r, app, th, rs);
-                nav(buf, map_r, app, th, hits, PanelKind::HeatMap);
-            }
+            card(buf, procs_l, app, th, hits, rs, PanelKind::Procs);
+            card(buf, map_r, app, th, hits, rs, PanelKind::HeatMap);
         } else {
-            panels::procs::render(buf, procs_area, app, th, hits, 4);
+            card(buf, procs_area, app, th, hits, rs, PanelKind::Procs);
         }
     } else if width >= 88 {
         // Two columns; a third metric row (disk + temps) appears when tall.
@@ -345,8 +323,8 @@ fn overview(
 
         let [cpu_a, power_a] =
             Layout::horizontal([Constraint::Percentage(58), Constraint::Percentage(42)]).areas(top);
-        card(buf, cpu_a, app, th, hits, PanelKind::Cpu);
-        card(buf, power_a, app, th, hits, PanelKind::Power);
+        card(buf, cpu_a, app, th, hits, rs, PanelKind::Cpu);
+        card(buf, power_a, app, th, hits, rs, PanelKind::Power);
 
         let [mid_top, mid_bottom, mid_third] = Layout::vertical([
             Constraint::Length(mid_h),
@@ -357,33 +335,33 @@ fn overview(
         let [gpu_a, mem_a] =
             Layout::horizontal([Constraint::Percentage(50), Constraint::Percentage(50)])
                 .areas(mid_top);
-        card(buf, gpu_a, app, th, hits, PanelKind::Gpu);
-        card(buf, mem_a, app, th, hits, PanelKind::Mem);
+        card(buf, gpu_a, app, th, hits, rs, PanelKind::Gpu);
+        card(buf, mem_a, app, th, hits, rs, PanelKind::Mem);
         let [net_a, right_a] =
             Layout::horizontal([Constraint::Percentage(50), Constraint::Percentage(50)])
                 .areas(mid_bottom);
-        card(buf, net_a, app, th, hits, PanelKind::Net);
+        card(buf, net_a, app, th, hits, rs, PanelKind::Net);
         if tall {
             // Row 2 keeps battery (temps moves to row 3 beside disk); on
             // desktops without a battery, disk takes the full third row.
-            if app.battery.is_some() {
-                card(buf, right_a, app, th, hits, PanelKind::Battery);
+            if card_present(app, PanelKind::Battery) {
+                card(buf, right_a, app, th, hits, rs, PanelKind::Battery);
                 let [disk_a, temps_a] =
                     Layout::horizontal([Constraint::Percentage(50), Constraint::Percentage(50)])
                         .areas(mid_third);
-                card(buf, disk_a, app, th, hits, PanelKind::Disk);
-                card(buf, temps_a, app, th, hits, PanelKind::Temps);
+                card(buf, disk_a, app, th, hits, rs, PanelKind::Disk);
+                card(buf, temps_a, app, th, hits, rs, PanelKind::Temps);
             } else {
-                card(buf, right_a, app, th, hits, PanelKind::Temps);
-                card(buf, mid_third, app, th, hits, PanelKind::Disk);
+                card(buf, right_a, app, th, hits, rs, PanelKind::Temps);
+                card(buf, mid_third, app, th, hits, rs, PanelKind::Disk);
             }
-        } else if app.battery.is_some() && body.height < 40 {
-            card(buf, right_a, app, th, hits, PanelKind::Battery);
+        } else if card_present(app, PanelKind::Battery) && body.height < 40 {
+            card(buf, right_a, app, th, hits, rs, PanelKind::Battery);
         } else {
-            card(buf, right_a, app, th, hits, PanelKind::Temps);
+            card(buf, right_a, app, th, hits, rs, PanelKind::Temps);
         }
 
-        panels::procs::render(buf, procs_area, app, th, hits, 4);
+        card(buf, procs_area, app, th, hits, rs, PanelKind::Procs);
     } else {
         // Narrow: single stacked column, priority order, whatever fits.
         let heights = [
@@ -393,7 +371,11 @@ fn overview(
             6,  // memory
             10, // network (mirrored graph + connectivity need the rows)
             6,  // disk
-            if app.battery.is_some() { 7 } else { 0 },
+            if card_present(app, PanelKind::Battery) {
+                7
+            } else {
+                0
+            },
         ];
         let mut y = body.y;
         let panels_fns: [(u16, PanelKind); 7] = [
@@ -405,7 +387,7 @@ fn overview(
             (heights[5], PanelKind::Disk),
             (heights[6], PanelKind::Battery),
         ];
-        for (h, kind) in panels_fns {
+        for (h, slot) in panels_fns {
             if h == 0 {
                 continue;
             }
@@ -414,36 +396,75 @@ fn overview(
                 break;
             }
             let area = Rect::new(body.x, y, body.width, h);
-            card(buf, area, app, th, hits, kind);
+            card(buf, area, app, th, hits, rs, slot);
             y += h;
         }
         if y < body.bottom() {
             let procs_area = Rect::new(body.x, y, body.width, body.bottom() - y);
-            panels::procs::render(buf, procs_area, app, th, hits, 4);
+            card(buf, procs_area, app, th, hits, rs, PanelKind::Procs);
         }
     }
 }
 
 type PanelFn = fn(&mut ratatui::buffer::Buffer, Rect, &App, &Theme);
 
-/// Render a metric card and register its nav target — unless the user has
-/// switched that panel off (settings card, PANELS page), in which case the
-/// slot is left empty. These layouts allocate rects by percentage, so a
-/// hidden card leaves a hole; it does not reflow the rows around it.
+/// Whether the card that resolves for `slot` has anything to show. Only
+/// BATTERY is conditional (desktops have none), and after a rearrangement
+/// that condition has to follow the *panel*, not the position it landed in —
+/// otherwise swapping battery away from its home slot would blank whichever
+/// card took its place.
+fn card_present(app: &App, slot: PanelKind) -> bool {
+    app.config.arrangement.at(slot) != PanelKind::Battery || app.battery.is_some()
+}
+
+/// Render whichever card the user has assigned to `slot`'s home position,
+/// register it as a nav + drag target, and paint its affordance.
 ///
-/// Taking the `PanelKind` alone (and resolving the renderer here) keeps every
-/// call site on one line and puts the kind→renderer mapping in one place.
+/// Geometry belongs to the slot: the rect was chosen for this position, and a
+/// rearrangement only changes which panel draws into it (see
+/// [`crate::arrange`]). A panel switched off on the PANELS page leaves the
+/// slot empty — these layouts allocate rects by percentage, so a hidden card
+/// leaves a hole rather than reflowing the rows around it.
 fn card(
     buf: &mut ratatui::buffer::Buffer,
     area: Rect,
-    app: &App,
+    app: &mut App,
     th: &Theme,
     hits: &mut HitMap,
-    kind: PanelKind,
+    rs: &mut RenderState,
+    slot: PanelKind,
 ) {
-    if !app.config.panel_visible(kind) {
+    card_capped(buf, area, app, th, hits, rs, slot, 4);
+}
+
+/// [`card`] for a slot whose geometry is the process table's, carrying the
+/// pane cap that slot was measured with.
+#[allow(clippy::too_many_arguments)]
+fn card_capped(
+    buf: &mut ratatui::buffer::Buffer,
+    area: Rect,
+    app: &mut App,
+    th: &Theme,
+    hits: &mut HitMap,
+    rs: &mut RenderState,
+    slot: PanelKind,
+    cap: u16,
+) {
+    let kind = app.config.arrangement.at(slot);
+    if !app.config.panel_visible(kind) || !card_present(app, slot) {
+        // While a rearrangement is in flight an empty slot is still a place
+        // a card can be dropped — otherwise hiding a panel would make its
+        // (often roomier) position permanently unreachable.
+        if app.arrange.is_some() {
+            empty_slot(buf, area, app, th, hits, kind);
+        }
         return;
     }
+    // The target goes down *before* the panel renders: push order is z-order,
+    // and the process table's rows must win the hit test over the card they
+    // sit on. Registering the backdrop first is what lets the table drag by
+    // its title bar while a click on a row still selects that process.
+    hits.push(area, Target::Panel(kind));
     let render: PanelFn = match kind {
         PanelKind::Cpu => panels::cpu::render,
         PanelKind::Gpu => panels::gpu::render,
@@ -453,12 +474,57 @@ fn card(
         PanelKind::Power => panels::power::render,
         PanelKind::Temps => panels::temps::render,
         PanelKind::Battery => panels::battery::render,
-        // The chassis map takes `&mut RenderState`, so it is drawn (and
-        // guarded) at its own call sites rather than through here.
-        PanelKind::HeatMap => return,
+        // These two need more than `&App`, so they dispatch here rather than
+        // through a plain fn pointer.
+        PanelKind::HeatMap => {
+            thermal::map_panel(buf, area, app, th, rs);
+            nav(buf, area, app, th, kind);
+            return;
+        }
+        PanelKind::Procs => {
+            panels::procs::render(buf, area, app, th, hits, cap);
+            nav(buf, area, app, th, kind);
+            return;
+        }
     };
     render(buf, area, app, th);
-    nav(buf, area, app, th, hits, kind);
+    nav(buf, area, app, th, kind);
+}
+
+/// The placeholder a switched-off card leaves behind while something is being
+/// dragged: a dashed frame naming the panel that lives here, so the hole reads
+/// as a destination rather than as damage.
+fn empty_slot(
+    buf: &mut ratatui::buffer::Buffer,
+    area: Rect,
+    app: &App,
+    th: &Theme,
+    hits: &mut HitMap,
+    kind: PanelKind,
+) {
+    hits.push(area, Target::Panel(kind));
+    let clipped = area.intersection(buf.area);
+    if clipped.width < 2 || clipped.height < 2 {
+        return;
+    }
+    let dashed = Style::default().fg(th.dim).bg(th.bg);
+    let (top, bottom) = (clipped.top(), clipped.bottom() - 1);
+    for x in clipped.left()..clipped.right() {
+        buf[(x, top)].set_char('╌').set_style(dashed);
+        buf[(x, bottom)].set_char('╌').set_style(dashed);
+    }
+    for y in clipped.top()..clipped.bottom() {
+        buf[(clipped.left(), y)].set_char('╎').set_style(dashed);
+        buf[(clipped.right() - 1, y)]
+            .set_char('╎')
+            .set_style(dashed);
+    }
+    let label = format!(" {} hidden ", kind.title());
+    let w = label.chars().count() as u16;
+    if clipped.width > w + 2 {
+        buf.set_span(clipped.left() + 1, top, &Span::styled(label, dashed), w);
+    }
+    nav(buf, area, app, th, kind);
 }
 
 /// Golden-frame snapshots: the fixture `App` rendered through the real
@@ -572,6 +638,72 @@ mod tests {
         app.config.glyphs = crate::config::Glyphs::Octant;
         app.view = View::Overview;
         snap("overview_octants_160x45", &mut app, 160, 45);
+    }
+
+    /// The process table drags by its title bar, and its rows keep winning
+    /// the hit test over the card they sit on. Push order is z-order, so the
+    /// card's target has to go down *before* the table renders — register it
+    /// after (as the affordance pass once did) and a click would land on the
+    /// card instead of the process, silently breaking selection and kill.
+    #[test]
+    fn process_rows_outrank_the_card_they_sit_on() {
+        use crate::ui::widgets::{PanelKind, Target};
+        let mut app = tu::app();
+        app.view = View::Overview;
+        let th = theme::resolve(&app.config);
+        let mut term = Terminal::new(TestBackend::new(160, 45)).expect("backend");
+        let mut hits = HitMap::default();
+        let mut rs = RenderState::default();
+        term.draw(|f| draw(f, &mut app, &th, &mut hits, &mut rs))
+            .expect("draw");
+
+        let (table, _) = hits
+            .panels()
+            .find(|&(_, k)| k == PanelKind::Procs)
+            .expect("the table is a card");
+        // Its title bar is the drag handle…
+        assert_eq!(
+            hits.hit(table.x + 2, table.y),
+            Some(Target::Panel(PanelKind::Procs)),
+        );
+        // …while the body belongs to the rows and the list beneath them.
+        let body = hits.hit(table.x + 2, table.y + 3);
+        assert!(
+            matches!(body, Some(Target::ProcRow(_) | Target::ProcHeader(_))),
+            "the table body must not read as the card: {body:?}"
+        );
+    }
+
+    /// Rearranged cards, and the affordances shown while rearranging them.
+    /// The point of the first frame is that the *rects* are identical to
+    /// `overview_160x45` — only their tenants differ, which is the whole
+    /// contract of [`crate::arrange`].
+    #[test]
+    fn rearranged_cards_render_stably() {
+        use crate::app::Arranging;
+        use crate::ui::widgets::PanelKind;
+        let mut app = tu::app();
+        app.view = View::Overview;
+        // The process table into the CPU slot (and CPU into the table's), plus
+        // the heat map traded with GPU — a metric card, a table, and a
+        // `&mut RenderState` panel all landing somewhere new.
+        app.config
+            .arrangement
+            .swap(PanelKind::Cpu, PanelKind::Procs);
+        app.config
+            .arrangement
+            .swap(PanelKind::Gpu, PanelKind::HeatMap);
+        snap("overview_arranged_160x45", &mut app, 160, 45);
+
+        // Mid-rearrangement: one card held, the cursor on where it would land,
+        // and a switched-off panel offering its dashed placeholder as a
+        // destination — the only time an empty slot is a drop target.
+        app.config.show_temps = false;
+        app.arrange = Some(Arranging::Mode {
+            cursor: PanelKind::Mem,
+            held: Some(PanelKind::Net),
+        });
+        snap("overview_arranging_160x45", &mut app, 160, 45);
     }
 
     #[test]

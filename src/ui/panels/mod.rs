@@ -15,12 +15,12 @@ pub mod temps;
 
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
-use ratatui::style::{Modifier, Style};
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, Widget};
 
-use crate::app::App;
-use crate::ui::widgets::{HitMap, PanelKind, Target};
+use crate::app::{App, Arranging};
+use crate::ui::widgets::{PanelKind, Target};
 
 use super::theme::Theme;
 
@@ -66,33 +66,92 @@ pub fn chrome_with(
     inner
 }
 
-/// Register a metric card as a click-through to its deep-dive view and, when
-/// the pointer rests on it, paint the hover affordance: the border glows in
-/// the accent color and the bottom-right corner names the destination. Call
-/// after the card has fully rendered so the glow restyles the final border.
-pub fn nav(
-    buf: &mut Buffer,
-    area: Rect,
-    app: &App,
-    th: &Theme,
-    hits: &mut HitMap,
-    kind: PanelKind,
-) {
-    hits.push(area, Target::Panel(kind));
-    if app.hover != Some(Target::Panel(kind)) {
-        return;
+/// What a card is currently saying about itself: nothing, or one of the
+/// three states that earn a glowing border and a corner tag.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CardState {
+    Idle,
+    /// The pointer is resting on it — the tag names its deep-dive view.
+    Hover,
+    /// Picked up and being carried.
+    Held,
+    /// Where a drop would land right now.
+    Drop,
+}
+
+/// Which state `kind` is in this frame. A rearrangement in flight outranks
+/// hover: while a card is being carried, the pointer is by definition resting
+/// on something, and "you are about to navigate here" is the wrong thing to
+/// say about a drop target.
+fn card_state(app: &App, kind: PanelKind) -> CardState {
+    if let Some(arranging) = app.arrange {
+        if arranging.held() == Some(kind) {
+            return CardState::Held;
+        }
+        if arranging.target() == Some(kind) {
+            return CardState::Drop;
+        }
+        // Mid-rearrangement, an untouched card stays quiet rather than
+        // glowing at whatever the pointer happens to be over.
+        return CardState::Idle;
     }
+    if app.hover == Some(Target::Panel(kind)) {
+        CardState::Hover
+    } else {
+        CardState::Idle
+    }
+}
+
+/// Paint whatever affordance a card's state calls for: the border glows and
+/// the bottom-right corner carries a tag. Call *after* the card has fully
+/// rendered, so the glow restyles the final border.
+///
+/// This deliberately does not register the card's hit target — the caller
+/// pushes that *before* rendering, so that panels which register their own
+/// targets (the process table's rows) land on top of the card they sit on.
+/// Push order is z-order; doing it here instead would put the whole-card
+/// target above every row and a click would never reach a process again.
+pub fn nav(buf: &mut Buffer, area: Rect, app: &App, th: &Theme, kind: PanelKind) {
+    let (color, text) = match card_state(app, kind) {
+        CardState::Idle => return,
+        CardState::Hover => (th.accent, format!(" ▸ {} ", destination(kind))),
+        CardState::Held => (th.accent, " ▚ moving ".to_owned()),
+        // The tag names the action, not the card — its own title already says
+        // which card this is, two rows up.
+        CardState::Drop if app.arrange.and_then(Arranging::held).is_some() => {
+            (th.ok, " ⇄ swap here ".to_owned())
+        }
+        CardState::Drop => (th.ok, " ⇄ pick up ".to_owned()),
+    };
+    glow_border(buf, area, color, &text);
+}
+
+/// The view a card clicks through to — what the hover tag names.
+fn destination(kind: PanelKind) -> &'static str {
+    match kind {
+        PanelKind::Cpu => "procs by cpu",
+        PanelKind::Mem => "procs by mem",
+        PanelKind::Power => "procs by pwr",
+        PanelKind::Disk | PanelKind::Procs => "processes",
+        PanelKind::Net => "connections",
+        PanelKind::Gpu | PanelKind::Temps | PanelKind::Battery | PanelKind::HeatMap => "thermal",
+    }
+}
+
+/// Recolor a card's frame and stamp `text` into its bottom border. Clamped to
+/// the buffer and silent on cards too small to hold either — render is total.
+pub(crate) fn glow_border(buf: &mut Buffer, area: Rect, color: Color, text: &str) {
     let area = area.intersection(buf.area);
     if area.width < 2 || area.height < 2 {
         return;
     }
     // Recolor only box-drawing cells: the title chip, headline, and any
     // content butting the frame keep their own colors.
-    const BORDER_GLYPHS: [&str; 6] = ["─", "│", "╭", "╮", "╰", "╯"];
+    const BORDER_GLYPHS: [&str; 10] = ["─", "│", "╭", "╮", "╰", "╯", "╌", "╎", "┄", "┊"];
     let glow = |buf: &mut Buffer, x: u16, y: u16| {
         let cell = &mut buf[(x, y)];
         if BORDER_GLYPHS.contains(&cell.symbol()) {
-            cell.set_fg(th.accent);
+            cell.set_fg(color);
         }
     };
     let (top, bottom) = (area.top(), area.bottom() - 1);
@@ -104,15 +163,6 @@ pub fn nav(
         glow(buf, area.left(), y);
         glow(buf, area.right() - 1, y);
     }
-    let label = match kind {
-        PanelKind::Cpu => "procs by cpu",
-        PanelKind::Mem => "procs by mem",
-        PanelKind::Power => "procs by pwr",
-        PanelKind::Disk => "processes",
-        PanelKind::Net => "connections",
-        PanelKind::Gpu | PanelKind::Temps | PanelKind::Battery | PanelKind::HeatMap => "thermal",
-    };
-    let text = format!(" ▸ {label} ");
     let w = text.chars().count() as u16;
     if area.width > w + 2 {
         buf.set_span(
@@ -120,7 +170,7 @@ pub fn nav(
             bottom,
             &Span::styled(
                 text,
-                Style::default().fg(th.accent).add_modifier(Modifier::BOLD),
+                Style::default().fg(color).add_modifier(Modifier::BOLD),
             ),
             w,
         );

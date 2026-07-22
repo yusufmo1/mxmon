@@ -11,6 +11,7 @@ use crate::collect::sampler::{FastSnapshot, Update};
 use crate::collect::soc::SocInfo;
 use crate::collect::temps::TempSample;
 use crate::config::Config;
+use crate::ui::widgets::PanelKind;
 
 /// Fixed-capacity history ring for graph data.
 #[derive(Debug, Clone)]
@@ -378,6 +379,46 @@ pub struct Toast {
     pub error: bool,
 }
 
+/// A card rearrangement in progress. Both routes end in the same place — a
+/// [`crate::arrange::Arrangement::swap`] of two displayed cards — so they
+/// share one state slot and one set of render affordances.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Arranging {
+    /// A mouse press landed on a card. `moved` flips once the pointer leaves
+    /// the cell it was pressed in, which is the whole distinction between a
+    /// drag and a click: a press that never moves navigates on release, as
+    /// clicking a card always has.
+    Drag {
+        from: PanelKind,
+        over: Option<PanelKind>,
+        moved: bool,
+    },
+    /// The keyboard arrange mode: a cursor over the cards, holding one once
+    /// it has been picked up.
+    Mode {
+        cursor: PanelKind,
+        held: Option<PanelKind>,
+    },
+}
+
+impl Arranging {
+    /// The card being carried, if one has been picked up.
+    pub fn held(self) -> Option<PanelKind> {
+        match self {
+            Self::Drag { from, moved, .. } => moved.then_some(from),
+            Self::Mode { held, .. } => held,
+        }
+    }
+
+    /// The card a drop would land on right now.
+    pub fn target(self) -> Option<PanelKind> {
+        match self {
+            Self::Drag { over, moved, .. } => moved.then_some(over).flatten(),
+            Self::Mode { cursor, .. } => Some(cursor),
+        }
+    }
+}
+
 pub struct App {
     pub soc: SocInfo,
     pub config: Config,
@@ -420,6 +461,10 @@ pub struct App {
     /// affordances). Updated only when the pointer crosses a target
     /// boundary, so idle motion never costs a redraw.
     pub hover: Option<crate::ui::widgets::Target>,
+    /// A card rearrangement in flight — a mouse drag or the keyboard arrange
+    /// mode. One `Option` for both, so "at most one at a time" is true by
+    /// construction rather than by convention.
+    pub arrange: Option<Arranging>,
 
     /// Sorted + filtered view of `procs.rows` (indices into it).
     pub visible_rows: Vec<usize>,
@@ -467,6 +512,7 @@ impl App {
             show_hud: false,
             toast: None,
             hover: None,
+            arrange: None,
             visible_rows: Vec::new(),
             last_frame_us: 0,
             frames: 0,
