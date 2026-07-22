@@ -74,7 +74,39 @@ pub struct Config {
     /// **Must stay the last field:** TOML demands every scalar before the
     /// first table, and this one serializes as `[keys]`. Moving it up makes
     /// `toml::to_string_pretty` fail and silently stops the config saving.
+    /// Per-card visibility. Hiding a card only removes it from the layout —
+    /// its collector keeps running, because other surfaces (the JSON snapshot,
+    /// the flow diagram, the heat map) still read the same data. Sampling is
+    /// governed by the collector toggles above.
+    pub show_cpu: bool,
+    pub show_gpu: bool,
+    pub show_mem: bool,
+    pub show_net: bool,
+    pub show_disk: bool,
+    pub show_power: bool,
+    pub show_temps: bool,
+    pub show_battery: bool,
+
     pub keys: crate::keys::Keymap,
+}
+
+impl Config {
+    /// Whether a metric card is currently shown.
+    pub fn panel_visible(&self, kind: crate::ui::widgets::PanelKind) -> bool {
+        use crate::ui::widgets::PanelKind as P;
+        match kind {
+            P::Cpu => self.show_cpu,
+            P::Gpu => self.show_gpu,
+            P::Mem => self.show_mem,
+            P::Net => self.show_net,
+            P::Disk => self.show_disk,
+            P::Power => self.show_power,
+            P::Temps => self.show_temps,
+            P::Battery => self.show_battery,
+            // The heat map is a view, not a card in the strip.
+            P::HeatMap => true,
+        }
+    }
 }
 
 impl Default for Config {
@@ -92,6 +124,14 @@ impl Default for Config {
             contours: true,
             graph_window: 4,
             motion: true,
+            show_cpu: true,
+            show_gpu: true,
+            show_mem: true,
+            show_net: true,
+            show_disk: true,
+            show_power: true,
+            show_temps: true,
+            show_battery: true,
             keys: crate::keys::Keymap::defaults(),
         }
     }
@@ -171,6 +211,36 @@ impl Config {
 
 #[cfg(test)]
 mod tests {
+    use crate::ui::widgets::PanelKind;
+
+    #[test]
+    fn panel_visibility_maps_each_card_to_its_own_switch() {
+        let mut c = Config::default();
+        // Everything is on by default — hiding is opt-in.
+        for kind in [
+            PanelKind::Cpu,
+            PanelKind::Gpu,
+            PanelKind::Mem,
+            PanelKind::Net,
+            PanelKind::Disk,
+            PanelKind::Power,
+            PanelKind::Temps,
+            PanelKind::Battery,
+        ] {
+            assert!(c.panel_visible(kind), "{kind:?} defaults to shown");
+        }
+        // Each switch governs exactly one card.
+        c.show_gpu = false;
+        assert!(!c.panel_visible(PanelKind::Gpu));
+        assert!(c.panel_visible(PanelKind::Cpu));
+    }
+
+    #[test]
+    fn the_heat_map_is_a_view_not_a_hideable_card() {
+        let c = Config::default();
+        assert!(c.panel_visible(PanelKind::HeatMap));
+    }
+
     use super::{Config, Glyphs, dir, test_dir};
     use crate::collect::sampler::FAST_MS_DEFAULT;
 
@@ -226,6 +296,14 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let _guard = test_dir(tmp.path().to_path_buf());
         let c = Config {
+            show_cpu: false,
+            show_gpu: false,
+            show_mem: false,
+            show_net: false,
+            show_disk: false,
+            show_power: false,
+            show_temps: false,
+            show_battery: false,
             theme: "gruvbox".into(),
             frames: "white".into(),
             // Off the modal's cycle on purpose: the hex escape hatch must

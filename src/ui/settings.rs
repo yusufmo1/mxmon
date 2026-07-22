@@ -1067,7 +1067,12 @@ mod tests {
     fn long_sections_scroll_to_keep_the_cursor_visible() {
         let mut app = tu::app();
         app.modal = Some(Modal::Settings);
-        app.settings.section = 5; // keys — more rows than a short card holds
+        // Derived, not hardcoded: inserting a section ahead of KEYS used to
+        // silently point this test at the wrong page.
+        app.settings.section = crate::settings::SECTIONS
+            .iter()
+            .position(|s| *s == crate::settings::Section::Keys)
+            .expect("keys section exists");
         app.settings.row = crate::keys::ACTIONS.len() - 1;
         let (buf, _) = draw(&app, 120, 20);
         let frame = text(&buf);

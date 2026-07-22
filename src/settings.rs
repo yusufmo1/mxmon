@@ -25,16 +25,18 @@ pub enum Section {
     Appearance,
     Graphs,
     Layout,
+    Panels,
     Sampling,
     Network,
     Keys,
     About,
 }
 
-pub const SECTIONS: [Section; 7] = [
+pub const SECTIONS: [Section; 8] = [
     Section::Appearance,
     Section::Graphs,
     Section::Layout,
+    Section::Panels,
     Section::Sampling,
     Section::Network,
     Section::Keys,
@@ -47,6 +49,7 @@ impl Section {
             Self::Appearance => "appearance",
             Self::Graphs => "graphs",
             Self::Layout => "layout",
+            Self::Panels => "panels",
             Self::Sampling => "sampling",
             Self::Network => "network",
             Self::Keys => "keys",
@@ -60,6 +63,7 @@ impl Section {
             Self::Appearance => "theme and the chrome colors painted on top of it",
             Self::Graphs => "how the waveforms aggregate and move",
             Self::Layout => "how much room each surface gets",
+            Self::Panels => "which cards appear on the dashboard",
             Self::Sampling => "how often the collectors run",
             Self::Network => "the only thing mxmon ever sends",
             Self::Keys => "every command and the keys that fire it",
@@ -89,6 +93,14 @@ pub enum Id {
     Interval,
     Ping,
     PingHost,
+    ShowCpu,
+    ShowGpu,
+    ShowMem,
+    ShowNet,
+    ShowDisk,
+    ShowPower,
+    ShowTemps,
+    ShowBattery,
 }
 
 /// How a value is presented and edited.
@@ -115,7 +127,7 @@ pub struct Item {
     pub kind: Kind,
 }
 
-pub const ITEMS: [Item; 12] = [
+pub const ITEMS: [Item; 22] = [
     Item {
         id: Id::Theme,
         section: Section::Appearance,
@@ -185,6 +197,63 @@ pub const ITEMS: [Item; 12] = [
         label: "interval",
         help: "fast-tier period · every other tier is a multiple of it",
         kind: Kind::Stepper,
+    },
+    Item {
+        id: Id::ShowCpu,
+        section: Section::Panels,
+        label: "cpu",
+        help: "per-core cluster meters, frequencies and utilization",
+        kind: Kind::Toggle,
+    },
+    Item {
+        id: Id::ShowGpu,
+        section: Section::Panels,
+        label: "gpu",
+        help: "GPU utilization, frequency and power",
+        kind: Kind::Toggle,
+    },
+    Item {
+        id: Id::ShowMem,
+        section: Section::Panels,
+        label: "memory",
+        help: "the Activity Monitor formula, swap and pressure",
+        kind: Kind::Toggle,
+    },
+    Item {
+        id: Id::ShowNet,
+        section: Section::Panels,
+        label: "network",
+        help: "throughput, interface and the latency strip",
+        kind: Kind::Toggle,
+    },
+    Item {
+        id: Id::ShowDisk,
+        section: Section::Panels,
+        label: "disk",
+        help: "read/write throughput, IOPS, latency and capacity",
+        kind: Kind::Toggle,
+    },
+    Item {
+        id: Id::ShowPower,
+        section: Section::Panels,
+        label: "power",
+        help: "package and per-rail watts",
+        kind: Kind::Toggle,
+    },
+    Item {
+        id: Id::ShowTemps,
+        section: Section::Panels,
+        label: "temps",
+        help: "sensor groups and fan speeds",
+        kind: Kind::Toggle,
+    },
+    Item {
+        id: Id::ShowBattery,
+        section: Section::Panels,
+        label: "battery",
+        help: "charge, health and the power-flow diagram",
+        kind: Kind::Toggle,
+    },
     },
     Item {
         id: Id::Ping,
@@ -264,6 +333,14 @@ pub fn config_key(id: Id) -> &'static str {
         Id::ProcsPanes => "procs_panes",
         Id::Schematic => "schematic",
         Id::Contours => "contours",
+        Id::ShowCpu => "show_cpu",
+        Id::ShowGpu => "show_gpu",
+        Id::ShowMem => "show_mem",
+        Id::ShowNet => "show_net",
+        Id::ShowDisk => "show_disk",
+        Id::ShowPower => "show_power",
+        Id::ShowTemps => "show_temps",
+        Id::ShowBattery => "show_battery",
         Id::Interval => "interval_ms",
         Id::Ping => "ping",
         Id::PingHost => "ping_host",
@@ -285,7 +362,18 @@ pub fn options(id: Id) -> Vec<String> {
         Id::Glyphs => vec!["auto".into(), "octant".into(), "braille".into()],
         Id::GraphWindow => GRAPH_WINDOW_STOPS.iter().map(|k| format!("×{k}")).collect(),
         Id::ProcsPanes => (1..=4).map(|n| n.to_string()).collect(),
-        Id::Motion | Id::Schematic | Id::Contours | Id::Ping => vec!["on".into(), "off".into()],
+        Id::Motion
+        | Id::Schematic
+        | Id::Contours
+        | Id::Ping
+        | Id::ShowCpu
+        | Id::ShowGpu
+        | Id::ShowMem
+        | Id::ShowNet
+        | Id::ShowDisk
+        | Id::ShowPower
+        | Id::ShowTemps
+        | Id::ShowBattery => vec!["on".into(), "off".into()],
         Id::Interval | Id::PingHost => Vec::new(),
     }
 }
@@ -360,6 +448,14 @@ pub fn current(app: &App, id: Id) -> Current {
             "isotherm rings over the deck",
             "readings on a quiet deck",
         ),
+        Id::ShowCpu => on_off(c.show_cpu, "cpu card shown", "cpu card hidden"),
+        Id::ShowGpu => on_off(c.show_gpu, "gpu card shown", "gpu card hidden"),
+        Id::ShowMem => on_off(c.show_mem, "memory card shown", "memory card hidden"),
+        Id::ShowNet => on_off(c.show_net, "network card shown", "network card hidden"),
+        Id::ShowDisk => on_off(c.show_disk, "disk card shown", "disk card hidden"),
+        Id::ShowPower => on_off(c.show_power, "power card shown", "power card hidden"),
+        Id::ShowTemps => on_off(c.show_temps, "temps card shown", "temps card hidden"),
+        Id::ShowBattery => on_off(c.show_battery, "battery card shown", "battery card hidden"),
         Id::Interval => (
             format!("{} ms", c.interval_ms),
             // The tiers the fast interval drags along with it — the reason
@@ -426,6 +522,14 @@ fn index_of(app: &App, id: Id) -> Option<usize> {
         Id::Motion => Some(usize::from(!c.motion)),
         Id::Schematic => Some(usize::from(!c.schematic)),
         Id::Contours => Some(usize::from(!c.contours)),
+        Id::ShowCpu => Some(usize::from(!c.show_cpu)),
+        Id::ShowGpu => Some(usize::from(!c.show_gpu)),
+        Id::ShowMem => Some(usize::from(!c.show_mem)),
+        Id::ShowNet => Some(usize::from(!c.show_net)),
+        Id::ShowDisk => Some(usize::from(!c.show_disk)),
+        Id::ShowPower => Some(usize::from(!c.show_power)),
+        Id::ShowTemps => Some(usize::from(!c.show_temps)),
+        Id::ShowBattery => Some(usize::from(!c.show_battery)),
         Id::Ping => Some(usize::from(!c.ping)),
         Id::Interval | Id::PingHost => None,
     }
@@ -500,6 +604,14 @@ pub fn set(app: &mut App, id: Id, index: usize) {
         Id::Motion => app.config.motion = index == 0,
         Id::Schematic => app.config.schematic = index == 0,
         Id::Contours => app.config.contours = index == 0,
+        Id::ShowCpu => app.config.show_cpu = index == 0,
+        Id::ShowGpu => app.config.show_gpu = index == 0,
+        Id::ShowMem => app.config.show_mem = index == 0,
+        Id::ShowNet => app.config.show_net = index == 0,
+        Id::ShowDisk => app.config.show_disk = index == 0,
+        Id::ShowPower => app.config.show_power = index == 0,
+        Id::ShowTemps => app.config.show_temps = index == 0,
+        Id::ShowBattery => app.config.show_battery = index == 0,
         Id::Ping => {
             app.config.ping = index == 0;
             app.toast("ping probe: applies at next launch", false);
@@ -553,6 +665,14 @@ pub fn is_default(app: &App, id: Id) -> bool {
         Id::ProcsPanes => c.procs_panes == d.procs_panes,
         Id::Schematic => c.schematic == d.schematic,
         Id::Contours => c.contours == d.contours,
+        Id::ShowCpu => c.show_cpu == d.show_cpu,
+        Id::ShowGpu => c.show_gpu == d.show_gpu,
+        Id::ShowMem => c.show_mem == d.show_mem,
+        Id::ShowNet => c.show_net == d.show_net,
+        Id::ShowDisk => c.show_disk == d.show_disk,
+        Id::ShowPower => c.show_power == d.show_power,
+        Id::ShowTemps => c.show_temps == d.show_temps,
+        Id::ShowBattery => c.show_battery == d.show_battery,
         Id::Interval => c.interval_ms == d.interval_ms,
         Id::Ping => c.ping == d.ping,
         Id::PingHost => c.ping_host == d.ping_host,
@@ -572,6 +692,14 @@ pub fn reset(app: &mut App, control: &Control, id: Id) {
         Id::ProcsPanes => app.config.procs_panes = d.procs_panes,
         Id::Schematic => app.config.schematic = d.schematic,
         Id::Contours => app.config.contours = d.contours,
+        Id::ShowCpu => app.config.show_cpu = d.show_cpu,
+        Id::ShowGpu => app.config.show_gpu = d.show_gpu,
+        Id::ShowMem => app.config.show_mem = d.show_mem,
+        Id::ShowNet => app.config.show_net = d.show_net,
+        Id::ShowDisk => app.config.show_disk = d.show_disk,
+        Id::ShowPower => app.config.show_power = d.show_power,
+        Id::ShowTemps => app.config.show_temps = d.show_temps,
+        Id::ShowBattery => app.config.show_battery = d.show_battery,
         Id::Interval => {
             set_interval(app, control, d.interval_ms);
             return; // set_interval already saved and toasted
@@ -682,6 +810,40 @@ mod tests {
                 i.label,
                 config_key(i.id)
             );
+        }
+    }
+
+    #[test]
+    fn every_item_reads_writes_and_resets() {
+        // A setting is four arms — `current`, `set`, `is_default`, `reset` —
+        // and a missing one is invisible until someone touches that row. Walk
+        // the whole table so adding an `Id` without wiring it up fails here.
+        // A pristine config, not the snapshot fixture — that one deliberately
+        // pins glyphs and motion so golden frames stay stable.
+        let mut app = crate::app::App::new(crate::testutil::soc(), Config::default());
+        let control = Control::new();
+        for item in &ITEMS {
+            let id = item.id;
+            assert!(is_default(&app, id), "{id:?} starts at its default");
+            let before = current(&app, id);
+            let options = options(id);
+            if options.len() > 1 {
+                // Move off the default, then back.
+                let now = super::index_of(&app, id).unwrap_or(0);
+                let other = usize::from(now == 0);
+                set(&mut app, id, other);
+                assert!(
+                    !is_default(&app, id) || options.len() == 1,
+                    "{id:?} changed away from its default"
+                );
+            }
+            reset(&mut app, &control, id);
+            assert!(is_default(&app, id), "{id:?} resets");
+            // Stepping in both directions must stay in range whatever the kind.
+            step(&mut app, &control, id, 1);
+            step(&mut app, &control, id, -1);
+            let _ = current(&app, id);
+            let _ = before;
         }
     }
 
