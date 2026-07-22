@@ -16,24 +16,8 @@ fn mxmon(tmp: &tempfile::TempDir) -> Command {
     c
 }
 
-/// Whether this host is real Apple Silicon rather than a VM.
-///
-/// The `--json` path drives Apple's private telemetry frameworks, and
-/// IOReport has no providers under a hypervisor: the first call into it
-/// traps (the process dies on SIGTRAP with no stdout, stderr, or panic log
-/// — the trap is raised inside the framework, so there is nothing for
-/// mxmon to catch or degrade). GitHub's macOS runners are VMs, so the
-/// snapshot assertions below can only mean anything on real silicon.
-///
-/// Positive confirmation only: anything we can't read resolves to `false`
-/// and skips, so an unknown environment reports "not verified" instead of
-/// failing a test it was never able to run.
-fn on_real_silicon() -> bool {
-    Command::new("sysctl")
-        .args(["-n", "kern.hv_vmm_present"])
-        .output()
-        .is_ok_and(|o| String::from_utf8_lossy(&o.stdout).trim() == "0")
-}
+mod common;
+use common::{on_real_silicon, skip_without_hardware};
 
 /// Everything a failed spawn knows about itself. A bare "it failed" is
 /// useless when the run only reproduces on another machine: a process that
@@ -109,8 +93,7 @@ fn glyphs_flag_validates_its_value() {
 
 #[test]
 fn json_snapshot_honors_the_source_contract() {
-    if !on_real_silicon() {
-        eprintln!("SKIP: --json needs real Apple Silicon (no IOReport under a hypervisor)");
+    if skip_without_hardware("--json") {
         return;
     }
     let tmp = tempfile::tempdir().unwrap();
