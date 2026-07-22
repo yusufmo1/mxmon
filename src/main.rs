@@ -382,6 +382,16 @@ fn draw(
 }
 
 /// Gather one settled snapshot of everything and print it as JSON.
+/// One core as JSON. `w` is null on chips whose Energy Model publishes no
+/// per-core rail — absent power is not zero power.
+fn json_core(core: &collect::power::CoreSample) -> serde_json::Value {
+    serde_json::json!({
+        "mhz": core.freq.0,
+        "usage_pct": (core.usage.as_percent() * 10.0).round() / 10.0,
+        "w": core.watts.map(|w| f64::from((w.0 * 1000.0).round()) / 1000.0),
+    })
+}
+
 fn json_snapshot(soc: &collect::soc::SocInfo) -> color_eyre::Result<()> {
     let control = Control::new();
     // One fast tick separates the warm-up emissions from the settled ones, so
@@ -553,10 +563,17 @@ fn json_snapshot(soc: &collect::soc::SocInfo) -> color_eyre::Result<()> {
             "ane_w": p.ane.0,
             "dram_w": p.dram.0,
             "display_w": p.display.0,
+            "display_ext_w": p.display_ext.0,
+            "amcc_w": p.amcc.0,
+            "dcs_w": p.dcs.0,
+            "video_w": p.video.0,
+            "isp_w": p.isp.0,
+            "scaler_w": p.scaler.0,
+            "gpu_cs_w": p.gpu_cs.0,
             "ecpu": { "freq_mhz": p.ecpu.freq.0, "usage_pct": p.ecpu.usage.as_percent(),
-                      "cores": p.ecpu.cores.iter().map(|(f, u)| (f.0, (u.as_percent()*10.0).round()/10.0)).collect::<Vec<_>>() },
+                      "cores": p.ecpu.cores.iter().map(json_core).collect::<Vec<_>>() },
             "pcpu": { "freq_mhz": p.pcpu.freq.0, "usage_pct": p.pcpu.usage.as_percent(),
-                      "cores": p.pcpu.cores.iter().map(|(f, u)| (f.0, (u.as_percent()*10.0).round()/10.0)).collect::<Vec<_>>() },
+                      "cores": p.pcpu.cores.iter().map(json_core).collect::<Vec<_>>() },
             "gpu_freq_mhz": p.gpu_freq.0,
             "gpu_usage_pct": p.gpu_usage.as_percent(),
         })),

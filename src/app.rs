@@ -149,6 +149,10 @@ pub struct Histories {
     pub gpu_w: Ring,
     pub ane_w: Ring,
     pub dram_w: Ring,
+    /// Memory-controller fabric (`AMCC*`) — its own rail, not part of `dram_w`.
+    pub amcc_w: Ring,
+    /// DRAM command scheduler / PHY (`DCS*`).
+    pub dcs_w: Ring,
     pub disp_w: Ring,
     pub sys_w: Ring,
     pub mem_used: Ring,
@@ -176,6 +180,8 @@ impl Histories {
             gpu_w: r(),
             ane_w: r(),
             dram_w: r(),
+            amcc_w: r(),
+            dcs_w: r(),
             disp_w: r(),
             sys_w: r(),
             mem_used: r(),
@@ -393,6 +399,8 @@ impl App {
                 self.hist.gpu_w.push(p.gpu.0);
                 self.hist.ane_w.push(p.ane.0);
                 self.hist.dram_w.push(p.dram.0);
+                self.hist.amcc_w.push(p.amcc.0);
+                self.hist.dcs_w.push(p.dcs.0);
                 self.hist.disp_w.push(p.display.0);
                 self.hist.ecpu_usage.push(p.ecpu.usage.0);
                 self.hist.pcpu_usage.push(p.pcpu.usage.0);

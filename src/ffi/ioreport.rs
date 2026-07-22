@@ -57,12 +57,49 @@ unsafe extern "C" {
     fn IOReportStateGetResidency(item: CFDictionaryRef, index: i32) -> i64;
 }
 
-/// Identity of one subscribed channel, cached once at subscription time.
-#[derive(Debug, Clone)]
+/// Identity of one channel.
+///
+/// Always read out of the dictionary it came from — the all-channels list when
+/// subscribing, the delta item when sampling — and never inferred from
+/// position. See [`IoReport::visit_delta`] for why that distinction matters.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ChannelId {
     pub group: String,
+    pub subgroup: String,
     pub name: String,
     pub unit: String,
+}
+
+/// Read a channel dictionary's identity. IOReport exposes the same accessors
+/// on an all-channels entry and on a delta item.
+unsafe fn identity(item: CFDictionaryRef) -> ChannelId {
+    unsafe {
+        ChannelId {
+            group: string_from_cf(IOReportChannelGetGroup(item)),
+            subgroup: string_from_cf(IOReportChannelGetSubGroup(item)),
+            name: string_from_cf(IOReportChannelGetChannelName(item)),
+            unit: string_from_cf(IOReportChannelGetUnitLabel(item))
+                .trim()
+                .to_owned(),
+        }
+    }
+}
+
+/// Subscribed channels the delta never served, as `group/name` labels.
+///
+/// Subscribing is a request, not a promise: IOReport silently drops channels
+/// the process may not read (`AMC Stats` is refused outright to unprivileged
+/// callers) and can serve only part of a group (`PPM Stats` yields 10 of 16).
+fn missing(subscribed: &[ChannelId], served: &[ChannelId]) -> Vec<String> {
+    subscribed
+        .iter()
+        .filter(|want| {
+            !served
+                .iter()
+                .any(|got| got.group == want.group && got.name == want.name)
+        })
+        .map(|want| format!("{}/{}", want.group, want.name))
+        .collect()
 }
 
 /// One channel's data within a delta sample.
@@ -98,7 +135,11 @@ impl DeltaItem<'_> {
 pub struct IoReport {
     subscription: IOReportSubscriptionRef,
     channels: CfOwned,
-    ids: Vec<ChannelId>,
+    /// What we asked for, in subscription order.
+    subscribed: Vec<ChannelId>,
+    /// What IOReport actually serves, in *delta* order — rebuilt whenever the
+    /// served count changes, never derived from the subscription order.
+    served: Vec<ChannelId>,
     prev: Option<Sample>,
 }
 
@@ -143,7 +184,12 @@ impl IoReport {
                     let unit = string_from_cf(IOReportChannelGetUnitLabel(item))
                         .trim()
                         .to_owned();
-                    ids.push(ChannelId { group, name, unit });
+                    ids.push(ChannelId {
+                        group,
+                        subgroup,
+                        name,
+                        unit,
+                    });
                     CFArrayAppendValue(picked, item.cast());
                 }
             }
@@ -173,7 +219,8 @@ impl IoReport {
             Ok(Self {
                 subscription,
                 channels: subset,
-                ids,
+                subscribed: ids,
+                served: Vec::new(),
                 prev: None,
             })
         }
@@ -229,9 +276,21 @@ impl IoReport {
             .ok_or("delta lacks IOReportChannels")?
             .cast();
 
+        // The delta carries only the channels IOReport agreed to serve, so its
+        // length can be shorter than the subscription — and zipping the two by
+        // index would then label every channel after the first omission with
+        // its neighbour's name. Identity comes from the item itself; the
+        // resolved list is cached and only rebuilt when the served count moves,
+        // so steady-state sampling costs no extra string conversions.
+        let count = usize::try_from(unsafe { CFArrayGetCount(arr) }).unwrap_or(0);
+        if self.served.len() != count {
+            self.served = array_iter(arr)
+                .map(|item| unsafe { identity(item.cast()) })
+                .collect();
+        }
+
         let mut visit = visit;
-        // Delta preserves subscription order → zip with cached ids by index.
-        for (item, id) in array_iter(arr).zip(self.ids.iter()) {
+        for (item, id) in array_iter(arr).zip(self.served.iter()) {
             visit(
                 dt_ms,
                 DeltaItem {
@@ -241,6 +300,13 @@ impl IoReport {
             );
         }
         Ok(Some(dt_ms))
+    }
+
+    /// Subscribed channels IOReport declined to serve, as `group/name` labels.
+    /// Empty until the first delta has been taken. Collectors surface this
+    /// instead of quietly reading a shorter list than they asked for.
+    pub fn unserved(&self) -> Vec<String> {
+        missing(&self.subscribed, &self.served)
     }
 }
 
@@ -255,3 +321,54 @@ impl Drop for IoReport {
 // at a time, which our sampler guarantees.
 unsafe impl Send for IoReport {}
 unsafe impl Send for Sample {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn id(group: &str, name: &str) -> ChannelId {
+        ChannelId {
+            group: group.into(),
+            subgroup: String::new(),
+            name: name.into(),
+            unit: "mJ".into(),
+        }
+    }
+
+    #[test]
+    fn nothing_missing_when_every_channel_is_served() {
+        let want = [id("Energy Model", "CPU Energy"), id("GPU Stats", "GPU")];
+        assert!(missing(&want, &want).is_empty());
+    }
+
+    #[test]
+    fn reports_channels_the_delta_never_served() {
+        // The real shape of the bug this guards: a group in the middle of the
+        // subscription is refused, so the served list is shorter and every
+        // later channel would shift up an index if identity came from order.
+        let want = [
+            id("Energy Model", "CPU Energy"),
+            id("AMC Stats", "DCS RD"),
+            id("AMC Stats", "DCS WR"),
+            id("GPU Stats", "GPU"),
+        ];
+        let got = [id("Energy Model", "CPU Energy"), id("GPU Stats", "GPU")];
+        assert_eq!(
+            missing(&want, &got),
+            ["AMC Stats/DCS RD", "AMC Stats/DCS WR"]
+        );
+    }
+
+    #[test]
+    fn same_channel_name_in_two_groups_is_not_confused() {
+        let want = [id("NVMe", "Power"), id("ANS2", "Power")];
+        let got = [id("ANS2", "Power")];
+        assert_eq!(missing(&want, &got), ["NVMe/Power"]);
+    }
+
+    #[test]
+    fn an_empty_delta_reports_every_subscribed_channel() {
+        let want = [id("AMC Stats", "DCS RD")];
+        assert_eq!(missing(&want, &[]), ["AMC Stats/DCS RD"]);
+    }
+}

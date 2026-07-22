@@ -5,13 +5,24 @@ use crate::collect::soc::SocInfo;
 use crate::ffi::ioreport::{DeltaItem, IoReport};
 use crate::units::{Mhz, Ratio, Watts};
 
+/// One core's readings.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct CoreSample {
+    pub freq: Mhz,
+    pub usage: Ratio,
+    /// The core's own energy rail, when the Energy Model publishes one for it
+    /// (`EACC_CPU3`, `PACC1_CPU0`, …). `None` rather than zero, so a chip that
+    /// simply doesn't report per-core power never reads as "idle".
+    pub watts: Option<Watts>,
+}
+
 /// A cluster's aggregate frequency/usage plus its per-core breakdown.
 #[derive(Debug, Clone, Default)]
 pub struct ClusterSample {
     pub freq: Mhz,
     pub usage: Ratio,
-    /// `(freq, effective_usage)` per core, sorted by (cluster, core) id.
-    pub cores: Vec<(Mhz, Ratio)>,
+    /// Per core, sorted by (die, cluster, core) id.
+    pub cores: Vec<CoreSample>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -20,6 +31,8 @@ pub struct PowerSample {
     pub gpu: Watts,
     pub ane: Watts,
     pub dram: Watts,
+    /// Both display pipelines summed; [`Self::display_ext`] is the external
+    /// share of it.
     pub display: Watts,
     pub gpu_sram: Watts,
     pub ecpu: ClusterSample,
@@ -29,6 +42,23 @@ pub struct PowerSample {
     pub gpu_usage: Ratio,
     /// Fraction of the window the GPU was not powered off.
     pub gpu_active: Ratio,
+    /// Memory-controller fabric (`AMCC*`) — a separate rail from the DRAM one,
+    /// not a component of it.
+    pub amcc: Watts,
+    /// DRAM command scheduler / PHY (`DCS*`).
+    pub dcs: Watts,
+    /// Video encode/decode engine (`AVE*`) — non-zero while media is playing
+    /// or transcoding.
+    pub video: Watts,
+    /// Camera image-signal processor (`ISP*`) — the internal camera's rail.
+    pub isp: Watts,
+    /// Media scaler (`MSR*`).
+    pub scaler: Watts,
+    /// GPU command/scheduler rails (`GPU CS*`).
+    pub gpu_cs: Watts,
+    /// External display pipeline (`DISPEXT*`), the external share of
+    /// [`Self::display`].
+    pub display_ext: Watts,
 }
 
 impl PowerSample {
@@ -48,6 +78,14 @@ fn channel_filter(group: &str, subgroup: &str, name: &str) -> bool {
                 || name.starts_with("DRAM")
                 || name.starts_with("DISP")
                 || name.starts_with("GPU SRAM")
+                // Per-core rails, so a busy core can be told from a busy
+                // cluster. The `_SRAM` siblings are deliberately left
+                // unsubscribed: folding them into a core would invent an
+                // attribution, and reporting them separately has no home yet.
+                || parse_energy_core(name).is_some()
+                // Blocks the group has always published and mxmon has never
+                // read. Prefix-matched because multi-die parts index them.
+                || BLOCK_PREFIXES.iter().any(|p| name.starts_with(p))
         }
         "CPU Stats" => subgroup == "CPU Core Performance States",
         "GPU Stats" => subgroup == "GPU Performance States",
@@ -86,6 +124,57 @@ pub(crate) fn parse_core_channel(name: &str) -> Option<(CoreKind, u32, u64)> {
 pub(crate) enum CoreKind {
     Efficiency,
     Performance,
+}
+
+/// SoC blocks the `Energy Model` group publishes that mxmon never read. Prefix
+/// matched: multi-die parts suffix an index (`AMCC0`, `AMCC1`).
+const BLOCK_PREFIXES: [&str; 6] = ["AMCC", "DCS", "AVE", "ISP", "MSR", "GPU CS"];
+
+/// `(kind, die, ord)` for a per-core **energy** channel, keyed to match
+/// [`parse_core_channel`] so watts join to frequency by identity, never by
+/// position in either list.
+///
+/// The two families spell the same core differently, verified against both
+/// channel lists on an M3 Max:
+///
+/// | core | CPU Stats | Energy Model |
+/// |------|-----------|--------------|
+/// | E cluster 0, core 2 | `ECPU020` | `EACC_CPU2` |
+/// | P cluster 1, core 3 | `PCPU130` | `PACC1_CPU3` |
+///
+/// CPU Stats writes `<cluster><core>0`, so the shared ordinal is
+/// `cluster * 100 + core * 10`. Cluster totals (`EACC_CPU`, `PACC0_CPM`) and
+/// the `_SRAM` rails are not cores and return `None`.
+pub(crate) fn parse_energy_core(name: &str) -> Option<(CoreKind, u32, u64)> {
+    let die = name
+        .strip_prefix("DIE_")
+        .and_then(|rest| rest.split('_').next())
+        .and_then(|d| d.parse::<u32>().ok())
+        .unwrap_or(0);
+    // `EACC_CPU3`, or the tail of `DIE_1_PACC0_CPU3`.
+    let rest = name.rsplit("DIE_").next().unwrap_or(name);
+    let (acc, core) = rest.split_once("_CPU")?;
+    let acc = acc.rsplit('_').next()?;
+    // `_SRAM` rails and the `_CPM` cluster totals are not per-core.
+    if core.is_empty() || !core.chars().all(|c| c.is_ascii_digit()) {
+        return None;
+    }
+    let kind = match acc.as_bytes().first()? {
+        // `MACC` mirrors CPU Stats' `MCPU` mid tier on M5.
+        b'E' | b'M' => CoreKind::Efficiency,
+        b'P' => CoreKind::Performance,
+        _ => return None,
+    };
+    // Index rather than slice: channel names are hostile input like any other
+    // wire format, and a short one must not panic.
+    let cluster_digits = acc.get(1..).and_then(|tail| tail.strip_prefix("ACC"))?;
+    let cluster: u64 = if cluster_digits.is_empty() {
+        0
+    } else {
+        cluster_digits.parse().ok()?
+    };
+    let core: u64 = core.parse().ok()?;
+    Some((kind, die, cluster * 100 + core * 10))
 }
 
 /// A core whose whole window sat in powered-down states: some DOWN/OFF
@@ -156,6 +245,8 @@ pub(crate) fn freq_from_residency(
 pub struct PowerCollector {
     report: IoReport,
     soc: SocInfo,
+    /// Unserved channels are a startup fact, reported on the first delta only.
+    reported_unserved: bool,
 }
 
 impl PowerCollector {
@@ -163,6 +254,7 @@ impl PowerCollector {
         Ok(Self {
             report: IoReport::subscribe(channel_filter)?,
             soc,
+            reported_unserved: false,
         })
     }
 
@@ -172,6 +264,9 @@ impl PowerCollector {
         // (sort_key, freq, usage) per core, split by kind.
         let mut ecores: Vec<(u64, Mhz, Ratio)> = Vec::new();
         let mut pcores: Vec<(u64, Mhz, Ratio)> = Vec::new();
+        // (sort_key, watts) from the Energy Model, joined to the above by key.
+        let mut ewatts: Vec<(u64, Watts)> = Vec::new();
+        let mut pwatts: Vec<(u64, Watts)> = Vec::new();
         // Disjoint field borrows: the closure reads `soc` while `report`
         // is sampled mutably — no per-tick clone of the DVFS tables.
         let soc = &self.soc;
@@ -191,8 +286,29 @@ impl PowerCollector {
                         out.dram.0 += watts.0;
                     } else if name.starts_with("DISP") {
                         out.display.0 += watts.0;
+                        if name.starts_with("DISPEXT") {
+                            out.display_ext.0 += watts.0;
+                        }
                     } else if name.starts_with("GPU SRAM") {
                         out.gpu_sram.0 += watts.0;
+                    } else if let Some((kind, die, ord)) = parse_energy_core(name) {
+                        let key = (u64::from(die) << 32) | ord;
+                        match kind {
+                            CoreKind::Efficiency => ewatts.push((key, watts)),
+                            CoreKind::Performance => pwatts.push((key, watts)),
+                        }
+                    } else if name.starts_with("AMCC") {
+                        out.amcc.0 += watts.0;
+                    } else if name.starts_with("DCS") {
+                        out.dcs.0 += watts.0;
+                    } else if name.starts_with("AVE") {
+                        out.video.0 += watts.0;
+                    } else if name.starts_with("ISP") {
+                        out.isp.0 += watts.0;
+                    } else if name.starts_with("MSR") {
+                        out.scaler.0 += watts.0;
+                    } else if name.starts_with("GPU CS") {
+                        out.gpu_cs.0 += watts.0;
                     }
                 }
                 "CPU Stats" => {
@@ -228,15 +344,33 @@ impl PowerCollector {
         if window.is_none() {
             return Ok(None);
         }
+        // Subscribing is a request, not a promise — IOReport serves what the
+        // process is allowed to read and silently omits the rest. Say so once,
+        // on the first real delta, rather than leaving a short list to look
+        // like a complete one.
+        if !self.reported_unserved {
+            self.reported_unserved = true;
+            let unserved = self.report.unserved();
+            if !unserved.is_empty() && crate::trace::enabled() {
+                crate::trace::mark(&format!("power: {} channels unserved", unserved.len()));
+                for channel in &unserved {
+                    crate::trace::mark(&format!("power:   unserved {channel}"));
+                }
+            }
+        }
 
-        out.ecpu = aggregate(ecores);
-        out.pcpu = aggregate(pcores);
+        out.ecpu = aggregate(ecores, &ewatts);
+        out.pcpu = aggregate(pcores, &pwatts);
         Ok(Some(out))
     }
 }
 
 /// Sort cores by (die, ordinal) and average their freq/usage into the cluster.
-fn aggregate(mut cores: Vec<(u64, Mhz, Ratio)>) -> ClusterSample {
+///
+/// `watts` carries the per-core energy rails keyed the same way; cores are
+/// matched by that key, so a chip that publishes power for only some cores (or
+/// none) still lines every reading up with the right core.
+fn aggregate(mut cores: Vec<(u64, Mhz, Ratio)>, watts: &[(u64, Watts)]) -> ClusterSample {
     if cores.is_empty() {
         return ClusterSample::default();
     }
@@ -249,14 +383,94 @@ fn aggregate(mut cores: Vec<(u64, Mhz, Ratio)>) -> ClusterSample {
     ClusterSample {
         freq,
         usage,
-        cores: cores.into_iter().map(|(_, f, u)| (f, u)).collect(),
+        cores: cores
+            .into_iter()
+            .map(|(key, freq, usage)| CoreSample {
+                freq,
+                usage,
+                watts: watts.iter().find(|&&(k, _)| k == key).map(|&(_, w)| w),
+            })
+            .collect(),
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{freq_from_residency, parse_core_channel};
+    use super::{CoreKind, freq_from_residency, parse_core_channel, parse_energy_core};
     use crate::units::Mhz;
+
+    /// The whole point of `parse_energy_core`: an energy channel and the CPU
+    /// Stats channel for the same core must produce the same key, or per-core
+    /// watts land on the wrong core. Both name lists were captured from an
+    /// M3 Max (4 E-cores, two 6-core P clusters).
+    #[test]
+    fn energy_and_stats_channels_agree_on_every_core() {
+        let pairs = [
+            ("ECPU000", "EACC_CPU0"),
+            ("ECPU010", "EACC_CPU1"),
+            ("ECPU020", "EACC_CPU2"),
+            ("ECPU030", "EACC_CPU3"),
+            ("PCPU000", "PACC0_CPU0"),
+            ("PCPU050", "PACC0_CPU5"),
+            ("PCPU100", "PACC1_CPU0"),
+            ("PCPU130", "PACC1_CPU3"),
+            ("PCPU150", "PACC1_CPU5"),
+        ];
+        for (stats, energy) in pairs {
+            assert_eq!(
+                parse_core_channel(stats),
+                parse_energy_core(energy),
+                "{stats} vs {energy}"
+            );
+        }
+    }
+
+    #[test]
+    fn energy_core_reads_kind_and_die() {
+        assert_eq!(
+            parse_energy_core("EACC_CPU1"),
+            Some((CoreKind::Efficiency, 0, 10))
+        );
+        assert_eq!(
+            parse_energy_core("PACC1_CPU2"),
+            Some((CoreKind::Performance, 0, 120))
+        );
+        // M5's mid tier mirrors CPU Stats' `MCPU`, which parses as efficiency.
+        assert_eq!(
+            parse_energy_core("MACC_CPU0"),
+            Some((CoreKind::Efficiency, 0, 0))
+        );
+        // Ultra parts prefix the die.
+        assert_eq!(
+            parse_energy_core("DIE_1_PACC0_CPU3"),
+            Some((CoreKind::Performance, 1, 30))
+        );
+    }
+
+    #[test]
+    fn energy_core_rejects_everything_that_is_not_a_core() {
+        // Cluster totals and their SRAM siblings share the prefix but are not
+        // cores; counting them would double a cluster's power.
+        for name in [
+            "EACC_CPU",
+            "PACC0_CPU",
+            "EACC_CPM",
+            "PACC1_CPM",
+            "EACC_CPU0_SRAM",
+            "PACC1_CPU5_SRAM",
+            "EACC_CPM_SRAM",
+            "AMCC0",
+            "DCS0",
+            "GPU Energy",
+            "DRAM0",
+            "",
+            "_CPU0",
+            "XACC_CPU0",
+            "E_CPU0",
+        ] {
+            assert_eq!(parse_energy_core(name), None, "{name}");
+        }
+    }
 
     #[test]
     fn freq_from_residency_weighted_mean() {
@@ -332,9 +546,27 @@ mod tests {
     }
 
     mod prop {
-        use super::super::freq_from_residency;
+        use super::super::{freq_from_residency, parse_energy_core};
         use crate::units::Mhz;
         use proptest::prelude::*;
+
+        proptest! {
+            // Channel names are wire data like any other: the parser slices
+            // and indexes, so it must be total for arbitrary input, not only
+            // for the shapes Apple happens to ship today.
+            #[test]
+            fn parse_energy_core_never_panics(s in ".*") {
+                let _ = parse_energy_core(&s);
+            }
+
+            // Fuzz around the real grammar, where the edges actually live.
+            #[test]
+            fn parse_energy_core_never_panics_near_the_grammar(
+                s in "(DIE_[0-9]{0,3}_)?[EPMX]?ACC[0-9]{0,3}(_CPU[0-9]{0,3})?(_SRAM)?"
+            ) {
+                let _ = parse_energy_core(&s);
+            }
+        }
 
         proptest! {
             // Kernel residency shapes drift across macOS releases — any

@@ -9,17 +9,29 @@ use ratatui::text::Span;
 use crate::app::{Agg, App};
 use crate::ui::theme::Theme;
 use crate::ui::widgets::{BrailleGraph, CoreBands, core_bar, stacked_bands};
-use crate::units::Mhz;
+use crate::units::{Mhz, Watts};
 
 use super::{chrome_with, line, line_right};
 
 /// Minimum text/graph width worth keeping beside the scaled-up core bands;
 /// below it the card falls back to the inline single-row meters.
 const STRIP_MIN_BODY: u16 = 40;
+/// Body width below which the per-cluster watts column is dropped, so a narrow
+/// card truncates nothing and keeps load + frequency intact.
+const WATTS_MIN_BODY: u16 = 34;
 /// Label gutter left of the bands ("P0 ") and the gap between the bands and
 /// the text/graph body.
 const LABEL_W: u16 = 3;
 const BAND_GAP: u16 = 2;
+
+/// One cluster's row: its label, per-core loads, and the cluster-wide
+/// frequency and power when the Energy Model publishes them.
+struct Cluster {
+    label: String,
+    loads: Vec<f32>,
+    freq: Option<Mhz>,
+    watts: Option<Watts>,
+}
 
 pub fn render(buf: &mut Buffer, area: Rect, app: &App, th: &Theme) {
     let dim = Style::default().fg(th.dim);
@@ -45,22 +57,45 @@ pub fn render(buf: &mut Buffer, area: Rect, app: &App, th: &Theme) {
         .map_or(&[] as &[_], |c| c.per_core.as_slice());
     let e_count = app.soc.ecpu_count.min(cores.len());
     let per_cluster = app.soc.cores_per_pcluster.max(1);
-    let mut clusters: Vec<(String, Vec<f32>, Option<Mhz>)> = Vec::new();
+    // Per-cluster power is the sum of that cluster's own core rails. Only
+    // attributed when the Energy Model published exactly as many cores as the
+    // scheduler reports — a partial list would silently under-report a
+    // cluster, and `None` renders as absent rather than as zero watts.
+    let cluster_watts = |slice: &[crate::collect::power::CoreSample]| -> Option<Watts> {
+        slice
+            .iter()
+            .map(|c| c.watts)
+            .try_fold(0.0, |acc, w| Some(acc + w?.0))
+            .map(Watts)
+    };
+    let mut clusters: Vec<Cluster> = Vec::new();
     if !cores.is_empty() {
-        clusters.push((
-            app.soc.tier_low.to_string(),
-            cores[..e_count].iter().map(|r| r.0).collect(),
-            app.power.as_ref().map(|p| p.ecpu.freq),
-        ));
+        clusters.push(Cluster {
+            label: app.soc.tier_low.to_string(),
+            loads: cores[..e_count].iter().map(|r| r.0).collect(),
+            freq: app.power.as_ref().map(|p| p.ecpu.freq),
+            watts: app
+                .power
+                .as_ref()
+                .and_then(|p| cluster_watts(&p.ecpu.cores)),
+        });
         for (ci, chunk) in cores[e_count..].chunks(per_cluster).enumerate() {
-            clusters.push((
-                format!("{}{ci}", app.soc.tier_high),
-                chunk.iter().map(|r| r.0).collect(),
-                app.power.as_ref().map(|p| p.pcpu.freq),
-            ));
+            clusters.push(Cluster {
+                label: format!("{}{ci}", app.soc.tier_high),
+                loads: chunk.iter().map(|r| r.0).collect(),
+                freq: app.power.as_ref().map(|p| p.pcpu.freq),
+                watts: app.power.as_ref().and_then(|p| {
+                    // Cluster ci owns cores [ci*per_cluster, +per_cluster) of
+                    // the flat, identity-sorted P list.
+                    p.pcpu
+                        .cores
+                        .get(ci * per_cluster..(ci + 1) * per_cluster)
+                        .and_then(cluster_watts)
+                }),
+            });
         }
     }
-    let groups: Vec<Vec<f32>> = clusters.iter().map(|(_, loads, _)| loads.clone()).collect();
+    let groups: Vec<Vec<f32>> = clusters.iter().map(|c| c.loads.clone()).collect();
     let bands = CoreBands {
         groups: &groups,
         gradient: th.cpu,
@@ -142,7 +177,10 @@ pub fn render(buf: &mut Buffer, area: Rect, app: &App, th: &Theme) {
         );
     }
 
-    let cluster_stats = |loads: &[f32], freq: Option<Mhz>| {
+    // Watts are the last thing to earn room; a narrow card keeps load and
+    // frequency rather than truncating all three.
+    let show_watts = body.width >= WATTS_MIN_BODY;
+    let cluster_stats = |loads: &[f32], freq: Option<Mhz>, watts: Option<Watts>| {
         let avg: f32 = loads.iter().sum::<f32>() / loads.len().max(1) as f32;
         let mut spans = vec![Span::styled(
             format!(" {:>5.1}%", avg * 100.0),
@@ -154,6 +192,12 @@ pub fn render(buf: &mut Buffer, area: Rect, app: &App, th: &Theme) {
                 Style::default().fg(th.accent),
             ));
         }
+        if let Some(w) = watts.filter(|_| show_watts) {
+            spans.push(Span::styled(
+                format!(" {w:>6}"),
+                Style::default().fg(th.warn),
+            ));
+        }
         spans
     };
 
@@ -161,7 +205,7 @@ pub fn render(buf: &mut Buffer, area: Rect, app: &App, th: &Theme) {
         // One label + stats row per band, on the band's base row — the
         // classic "P0 ▆████▅  53.0%" line, with the bars now towering
         // above it (bands ≥2 rows here, so band 0 clears the summary row).
-        for ((y0, bh), (label, loads, freq)) in stacked_bands(inner.height, clusters.len())
+        for ((y0, bh), c) in stacked_bands(inner.height, clusters.len())
             .into_iter()
             .zip(&clusters)
         {
@@ -170,19 +214,19 @@ pub fn render(buf: &mut Buffer, area: Rect, app: &App, th: &Theme) {
                 buf,
                 inner,
                 row,
-                vec![Span::styled(format!("{label:<3}"), dim)],
+                vec![Span::styled(format!("{:<3}", c.label), dim)],
             );
-            line(buf, body, row, cluster_stats(loads, *freq));
+            line(buf, body, row, cluster_stats(&c.loads, c.freq, c.watts));
         }
     } else if inner.height > 2 {
         // Single-row cluster meters, exactly the pre-scaled layout.
-        for (row, (label, loads, freq)) in (1..inner.height).zip(&clusters) {
-            let mut spans = vec![Span::styled(format!("{label:<3}"), dim)];
-            for &r in loads {
+        for (row, c) in (1..inner.height).zip(&clusters) {
+            let mut spans = vec![Span::styled(format!("{:<3}", c.label), dim)];
+            for &r in &c.loads {
                 let (ch, color) = core_bar(r, th.cpu);
                 spans.push(Span::styled(ch.to_string(), Style::default().fg(color)));
             }
-            spans.extend(cluster_stats(loads, *freq));
+            spans.extend(cluster_stats(&c.loads, c.freq, c.watts));
             line(buf, inner, row, spans);
         }
     }
