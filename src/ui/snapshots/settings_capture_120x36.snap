@@ -1,0 +1,39 @@
+---
+source: src/ui/layout.rs
+---
+ ◉ mxmon cpu  0.4% │ Apple M3 Max  4E+12P · 40-core GPU · 48G                   load 3.42 2.87 2.51  up 1d 2h  HH:MM:SS
+╭╸CPU╺  44.0% ──╭ settings ───────────────────────────────────────────────────────────────────────── ✕ ╮───────────────╮
+│     ▂     E 2.│   appearance   graphs   layout   sampling   network   keys   about                   │               │
+│   ▄██▅        │   every command and the keys that fire it                                            │▏         3.70W│
+│E  ████      62│ ──────────────────────────────────────────────────────────────────────────────────── │▏         2.82W│
+│        ▃  ⣀⣀⣀⣀│   views ╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌                               ┃│▏          20mW│
+│P0 ▆▃▂▅██    37│   overview        1   +                 the dashboard: every metric card at once    ┃│▏         1.26W│
+│   ▄▁      ⣿⣿⣿⣿│   processes       2   +                 full-screen process table                   ┃│▏         3.10W│
+│P1 ██▆▃▂▅    39│ ▸ thermal         3   press…                                                        ┃│▏         800mW│
+╰───────────────│   connections     4   +                 live connections by process                 ┃│───────────────╯
+╭╸GPU╺  39.9% ──│   cycle views     ⇥   +                 step through the four views                 ┃│───────────────╮
+│@ 1.30GHz  2.82│                                                                                     ┃│  pressure  OK │
+│               │   process table ╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌                       ┃│▏▏▏▏▏▏▏▏▏▏▏▏▏▏▏│
+│⣠⣤  ⣠⣄ ⢀⣤⡄ ⢀⣤⡀ │   filter          /   F3   +            filter processes by name (esc clears)       ┃│G              │
+│⣿⣿⣷⣾⣿⣿⣷⣾⣿⣿⣶⣿⣿⣿⣶│   sort            s   F6   +            sort menu · column headers click too        ┃│               │
+│rend █████▊▏▏▏▏│   kill            x   F9   delete   +   signal picker for the selected process      ┃│⠴⠒⠲⣤⠤⠤⠤⠖⠒⢦⡤⠤⠤⠴⠒│
+╰───────────────│   details         ⏎   +                 everything known about the selected process ┃│───────────────╯
+╭╸NETWORK╺ ↓  22│   select down     j   ↓   +             move the selection down a row               ┃│───────────────╮
+│Σ↓  7.4G  Σ↑  1│   select up       k   ↑   +             move the selection up a row                 ┃│▏    ⚡  charging
+│↑   7.5 Mb/s⣾⣧⣷│   jump to top     g   home   +          select the first row                        ┃│ full  adapter │
+│⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿│   jump to bottom  G   end   +           select the last row                         ┃│ SoC     6.54W │
+│⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿│   page down       pagedown   +          move the selection a screen down            ┃│ DISP    3.10W │
+│↓  47.5 Mb/s⢸⢸⢸│   page up         pageup   +            move the selection a screen up              ┃│ other   17.0W │
+╰───────────────│                                                                                     ┃│───────────────╯
+╭╸PROCESSES╺ 160│   app ╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌                                 ┃│───────────────╮
+│    PID USER   │   settings        o   +                 this card — every setting in one place      ┃│               │
+│    659 yusuf  │   help            ?   F1   +            the key reference (this section)            ┃│               ┃
+│    421 root   │   cycle theme     t   +                 next theme, applied and saved live          ┃│               ┃
+│    642 _window│   pause           p   +                 freeze sampling; the app keeps drawing      ┃│               │
+│    404 yusuf  │   debug hud       d   +                 frame time, fps and tick in the footer      ┃│               │
+│    863 yusuf  │   sample faster   +   =   +             shorten the fast-tier interval by 50 ms      │               │
+│    625 root   │ ──────────────────────────────────────────────────────────────────────────────────── │               │
+│    387 _window│   chassis heat map + named sensors  ·  config.toml: keys                             │               │
+│    829 root   │  press any key to bind it · esc cancels                                              │               │
+╰───────────────╰──────────────────────────────────────────────────────────────────────────────────────╯───────────────╯
+  1 overview   2 processes   3 thermal   4 net   ? help  / filter  x kill  p pause  o settings  t theme  q quit

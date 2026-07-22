@@ -1,0 +1,27 @@
+---
+source: src/ui/layout.rs
+---
+ ◉ mxmon cpu  0.4% │ Apple M3 Max                                      HH:MM:SS
+╭╸CPU╺  44.0% ─────────────────────────────────────────────────────────────────╮
+│     ▂     E 2.08GHz · P 2.79GHz                           63°C avg · 70°C max│
+│ ╭ settings ───────────────────────────────────────────────────────────── ✕ ╮ │
+│E│   appearance   graphs   layout   sampling   network   keys   about       │ │
+│ │   theme and the chrome colors painted on top of it                       │⣀│
+│P│ ──────────────────────────────────────────────────────────────────────── │⣿│
+│ │ ▸ theme          ‹ ██ midnight       ›  18 themes · t cycles             │⣿│
+│P│                  ▪midnight ▪neon ▪nord ▪dracula ▪gruvbox                 │⣿│
+╰─│                  ▪tokyonight ▪catppuccin ▪solarized ▪rosepine            │─╯
+╭╸│                  ▪everforest ▪kanagawa ▪onedark ▪synthwave               │─╮
+│P│                  ▪monokai ▪cyberpunk ▪solarized-light ▪latte             │ │
+│C│                  ▪gruvbox-light                                          │W│
+│G│   frames         ‹ ██ theme          ›  from midnight                    │W│
+│A│   labels         ‹ ██ theme          ›  from midnight                    │W│
+╰─│   glyphs         ‹    braille        ›  forced                        ↺  │─╯
+╭╸│ ──────────────────────────────────────────────────────────────────────── │─╮
+│ │   the whole palette — panels, graphs, gauges, heat map                   │ │
+│ │  ↑↓ row · ←→ change · ⏎ set · r reset · R all · ⇥ page · esc close       │ ┃
+│ ╰──────────────────────────────────────────────────────────────────────────╯ │
+│    642 _windowse…   158.0  754mW   1012M    7 I   18m 02s mds_stores         │
+│    404 yusuf        156.0  348mW    494M   16 R    9m 24s Xcode              │
+╰──────────────────────────────────────────────────────────────────────────────╯
+  1 overview   2 processes   3 thermal   4 net   ? help  / filter  x kill

@@ -279,7 +279,6 @@ impl SortKey {
 /// Active modal overlay, if any.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Modal {
-    Help,
     Kill {
         pid: i32,
         name: String,
@@ -291,9 +290,34 @@ pub enum Modal {
     Details {
         pid: i32,
     },
-    Settings {
-        selected: usize,
+    /// The settings card. Its cursor lives in [`App::settings`] rather than
+    /// here, so closing and reopening returns to the page you were on.
+    Settings,
+}
+
+/// Cursor and edit state for the settings card. Every field is treated as
+/// hostile input by the renderer (clamped before indexing), so a stale cursor
+/// after a section change can only mis-highlight, never panic.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SettingsUi {
+    /// Index into [`crate::settings::SECTIONS`].
+    pub section: usize,
+    /// Row within the active section.
+    pub row: usize,
+    pub edit: Option<Edit>,
+}
+
+/// The card's two capture modes — the states where keys stop meaning
+/// navigation and start meaning content.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Edit {
+    /// Typing into a text setting; `buf` is the pending value.
+    Text {
+        id: crate::settings::Id,
+        buf: String,
     },
+    /// Waiting for the next key press to bind it to `action`.
+    Capture { action: crate::keys::Action },
 }
 
 /// Signals offered by the kill modal.
@@ -349,6 +373,9 @@ pub struct App {
     pub selected: usize,
     pub scroll: usize,
     pub modal: Option<Modal>,
+    /// Where the settings card is parked — kept outside `modal` so it
+    /// survives the card being closed and reopened.
+    pub settings: SettingsUi,
     pub paused: bool,
     pub show_hud: bool,
     pub toast: Option<Toast>,
@@ -396,6 +423,7 @@ impl App {
             selected: 0,
             scroll: 0,
             modal: None,
+            settings: SettingsUi::default(),
             paused: false,
             show_hud: false,
             toast: None,

@@ -5,9 +5,11 @@ use ratatui::crossterm::event::{
     Event, KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
 };
 
-use crate::app::{App, KILL_SIGNALS, Modal, SORT_KEYS, SortKey, View};
+use crate::app::{App, Edit, KILL_SIGNALS, Modal, SORT_KEYS, SortKey, View};
 use crate::collect::procs;
-use crate::collect::sampler::{Control, FAST_MS_MAX, FAST_MS_MIN};
+use crate::collect::sampler::Control;
+use crate::keys::{Action, Chord};
+use crate::settings;
 use crate::ui::layout::RenderState;
 use crate::ui::widgets::{HitMap, PanelKind, Target};
 
@@ -92,23 +94,8 @@ fn handle_key(key: KeyEvent, app: &mut App, control: &Control, rs: &mut RenderSt
                 }
                 _ => {}
             },
-            Modal::Settings { selected } => match key.code {
-                K::Esc | K::Char('q' | 'o') => app.modal = None,
-                K::Up | K::Char('k') => {
-                    app.modal = Some(Modal::Settings {
-                        selected: selected.saturating_sub(1),
-                    });
-                }
-                K::Down | K::Char('j') => {
-                    app.modal = Some(Modal::Settings {
-                        selected: (selected + 1).min(SETTINGS_ROWS - 1),
-                    });
-                }
-                K::Left | K::Char('h') => settings_step(app, control, selected, -1),
-                K::Right | K::Char('l') | K::Enter => settings_step(app, control, selected, 1),
-                _ => {}
-            },
-            Modal::Help | Modal::Details { .. } => {
+            Modal::Settings => return settings_key(app, control, key),
+            Modal::Details { .. } => {
                 if matches!(key.code, K::Esc | K::Enter | K::Char('q' | '?')) {
                     app.modal = None;
                 }
@@ -139,21 +126,32 @@ fn handle_key(key: KeyEvent, app: &mut App, control: &Control, rs: &mut RenderSt
         return Outcome::Continue;
     }
 
-    match key.code {
-        K::Char('q') | K::F(10) => return Outcome::Quit,
-        K::Esc => {
-            // Esc outside editing clears an active filter.
-            if !app.filter.is_empty() {
-                app.filter.clear();
-                app.refresh_visible();
-            }
+    // Esc is reserved (never remappable): outside editing it clears an
+    // active filter. Keeping it out of the keymap is what guarantees a way
+    // back no matter how the bindings were rearranged.
+    if key.code == K::Esc {
+        if !app.filter.is_empty() {
+            app.filter.clear();
+            app.refresh_visible();
         }
-        K::Char('?') | K::F(1) => app.modal = Some(Modal::Help),
-        K::Char('1') => app.view = View::Overview,
-        K::Char('2') => app.view = View::Processes,
-        K::Char('3') => app.view = View::Thermal,
-        K::Char('4') => app.view = View::Connections,
-        K::Tab => {
+        return Outcome::Continue;
+    }
+
+    // Everything else is a *command*, resolved through the user's keymap
+    // rather than matched on the key itself — one table drives dispatch, the
+    // KEYS section, and the footer chips.
+    let Some(action) = app.config.keys.action(Chord::from_event(key)) else {
+        return Outcome::Continue;
+    };
+    match action {
+        Action::Quit => return Outcome::Quit,
+        Action::Help => open_settings(app, settings::Section::Keys),
+        Action::Settings => open_settings_here(app),
+        Action::ViewOverview => app.view = View::Overview,
+        Action::ViewProcesses => app.view = View::Processes,
+        Action::ViewThermal => app.view = View::Thermal,
+        Action::ViewConnections => app.view = View::Connections,
+        Action::CycleView => {
             app.view = match app.view {
                 View::Overview => View::Processes,
                 View::Processes => View::Thermal,
@@ -161,7 +159,7 @@ fn handle_key(key: KeyEvent, app: &mut App, control: &Control, rs: &mut RenderSt
                 View::Connections => View::Overview,
             };
         }
-        K::Char('/') | K::F(3) => {
+        Action::Filter => {
             // The filter edits the process table — jump there if needed.
             app.filter_editing = true;
             app.view = if matches!(app.view, View::Thermal | View::Connections) {
@@ -170,12 +168,12 @@ fn handle_key(key: KeyEvent, app: &mut App, control: &Control, rs: &mut RenderSt
                 app.view
             };
         }
-        K::Char('s') | K::F(6) => {
+        Action::SortMenu => {
             app.modal = Some(Modal::SortMenu {
                 selected: SORT_KEYS.iter().position(|&k| k == app.sort).unwrap_or(0),
             });
         }
-        K::Char('x') | K::F(9) | K::Delete => {
+        Action::Kill => {
             // Kill acts on the process selection — meaningless elsewhere.
             if !matches!(app.view, View::Thermal | View::Connections)
                 && let Some(row) = app.selected_row()
@@ -187,53 +185,51 @@ fn handle_key(key: KeyEvent, app: &mut App, control: &Control, rs: &mut RenderSt
                 });
             }
         }
-        K::Enter => {
+        Action::Details => {
             if !matches!(app.view, View::Thermal | View::Connections)
                 && let Some(row) = app.selected_row()
             {
                 app.modal = Some(Modal::Details { pid: row.pid });
             }
         }
-        K::Char('t') => cycle_theme(app, 1),
-        K::Char('o') => app.modal = Some(Modal::Settings { selected: 0 }),
-        K::Char('p') => {
+        Action::ThemeCycle => cycle_theme(app, 1),
+        Action::Pause => {
             app.paused = !app.paused;
             control
                 .paused
                 .store(app.paused, std::sync::atomic::Ordering::Relaxed);
         }
-        K::Char('d') => app.show_hud = !app.show_hud,
-        K::Char('+' | '=') => adjust_speed(app, control, -50),
-        K::Char('-') => adjust_speed(app, control, 50),
+        Action::Hud => app.show_hud = !app.show_hud,
+        Action::Faster => adjust_speed(app, control, -50),
+        Action::Slower => adjust_speed(app, control, 50),
         // Selection movement (process list, or the scroll-only lists in the
         // thermal and connections views).
-        K::Char('j') | K::Down => match app.view {
+        Action::SelectDown => match app.view {
             View::Thermal => rs.sensor_scroll = rs.sensor_scroll.saturating_add(1),
             View::Connections => rs.flows_scroll = rs.flows_scroll.saturating_add(1),
             _ => app.move_selection(1),
         },
-        K::Char('k') | K::Up => match app.view {
+        Action::SelectUp => match app.view {
             View::Thermal => rs.sensor_scroll = rs.sensor_scroll.saturating_sub(1),
             View::Connections => rs.flows_scroll = rs.flows_scroll.saturating_sub(1),
             _ => app.move_selection(-1),
         },
-        K::Char('g') | K::Home => {
+        Action::Top => {
             if app.view == View::Connections {
                 rs.flows_scroll = 0;
             } else {
                 app.selected = 0;
             }
         }
-        K::Char('G') | K::End => {
+        Action::Bottom => {
             if app.view == View::Connections {
                 rs.flows_scroll = usize::MAX; // clamped by the panel
             } else {
                 app.selected = app.visible_rows.len().saturating_sub(1);
             }
         }
-        K::PageDown => app.move_selection(15),
-        K::PageUp => app.move_selection(-15),
-        _ => {}
+        Action::PageDown => app.move_selection(15),
+        Action::PageUp => app.move_selection(-15),
     }
     Outcome::Continue
 }
@@ -266,7 +262,7 @@ fn handle_mouse(
                         app.selected = i;
                     }
                 }
-                Some(Target::Help) => app.modal = Some(Modal::Help),
+                Some(Target::Help) => open_settings(app, settings::Section::Keys),
                 Some(Target::Filter) => app.filter_editing = true,
                 Some(Target::Kill) => {
                     if let Some(row) = app.selected_row() {
@@ -284,19 +280,55 @@ fn handle_mouse(
                         .store(app.paused, std::sync::atomic::Ordering::Relaxed);
                 }
                 Some(Target::ThemeCycle) => cycle_theme(app, 1),
-                Some(Target::Settings) => app.modal = Some(Modal::Settings { selected: 0 }),
-                Some(Target::SettingRow(i)) => {
-                    // Click selects the row and steps its value forward.
-                    app.modal = Some(Modal::Settings { selected: i });
-                    settings_step(app, control, i, 1);
+                Some(Target::Settings) => open_settings_here(app),
+                // Settings card. A click on a row only *selects* it — the
+                // value moves when you click the value, which is why the
+                // arrows, chips and pills are their own targets.
+                Some(Target::SettingSection(i)) => {
+                    app.settings.section = i.min(settings::SECTIONS.len() - 1);
+                    app.settings.row = 0;
+                    app.settings.edit = None;
                 }
+                Some(Target::SettingRow(i)) => settings_select(app, i),
                 Some(Target::SettingDec(i)) => {
-                    app.modal = Some(Modal::Settings { selected: i });
-                    settings_step(app, control, i, -1);
+                    settings_select(app, i);
+                    settings_change(app, control, -1);
                 }
                 Some(Target::SettingInc(i)) => {
-                    app.modal = Some(Modal::Settings { selected: i });
-                    settings_step(app, control, i, 1);
+                    settings_select(app, i);
+                    settings_change(app, control, 1);
+                }
+                Some(Target::SettingOption(row, option)) => {
+                    settings_select(app, row);
+                    if let Some(item) =
+                        settings::item_at(settings::Section::at(app.settings.section), row)
+                    {
+                        settings::set(app, item.id, option);
+                    }
+                }
+                Some(Target::SettingReset(i)) => {
+                    settings_select(app, i);
+                    settings_reset_row(app, control);
+                }
+                Some(Target::SettingEdit(i)) => {
+                    settings_select(app, i);
+                    settings_activate(app, control);
+                }
+                Some(Target::KeyChord(row, chord)) => {
+                    settings_select(app, row);
+                    unbind_at(app, row, chord);
+                }
+                Some(Target::KeyAdd(row)) => {
+                    settings_select(app, row);
+                    if let Some(action) = crate::keys::ACTIONS.get(row).copied() {
+                        app.settings.edit = Some(Edit::Capture { action });
+                    }
+                }
+                Some(Target::AboutAction(i)) => {
+                    settings_select(app, i);
+                    if let Some(action) = settings::ABOUT_ACTIONS.get(i).copied() {
+                        about_action(app, control, action);
+                    }
                 }
                 Some(Target::Quit) => return Outcome::Quit,
                 Some(Target::KillSignal(i)) => {
@@ -312,11 +344,7 @@ fn handle_mouse(
                 Some(Target::KillPid(pid)) => open_kill(app, pid),
                 Some(Target::Panel(kind)) => open_panel(app, kind),
                 Some(Target::Hud) => app.show_hud = !app.show_hud,
-                Some(Target::Tick) => {
-                    app.modal = Some(Modal::Settings {
-                        selected: SETTINGS_SAMPLING_ROW,
-                    });
-                }
+                Some(Target::Tick) => open_settings(app, settings::Section::Sampling),
                 Some(Target::Toast) => app.toast = None,
                 Some(Target::FlowRow(i)) => open_flow(app, i),
                 _ => {}
@@ -349,9 +377,16 @@ fn modal_target(t: Target) -> bool {
             | Target::ModalClose
             | Target::KillSignal(_)
             | Target::SortOption(_)
+            | Target::SettingSection(_)
             | Target::SettingRow(_)
             | Target::SettingDec(_)
             | Target::SettingInc(_)
+            | Target::SettingOption(..)
+            | Target::SettingReset(_)
+            | Target::SettingEdit(_)
+            | Target::KeyChord(..)
+            | Target::KeyAdd(_)
+            | Target::AboutAction(_)
             | Target::KillPid(_)
     )
 }
@@ -393,9 +428,16 @@ fn scroll(
             Target::ModalBody
             | Target::KillSignal(_)
             | Target::SortOption(_)
+            | Target::SettingSection(_)
             | Target::SettingRow(_)
             | Target::SettingDec(_)
-            | Target::SettingInc(_),
+            | Target::SettingInc(_)
+            | Target::SettingOption(..)
+            | Target::SettingReset(_)
+            | Target::SettingEdit(_)
+            | Target::KeyChord(..)
+            | Target::KeyAdd(_)
+            | Target::AboutAction(_),
         ) => modal_cursor(app, if delta > 0 { 1 } else { -1 }),
         // Dead space: nothing changed, skip the repaint.
         _ => return Outcome::Idle,
@@ -423,13 +465,32 @@ fn modal_cursor(app: &mut App, dir: i64) {
                 selected: step(selected, SORT_KEYS.len()),
             });
         }
-        Some(Modal::Settings { selected }) => {
-            app.modal = Some(Modal::Settings {
-                selected: step(selected, SETTINGS_ROWS),
-            });
-        }
+        Some(Modal::Settings) => settings_move(app, dir.signum()),
         _ => {}
     }
+}
+
+/// Put the card's cursor on `row` (a click), leaving any open editor behind.
+fn settings_select(app: &mut App, row: usize) {
+    let rows = settings::row_count(settings::Section::at(app.settings.section));
+    app.settings.row = row.min(rows.saturating_sub(1));
+    app.settings.edit = None;
+}
+
+/// Drop one chord from a KEYS row (a click on its chip).
+fn unbind_at(app: &mut App, row: usize, chord_index: usize) {
+    let Some(action) = crate::keys::ACTIONS.get(row).copied() else {
+        return;
+    };
+    let Some(chord) = app.config.keys.chords(action).get(chord_index).copied() else {
+        return;
+    };
+    app.config.keys.unbind(action, chord);
+    app.config.save();
+    app.toast(
+        format!("{} unbound from {}", chord.label(), action.title()),
+        false,
+    );
 }
 
 /// A metric card was clicked: jump to the view where that metric deepens
@@ -492,70 +553,212 @@ fn cycle_theme(app: &mut App, dir: i64) {
         .iter()
         .position(|t| t.name == app.config.theme)
         .map_or(0, |i| (i as i64 + dir).rem_euclid(len) as usize);
-    themes[idx].name.clone_into(&mut app.config.theme);
-    app.config.save();
-    app.toast(format!("theme: {}", themes[idx].name), false);
+    // Through the schema, so `t`, the footer chip and the card's own chips
+    // all take the identical path (set + save + toast).
+    settings::set(app, settings::Id::Theme, idx);
 }
 
-/// Rows of the settings modal, top to bottom (must match the overlay).
-pub const SETTINGS_ROWS: usize = 8;
-/// The sampling-interval row — the footer tick chip deep-links to it.
-pub const SETTINGS_SAMPLING_ROW: usize = 5;
-/// The graph-window stops the modal cycles through. Any 1–8 value from a
-/// hand-edited config is honored; stepping snaps outward to the nearest stop
-/// in the direction of travel (×7 steps right to ×8, left to ×4).
-const GRAPH_WINDOW_STOPS: [u16; 4] = [1, 2, 4, 8];
+/// Open the card wherever it was left — `o` is "settings", not "settings,
+/// page one", and coming back to the row you were tuning is the whole reason
+/// the cursor lives on `App` instead of in the modal.
+fn open_settings_here(app: &mut App) {
+    app.settings.edit = None;
+    app.modal = Some(Modal::Settings);
+}
 
-/// Step a settings row's value forward (`dir` 1) or back (`-1`); every
-/// change applies live and persists immediately.
-fn settings_step(app: &mut App, control: &Control, row: usize, dir: i64) {
-    match row {
-        0 => {
-            let p = i64::from(app.config.procs_panes) - 1;
-            app.config.procs_panes = ((p + dir).rem_euclid(4) + 1) as u16;
-            app.config.save();
+/// Open the card on a specific page — the deep links (`?` → keys, the footer
+/// tick chip → sampling). The cursor resets when the page actually changes,
+/// since a row index means something different on each one.
+fn open_settings(app: &mut App, section: settings::Section) {
+    let index = settings::SECTIONS
+        .iter()
+        .position(|s| *s == section)
+        .unwrap_or(0);
+    if app.settings.section != index {
+        app.settings.section = index;
+        app.settings.row = 0;
+    }
+    app.settings.edit = None;
+    app.modal = Some(Modal::Settings);
+}
+
+/// Keys inside the settings card.
+///
+/// Deliberately *not* remappable: this is the surface a user reaches for to
+/// undo a bad remap, so its own navigation has to be the same everywhere,
+/// always. Capture modes come first — while a text field or a key capture is
+/// open they consume nearly everything.
+fn settings_key(app: &mut App, control: &Control, key: KeyEvent) -> Outcome {
+    use KeyCode as K;
+
+    match app.settings.edit.clone() {
+        Some(Edit::Text { id, mut buf }) => {
+            match key.code {
+                K::Esc => app.settings.edit = None,
+                K::Enter => {
+                    settings::set_text(app, id, &buf);
+                    app.settings.edit = None;
+                }
+                K::Backspace => {
+                    buf.pop();
+                    app.settings.edit = Some(Edit::Text { id, buf });
+                }
+                K::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    buf.push(c);
+                    app.settings.edit = Some(Edit::Text { id, buf });
+                }
+                _ => {}
+            }
+            return Outcome::Continue;
         }
-        1 => cycle_theme(app, dir),
-        2 => {
-            app.config.schematic = !app.config.schematic;
-            app.config.save();
+        Some(Edit::Capture { action }) => {
+            // Anything but Esc becomes the binding — including keys that
+            // mean something else here, which is the point of a capture.
+            if key.code != K::Esc {
+                bind_captured(app, action, Chord::from_event(key));
+            }
+            app.settings.edit = None;
+            return Outcome::Continue;
         }
-        3 => {
-            app.config.contours = !app.config.contours;
-            app.config.save();
+        None => {}
+    }
+
+    let section = settings::Section::at(app.settings.section);
+    match key.code {
+        K::Esc | K::Char('q' | 'o') => app.modal = None,
+        K::Tab | K::Char(']') => settings_page(app, 1),
+        K::BackTab | K::Char('[') => settings_page(app, -1),
+        K::Up | K::Char('k') => settings_move(app, -1),
+        K::Down | K::Char('j') => settings_move(app, 1),
+        K::Home => app.settings.row = 0,
+        K::End => app.settings.row = settings::row_count(section).saturating_sub(1),
+        K::Left | K::Char('h') => settings_change(app, control, -1),
+        K::Right | K::Char('l') => settings_change(app, control, 1),
+        K::Enter => settings_activate(app, control),
+        K::Backspace | K::Delete => {
+            // In KEYS this drops the action's last chord; elsewhere the row
+            // has nothing to remove.
+            if section == settings::Section::Keys
+                && let Some(action) = crate::keys::ACTIONS.get(app.settings.row).copied()
+                && let Some(chord) = app.config.keys.chords(action).last().copied()
+            {
+                app.config.keys.unbind(action, chord);
+                app.config.save();
+                app.toast(
+                    format!("{} unbound from {}", chord.label(), action.title()),
+                    false,
+                );
+            }
         }
-        4 => {
-            use crate::config::Glyphs;
-            const CYCLE: [Glyphs; 3] = [Glyphs::Auto, Glyphs::Octant, Glyphs::Braille];
-            let i = CYCLE
-                .iter()
-                .position(|g| *g == app.config.glyphs)
-                .unwrap_or(0) as i64;
-            app.config.glyphs = CYCLE[(i + dir).rem_euclid(3) as usize];
-            app.config.save();
-        }
-        5 => adjust_speed(app, control, dir * 50),
-        6 => {
-            let cur = app.config.graph_window;
-            let stops = GRAPH_WINDOW_STOPS;
-            let i = stops
-                .iter()
-                .position(|s| *s >= cur)
-                .unwrap_or(stops.len() - 1) as i64;
-            let j = if dir > 0 && stops[i as usize] > cur {
-                i // off-stop value: the snap itself is the forward step
-            } else {
-                i + dir
-            };
-            app.config.graph_window = stops[j.rem_euclid(stops.len() as i64) as usize];
-            app.config.save();
-        }
-        7 => {
-            app.config.ping = !app.config.ping;
-            app.config.save();
-            app.toast("ping probe: applies at next launch", false);
-        }
+        K::Char('r') => settings_reset_row(app, control),
+        K::Char('R') => settings::reset_all(app, control),
         _ => {}
+    }
+    Outcome::Continue
+}
+
+/// Move to another page of the card, wrapping. The row cursor resets: pages
+/// have different lengths and different meanings.
+fn settings_page(app: &mut App, dir: i64) {
+    let len = settings::SECTIONS.len() as i64;
+    app.settings.section = ((app.settings.section as i64 + dir).rem_euclid(len)) as usize;
+    app.settings.row = 0;
+    app.settings.edit = None;
+}
+
+/// Move the row cursor, clamped to the page.
+fn settings_move(app: &mut App, dir: i64) {
+    let rows = settings::row_count(settings::Section::at(app.settings.section));
+    if rows == 0 {
+        app.settings.row = 0;
+        return;
+    }
+    app.settings.row = (app.settings.row as i64 + dir).clamp(0, rows as i64 - 1) as usize;
+}
+
+/// `←`/`→` on the selected row: step a value, or (in KEYS) nothing — there
+/// is no ordering to walk there.
+fn settings_change(app: &mut App, control: &Control, dir: i64) {
+    let section = settings::Section::at(app.settings.section);
+    if let Some(item) = settings::item_at(section, app.settings.row) {
+        settings::step(app, control, item.id, dir);
+    }
+}
+
+/// `⏎`: toggle/step a setting, open a text editor, capture a key binding, or
+/// run an ABOUT action — whatever "activate" means for the selected row.
+fn settings_activate(app: &mut App, control: &Control) {
+    let section = settings::Section::at(app.settings.section);
+    match section {
+        settings::Section::Keys => {
+            if let Some(action) = crate::keys::ACTIONS.get(app.settings.row).copied() {
+                app.settings.edit = Some(Edit::Capture { action });
+            }
+        }
+        settings::Section::About => {
+            if let Some(action) = settings::ABOUT_ACTIONS.get(app.settings.row).copied() {
+                about_action(app, control, action);
+            }
+        }
+        _ => match settings::item_at(section, app.settings.row) {
+            Some(item) if item.kind == settings::Kind::Text => {
+                app.settings.edit = Some(Edit::Text {
+                    id: item.id,
+                    buf: settings::current(app, item.id).value,
+                });
+            }
+            Some(item) => settings::step(app, control, item.id, 1),
+            None => {}
+        },
+    }
+}
+
+/// `r`: put the selected row back to its shipped value (its default binding,
+/// in KEYS).
+fn settings_reset_row(app: &mut App, control: &Control) {
+    let section = settings::Section::at(app.settings.section);
+    if section == settings::Section::Keys {
+        if let Some(action) = crate::keys::ACTIONS.get(app.settings.row).copied() {
+            app.config.keys.reset(action);
+            app.config.save();
+            app.toast(format!("{} reset", action.title()), false);
+        }
+    } else if let Some(item) = settings::item_at(section, app.settings.row) {
+        settings::reset(app, control, item.id);
+    }
+}
+
+fn about_action(app: &mut App, control: &Control, action: settings::AboutAction) {
+    match action {
+        settings::AboutAction::RescanSensors => {
+            if settings::clear_sensor_cache() {
+                app.toast("sensor cache cleared · re-probes at next launch", false);
+            } else {
+                app.toast("no sensor cache to clear", false);
+            }
+        }
+        settings::AboutAction::ResetAll => settings::reset_all(app, control),
+    }
+}
+
+/// Record a captured chord, saying out loud when it was taken from another
+/// command — a silent steal is how someone loses a key they still needed.
+fn bind_captured(app: &mut App, action: Action, chord: Chord) {
+    match app.config.keys.bind(action, chord) {
+        Ok(previous) => {
+            app.config.save();
+            let msg = match previous {
+                Some(prev) => format!(
+                    "{} → {} · taken from {}",
+                    action.title(),
+                    chord.label(),
+                    prev.title()
+                ),
+                None => format!("{} → {}", action.title(), chord.label()),
+            };
+            app.toast(msg, false);
+        }
+        Err(()) => app.toast(format!("{} is reserved", chord.label()), true),
     }
 }
 
@@ -584,15 +787,12 @@ fn send_signal(app: &mut App, pid: i32, signal_idx: usize) {
     app.modal = None;
 }
 
+/// The `+`/`-` keys and the footer tick chip's wheel. Clamping, the live
+/// sampler store and the toast all live in the schema, so the card's arrows
+/// and these shortcuts can't drift apart.
 fn adjust_speed(app: &mut App, control: &Control, delta_ms: i64) {
-    let current = app.config.interval_ms as i64;
-    let next = (current + delta_ms).clamp(FAST_MS_MIN as i64, FAST_MS_MAX as i64) as u64;
-    app.config.interval_ms = next;
-    control
-        .fast_ms
-        .store(next, std::sync::atomic::Ordering::Relaxed);
-    app.config.save();
-    app.toast(format!("tick {next}ms"), false);
+    let next = (app.config.interval_ms as i64 + delta_ms).max(0) as u64;
+    settings::set_interval(app, control, next);
 }
 
 #[cfg(test)]
@@ -605,10 +805,12 @@ mod tests {
     };
     use ratatui::layout::Rect;
 
-    use super::{Outcome, SETTINGS_ROWS, SETTINGS_SAMPLING_ROW, handle};
-    use crate::app::{App, KILL_SIGNALS, Modal, SORT_KEYS, SortKey, View};
+    use super::{Outcome, handle};
+    use crate::app::{App, Edit, KILL_SIGNALS, Modal, SORT_KEYS, SortKey, View};
     use crate::collect::sampler::{Control, FAST_MS_MAX, FAST_MS_MIN, Update};
     use crate::config;
+    use crate::keys::{Action, Chord};
+    use crate::settings;
     use crate::testutil as tu;
     use crate::ui::layout::RenderState;
     use crate::ui::widgets::{HitMap, PanelKind, Target};
@@ -655,7 +857,7 @@ mod tests {
         let mut h = h();
         let ctrl_c = tu::key_with(K::Char('c'), KeyModifiers::CONTROL);
         assert!(h.ev(&ctrl_c) == Outcome::Quit);
-        h.app.modal = Some(Modal::Help);
+        h.app.modal = Some(Modal::Settings);
         assert!(h.ev(&ctrl_c) == Outcome::Quit, "modals don't capture it");
         h.app.modal = None;
         h.app.filter_editing = true;
@@ -699,13 +901,24 @@ mod tests {
     }
 
     #[test]
-    fn help_modal_opens_and_modal_captures_close_keys() {
+    fn help_opens_the_key_reference_and_captures_close_keys() {
         let mut h = h();
         h.key(K::Char('?'));
-        assert_eq!(h.app.modal, Some(Modal::Help));
-        // The modal captures 'q': it closes the overlay, not the app.
+        assert_eq!(h.app.modal, Some(Modal::Settings));
+        assert_eq!(
+            settings::Section::at(h.app.settings.section),
+            settings::Section::Keys,
+            "? is the key reference now — it lands on that page"
+        );
+        // The card captures 'q': it closes the overlay, not the app.
         assert!(h.key(K::Char('q')) == Outcome::Continue);
         assert_eq!(h.app.modal, None);
+        // …and reopening returns to the page you were on.
+        h.key(K::Char('o'));
+        assert_eq!(
+            settings::Section::at(h.app.settings.section),
+            settings::Section::Keys
+        );
     }
 
     #[test]
@@ -741,85 +954,235 @@ mod tests {
         assert_eq!(h.app.modal, None);
     }
 
+    /// Which page the card is on, by name.
+    fn page(h: &H) -> settings::Section {
+        settings::Section::at(h.app.settings.section)
+    }
+
+    /// Put the card on a named page (the tests care about pages, not their
+    /// ordinal, so a reshuffle of SECTIONS doesn't rewrite every test).
+    fn goto(h: &mut H, section: settings::Section) {
+        h.app.settings.section = settings::SECTIONS
+            .iter()
+            .position(|s| *s == section)
+            .expect("section");
+        h.app.settings.row = 0;
+    }
+
     #[test]
-    fn settings_rows_step_every_option() {
+    fn settings_card_moves_between_pages_and_rows() {
         let mut h = h();
         h.key(K::Char('o'));
-        assert_eq!(h.app.modal, Some(Modal::Settings { selected: 0 }));
-        // Row 0: pane cap wraps 1→2 forward, then 2→1→4 backward.
-        h.key(K::Right);
-        assert_eq!(h.app.config.procs_panes, 2);
-        h.key(K::Left);
-        h.key(K::Left);
-        assert_eq!(h.app.config.procs_panes, 4, "wraps under 1");
-        // Row 1: theme cycles.
-        h.key(K::Char('j'));
-        let before = h.app.config.theme.clone();
-        h.key(K::Right);
-        assert_ne!(h.app.config.theme, before);
-        // Row 2: schematic toggles.
-        h.key(K::Char('j'));
-        let schematic = h.app.config.schematic;
-        h.key(K::Right);
-        assert_eq!(h.app.config.schematic, !schematic);
-        // Row 3: contour rings toggle.
-        h.key(K::Char('j'));
-        let contours = h.app.config.contours;
-        h.key(K::Right);
-        assert_eq!(h.app.config.contours, !contours);
-        // Row 4: glyph mode cycles auto → octant → braille, and wraps back.
-        use crate::config::Glyphs;
-        h.key(K::Char('j'));
-        h.app.config.glyphs = Glyphs::Auto;
-        h.key(K::Right);
-        assert_eq!(h.app.config.glyphs, Glyphs::Octant);
-        h.key(K::Right);
-        assert_eq!(h.app.config.glyphs, Glyphs::Braille);
-        h.key(K::Left);
-        h.key(K::Left);
-        assert_eq!(h.app.config.glyphs, Glyphs::Auto, "steps back to auto");
-        // Row 5: speed steps apply live through the shared control.
-        h.key(K::Char('j'));
-        let ms = h.app.config.interval_ms;
-        h.key(K::Right);
-        assert_eq!(h.app.config.interval_ms, ms + 50);
-        assert_eq!(h.control.fast_ms.load(Ordering::Relaxed), ms + 50);
-        // Row 6: graph window cycles the ×1/2/4/8 stops and wraps both ways.
-        h.key(K::Char('j'));
-        h.app.config.graph_window = 4;
-        h.key(K::Right);
-        assert_eq!(h.app.config.graph_window, 8);
-        h.key(K::Right);
-        assert_eq!(h.app.config.graph_window, 1, "wraps past ×8");
-        h.key(K::Left);
-        assert_eq!(h.app.config.graph_window, 8, "wraps back under ×1");
-        h.key(K::Left);
-        assert_eq!(h.app.config.graph_window, 4);
-        // A hand-edited off-stop value snaps outward in the travel direction.
-        h.app.config.graph_window = 7;
-        h.key(K::Right);
-        assert_eq!(h.app.config.graph_window, 8, "×7 snaps up to ×8");
-        h.app.config.graph_window = 7;
-        h.key(K::Left);
-        assert_eq!(h.app.config.graph_window, 4, "×7 steps down to ×4");
-        // Row 7: ping toggles with a heads-up toast.
-        h.key(K::Char('j'));
-        let ping = h.app.config.ping;
-        h.key(K::Enter);
-        assert_eq!(h.app.config.ping, !ping);
-        assert!(h.app.toast.is_some());
-        // The cursor clamps at the last row; 'o' closes.
-        for _ in 0..10 {
+        assert_eq!(h.app.modal, Some(Modal::Settings));
+        assert_eq!(page(&h), settings::Section::Appearance);
+        // Tab walks the pages and wraps all the way round.
+        for expected in settings::SECTIONS
+            .into_iter()
+            .skip(1)
+            .chain([settings::Section::Appearance])
+        {
+            h.key(K::Tab);
+            assert_eq!(page(&h), expected);
+        }
+        // Rows clamp at both ends of the page — they never wrap onto a
+        // neighbour's row indices.
+        for _ in 0..40 {
             h.key(K::Char('j'));
         }
         assert_eq!(
+            h.app.settings.row,
+            settings::row_count(page(&h)) - 1,
+            "clamped at the last row"
+        );
+        for _ in 0..40 {
+            h.key(K::Char('k'));
+        }
+        assert_eq!(h.app.settings.row, 0);
+        // Changing page resets the cursor: a row index means something
+        // different on each one.
+        h.app.settings.row = 2;
+        h.key(K::Tab);
+        assert_eq!(h.app.settings.row, 0);
+        h.key(K::Char('o'));
+        assert_eq!(h.app.modal, None, "o closes what o opened");
+    }
+
+    #[test]
+    fn settings_arrows_and_enter_change_the_selected_row() {
+        let mut h = h();
+        h.key(K::Char('o'));
+        goto(&mut h, settings::Section::Appearance);
+        // Row 0 is the theme: the arrows walk it, both ways.
+        let before = h.app.config.theme.clone();
+        h.key(K::Right);
+        assert_ne!(h.app.config.theme, before);
+        h.key(K::Left);
+        assert_eq!(h.app.config.theme, before, "and back again");
+        // Toggles flip on either arrow and on enter.
+        goto(&mut h, settings::Section::Layout);
+        h.key(K::Char('j')); // schematic
+        let schematic = h.app.config.schematic;
+        h.key(K::Right);
+        assert_eq!(h.app.config.schematic, !schematic);
+        h.key(K::Enter);
+        assert_eq!(h.app.config.schematic, schematic, "enter toggles too");
+        // The sampling stepper applies live through the shared control.
+        goto(&mut h, settings::Section::Sampling);
+        let ms = h.app.config.interval_ms;
+        h.key(K::Right);
+        assert_eq!(h.app.config.interval_ms, ms - 50, "right is faster");
+        assert_eq!(h.control.fast_ms.load(Ordering::Relaxed), ms - 50);
+        h.key(K::Left);
+        assert_eq!(h.app.config.interval_ms, ms);
+    }
+
+    #[test]
+    fn settings_text_row_edits_commits_and_cancels() {
+        let mut h = h();
+        h.key(K::Char('o'));
+        goto(&mut h, settings::Section::Network);
+        h.app.settings.row = 1; // ping host
+        h.key(K::Enter);
+        assert!(
+            matches!(&h.app.settings.edit, Some(Edit::Text { buf, .. }) if buf == "1.1.1.1"),
+            "the editor opens seeded with the current value"
+        );
+        for _ in 0..7 {
+            h.key(K::Backspace);
+        }
+        for c in "9.9.9.9".chars() {
+            h.key(K::Char(c));
+        }
+        // Typing must not leak into the global keymap: 'q' here is a
+        // character, not quit.
+        h.key(K::Char('q'));
+        h.key(K::Backspace);
+        h.key(K::Enter);
+        assert_eq!(h.app.config.ping_host, "9.9.9.9");
+        assert_eq!(h.app.settings.edit, None);
+        // Esc abandons an edit without writing it.
+        h.key(K::Enter);
+        h.key(K::Char('z'));
+        h.key(K::Esc);
+        assert_eq!(h.app.config.ping_host, "9.9.9.9");
+        assert_eq!(h.app.settings.edit, None);
+        assert_eq!(
             h.app.modal,
-            Some(Modal::Settings {
-                selected: SETTINGS_ROWS - 1
+            Some(Modal::Settings),
+            "esc closed the editor, not the card"
+        );
+    }
+
+    #[test]
+    fn settings_keys_page_binds_steals_unbinds_and_resets() {
+        let mut h = h();
+        h.key(K::Char('?'));
+        assert_eq!(page(&h), settings::Section::Keys);
+        let row = crate::keys::ACTIONS
+            .iter()
+            .position(|a| *a == Action::Pause)
+            .expect("pause row");
+        h.app.settings.row = row;
+        // Enter arms the capture; the next key becomes the binding.
+        h.key(K::Enter);
+        assert_eq!(
+            h.app.settings.edit,
+            Some(Edit::Capture {
+                action: Action::Pause
             })
         );
+        h.key(K::Char('t')); // 't' currently cycles the theme
+        assert_eq!(h.app.settings.edit, None);
+        assert_eq!(
+            h.app.config.keys.action(Chord::parse("t").unwrap()),
+            Some(Action::Pause),
+            "the capture took the key"
+        );
+        assert!(
+            h.app.toast.as_ref().unwrap().text.contains("cycle theme"),
+            "and said who lost it"
+        );
+        // The new binding works from the dashboard.
+        h.app.modal = None;
+        h.key(K::Char('t'));
+        assert!(h.app.paused, "the rebound key fires the new action");
+        // Backspace drops the action's last chord; r restores the defaults.
         h.key(K::Char('o'));
-        assert_eq!(h.app.modal, None);
+        h.app.settings.row = row;
+        assert_eq!(
+            h.app.config.keys.chords(Action::Pause).len(),
+            2,
+            "'p' plus the captured 't'"
+        );
+        h.key(K::Backspace);
+        assert_eq!(
+            h.app.config.keys.action(Chord::parse("t").unwrap()),
+            None,
+            "the newest chord went first"
+        );
+        h.key(K::Backspace);
+        assert!(h.app.config.keys.chords(Action::Pause).is_empty());
+        h.key(K::Char('r'));
+        assert!(h.app.config.keys.is_default(Action::Pause));
+        assert_eq!(
+            h.app.config.keys.action(Chord::parse("t").unwrap()),
+            None,
+            "resetting pause gives up 't' — it does not hand it back to the \
+             theme, which lost it fairly and can reclaim it by resetting"
+        );
+        h.app.settings.row = crate::keys::ACTIONS
+            .iter()
+            .position(|a| *a == Action::ThemeCycle)
+            .expect("theme row");
+        h.key(K::Char('r'));
+        assert_eq!(
+            h.app.config.keys.action(Chord::parse("t").unwrap()),
+            Some(Action::ThemeCycle),
+            "and now it has it back"
+        );
+        // A reserved chord is refused, loudly, and changes nothing.
+        h.key(K::Enter);
+        h.ev(&tu::key_with(K::Char('c'), KeyModifiers::CONTROL));
+        assert!(h.app.config.keys.is_default(Action::Pause));
+    }
+
+    #[test]
+    fn settings_reset_row_and_reset_everything() {
+        let mut h = h();
+        h.key(K::Char('o'));
+        goto(&mut h, settings::Section::Appearance);
+        h.key(K::Right); // theme moves off default
+        h.key(K::Char('j'));
+        h.key(K::Right); // frames too
+        assert!(!settings::is_default(&h.app, settings::Id::Frames));
+        h.key(K::Char('r'));
+        assert!(settings::is_default(&h.app, settings::Id::Frames));
+        assert!(
+            !settings::is_default(&h.app, settings::Id::Theme),
+            "r resets one row, not the page"
+        );
+        h.key(K::Char('R'));
+        assert!(settings::all_default(&h.app), "R resets everything");
+    }
+
+    #[test]
+    fn settings_about_actions_run_from_the_card() {
+        let mut h = h();
+        h.key(K::Char('o'));
+        goto(&mut h, settings::Section::About);
+        // Reset-all is reachable here too, and reports what it did.
+        h.app.config.theme = "neon".into();
+        h.app.settings.row = settings::ABOUT_ACTIONS
+            .iter()
+            .position(|a| *a == settings::AboutAction::ResetAll)
+            .expect("reset row");
+        h.key(K::Enter);
+        assert!(settings::all_default(&h.app));
+        assert!(h.app.toast.is_some());
+        // The sensor-cache action is safe to run with no cache present.
+        h.app.settings.row = 0;
+        h.key(K::Enter);
+        assert!(h.app.toast.is_some());
     }
 
     #[test]
@@ -1011,9 +1374,9 @@ mod tests {
     fn click_outside_modal_closes_it_inside_keeps_it() {
         let mut h = h();
         h.hits.push(Rect::new(5, 5, 10, 5), Target::ModalBody);
-        h.app.modal = Some(Modal::Help);
+        h.app.modal = Some(Modal::Settings);
         h.click(7, 7); // inside the body
-        assert_eq!(h.app.modal, Some(Modal::Help));
+        assert_eq!(h.app.modal, Some(Modal::Settings));
         h.click(0, 0); // outside
         assert_eq!(h.app.modal, None);
     }
@@ -1027,14 +1390,77 @@ mod tests {
         assert_eq!(h.app.modal, None);
         assert_eq!(h.app.sort, SortKey::Pid);
         assert!(!h.app.sort_desc, "identity keys default ascending");
-        // A settings-row click selects the row and steps its value.
-        h.hits.clear();
-        h.hits.push(Rect::new(0, 0, 10, 1), Target::SettingRow(0));
-        h.app.modal = Some(Modal::Settings { selected: 3 });
-        let panes = h.app.config.procs_panes;
+    }
+
+    /// The card is a mouse surface first: pages, rows, chips, arrows, the
+    /// reset chip and the KEYS chips all act on click.
+    #[test]
+    fn settings_card_clicks_do_everything_the_keys_do() {
+        let mut h = h();
+        h.app.modal = Some(Modal::Settings);
+        let keys_page = settings::SECTIONS
+            .iter()
+            .position(|s| *s == settings::Section::Keys)
+            .expect("keys page");
+
+        // A row click only *selects* — clicking a label must not silently
+        // rewrite the value under the pointer.
+        h.hits.push(Rect::new(0, 0, 10, 1), Target::SettingRow(2));
+        goto(&mut h, settings::Section::Appearance);
+        let before = h.app.config.theme.clone();
         h.click(1, 0);
-        assert_eq!(h.app.modal, Some(Modal::Settings { selected: 0 }));
-        assert_eq!(h.app.config.procs_panes, panes % 4 + 1);
+        assert_eq!(h.app.settings.row, 2);
+        assert_eq!(h.app.config.theme, before, "selecting is not changing");
+
+        // A chip click sets that exact value — the whole point of the picker.
+        h.hits.clear();
+        h.hits
+            .push(Rect::new(0, 1, 10, 1), Target::SettingOption(0, 3));
+        h.click(1, 1);
+        assert_eq!(h.app.settings.row, 0);
+        assert_eq!(h.app.config.theme, crate::ui::theme::THEMES[3].name);
+
+        // The arrows step, and the reset chip puts the row back.
+        h.hits.clear();
+        h.hits.push(Rect::new(0, 2, 3, 1), Target::SettingInc(0));
+        h.hits.push(Rect::new(0, 3, 3, 1), Target::SettingReset(0));
+        h.click(1, 2);
+        assert_eq!(h.app.config.theme, crate::ui::theme::THEMES[4].name);
+        h.click(1, 3);
+        assert!(settings::is_default(&h.app, settings::Id::Theme));
+
+        // Tabs switch pages.
+        h.hits.clear();
+        h.hits
+            .push(Rect::new(0, 4, 10, 1), Target::SettingSection(keys_page));
+        h.click(1, 4);
+        assert_eq!(page(&h), settings::Section::Keys);
+
+        // In KEYS: a chip click unbinds, `+` arms a capture.
+        let row = crate::keys::ACTIONS
+            .iter()
+            .position(|a| *a == Action::Quit)
+            .expect("quit row");
+        h.hits.clear();
+        h.hits.push(Rect::new(0, 5, 6, 1), Target::KeyChord(row, 0));
+        h.hits.push(Rect::new(0, 6, 3, 1), Target::KeyAdd(row));
+        h.click(1, 5);
+        assert_eq!(
+            h.app.config.keys.action(Chord::parse("q").unwrap()),
+            None,
+            "the clicked chip was released"
+        );
+        h.click(1, 6);
+        assert_eq!(
+            h.app.settings.edit,
+            Some(Edit::Capture {
+                action: Action::Quit
+            })
+        );
+
+        // Every one of those is a modal-layer target: none of them closed the
+        // card by counting as a click "outside".
+        assert_eq!(h.app.modal, Some(Modal::Settings));
     }
 
     #[test]
@@ -1171,12 +1597,11 @@ mod tests {
         h.click(1, 2);
         assert!(h.app.toast.is_none(), "toast dismissed early");
         h.click(1, 4);
+        assert_eq!(h.app.modal, Some(Modal::Settings));
         assert_eq!(
-            h.app.modal,
-            Some(Modal::Settings {
-                selected: SETTINGS_SAMPLING_ROW
-            }),
-            "tick chip deep-links to the sampling row"
+            page(&h),
+            settings::Section::Sampling,
+            "tick chip deep-links to the sampling page"
         );
     }
 
@@ -1186,29 +1611,14 @@ mod tests {
         h.hits.push(Rect::new(5, 5, 20, 10), Target::ModalBody);
         h.hits.push(Rect::new(22, 5, 3, 1), Target::ModalClose);
         for modal in [
-            Modal::Help,
             Modal::SortMenu { selected: 1 },
-            Modal::Settings { selected: 2 },
+            Modal::Settings,
+            Modal::Details { pid: 1 },
         ] {
             h.app.modal = Some(modal);
             h.click(23, 5);
             assert_eq!(h.app.modal, None);
         }
-    }
-
-    #[test]
-    fn settings_arrows_step_both_ways_and_select_their_row() {
-        let mut h = h();
-        h.app.modal = Some(Modal::Settings { selected: 3 });
-        h.hits.push(Rect::new(0, 0, 3, 1), Target::SettingDec(0));
-        h.hits.push(Rect::new(10, 0, 3, 1), Target::SettingInc(0));
-        assert_eq!(h.app.config.procs_panes, 1);
-        h.click(11, 0); // ›
-        assert_eq!(h.app.modal, Some(Modal::Settings { selected: 0 }));
-        assert_eq!(h.app.config.procs_panes, 2);
-        h.click(1, 0); // ‹
-        h.click(1, 0); // ‹ again wraps below 1
-        assert_eq!(h.app.config.procs_panes, 4);
     }
 
     #[test]
@@ -1232,37 +1642,29 @@ mod tests {
     fn wheel_moves_modal_cursors_and_never_edits_values() {
         let mut h = h();
         h.hits.push(Rect::new(0, 0, 20, 10), Target::ModalBody);
-        h.hits.push(Rect::new(0, 3, 20, 1), Target::SettingRow(2));
-        h.app.modal = Some(Modal::Settings { selected: 0 });
+        h.hits
+            .push(Rect::new(0, 3, 20, 1), Target::SettingOption(2, 5));
+        h.app.modal = Some(Modal::Settings);
+        goto(&mut h, settings::Section::Appearance);
         let theme = h.app.config.theme.clone();
-        let panes = h.app.config.procs_panes;
+        let frames = h.app.config.frames.clone();
         h.ev(&tu::scroll(1, 1, true));
-        assert_eq!(h.app.modal, Some(Modal::Settings { selected: 1 }));
-        // Over a value row the wheel still only moves the cursor — an
+        assert_eq!(h.app.settings.row, 1);
+        // Over a *value* the wheel still only moves the cursor — an
         // overshooting scroll must never silently rewrite the config.
         h.ev(&tu::scroll(1, 3, true));
-        assert_eq!(h.app.modal, Some(Modal::Settings { selected: 2 }));
+        assert_eq!(h.app.settings.row, 2);
         assert_eq!(
-            (h.app.config.procs_panes, h.app.config.theme.clone()),
-            (panes, theme)
+            (h.app.config.frames.clone(), h.app.config.theme.clone()),
+            (frames, theme)
         );
+        let last = settings::row_count(page(&h)) - 1;
         for _ in 0..20 {
             h.ev(&tu::scroll(1, 1, true));
         }
-        assert_eq!(
-            h.app.modal,
-            Some(Modal::Settings {
-                selected: SETTINGS_ROWS - 1
-            }),
-            "cursor clamps at the bottom"
-        );
+        assert_eq!(h.app.settings.row, last, "cursor clamps at the bottom");
         h.ev(&tu::scroll(1, 1, false));
-        assert_eq!(
-            h.app.modal,
-            Some(Modal::Settings {
-                selected: SETTINGS_ROWS - 2
-            })
-        );
+        assert_eq!(h.app.settings.row, last - 1);
         // The other pickers scroll the same way.
         h.app.modal = Some(Modal::SortMenu { selected: 0 });
         h.ev(&tu::scroll(1, 1, true));

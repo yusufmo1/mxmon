@@ -1,4 +1,5 @@
-//! Modal overlays: help, kill-signal picker, sort menu, process details.
+//! Modal overlays: kill-signal picker, sort menu, process details. The
+//! settings card is big enough to live in its own module (`ui::settings`).
 
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
@@ -14,8 +15,9 @@ use super::panels::format_duration;
 
 /// Centered modal chrome; returns the inner rect. Every modal gets a
 /// clickable `✕` in its top border (reddening under the pointer) — the
-/// mouse-only mirror of `esc`.
-fn modal_box(
+/// mouse-only mirror of `esc`. Shared with [`super::settings`], so the card
+/// and the small modals frame identically.
+pub(super) fn modal_box(
     buf: &mut Buffer,
     screen: Rect,
     size: (u16, u16),
@@ -71,7 +73,6 @@ fn put(buf: &mut Buffer, inner: Rect, row: u16, spans: Vec<Span<'_>>) {
 
 pub fn render(buf: &mut Buffer, screen: Rect, app: &App, th: &Theme, hits: &mut HitMap) {
     match &app.modal {
-        Some(Modal::Help) => help(buf, screen, th, hits, app.hover),
         Some(Modal::Kill {
             pid,
             name,
@@ -79,219 +80,11 @@ pub fn render(buf: &mut Buffer, screen: Rect, app: &App, th: &Theme, hits: &mut 
         }) => kill(buf, screen, (*pid, name, *selected), th, hits, app.hover),
         Some(Modal::SortMenu { selected }) => sort_menu(buf, screen, app, *selected, th, hits),
         Some(Modal::Details { pid }) => details(buf, screen, app, *pid, th, hits),
-        Some(Modal::Settings { selected }) => settings(buf, screen, app, *selected, th, hits),
+        // The settings card is big enough to own a module; the key reference
+        // lives there too (its KEYS page), which is why there is no help
+        // overlay any more.
+        Some(Modal::Settings) => super::settings::render(buf, screen, app, th, hits),
         None => {}
-    }
-}
-
-fn settings(
-    buf: &mut Buffer,
-    screen: Rect,
-    app: &App,
-    selected: usize,
-    th: &Theme,
-    hits: &mut HitMap,
-) {
-    let rows: [(&str, String, &str); crate::event::SETTINGS_ROWS] = [
-        (
-            "process panes",
-            format!(
-                "{} {}",
-                app.config.procs_panes,
-                if app.config.procs_panes == 1 {
-                    "· widgets get the spare width"
-                } else {
-                    "· side-by-side process slices"
-                }
-            ),
-            "how many table panes wide layouts may split into",
-        ),
-        ("theme", app.config.theme.clone(), "also cycles live with t"),
-        (
-            "schematic",
-            if app.config.schematic {
-                "on · blueprint under the heat map".into()
-            } else {
-                "off · contours on a bare deck".into()
-            },
-            "chassis silkscreen beneath the thermal contours",
-        ),
-        (
-            "contours",
-            if app.config.contours {
-                "on · isotherm rings over the deck".into()
-            } else {
-                "off · readings on a quiet deck".into()
-            },
-            "the heat map's temperature rings · numbers stay",
-        ),
-        (
-            "glyphs",
-            match app.config.glyphs {
-                crate::config::Glyphs::Auto => {
-                    if crate::ui::glyphs::active(app.config.glyphs) {
-                        "auto · octants here".into()
-                    } else {
-                        "auto · braille here".into()
-                    }
-                }
-                crate::config::Glyphs::Octant => "octant · forced".into(),
-                crate::config::Glyphs::Braille => "braille · forced".into(),
-            },
-            "solid sub-cell graphs · octants need a modern terminal",
-        ),
-        (
-            "sampling",
-            format!("{} ms", app.config.interval_ms),
-            "fast-tier interval · also + / -",
-        ),
-        (
-            "graph window",
-            {
-                let k = app.config.graph_window.max(1);
-                if k == 1 {
-                    "×1 · every tick is a dot".into()
-                } else {
-                    let dot_ms = u64::from(k) * app.config.interval_ms;
-                    let per_dot = if dot_ms < 1000 {
-                        format!("{dot_ms} ms")
-                    } else if dot_ms.is_multiple_of(1000) {
-                        format!("{} s", dot_ms / 1000)
-                    } else {
-                        format!("{:.1} s", dot_ms as f64 / 1000.0)
-                    };
-                    format!("×{k} · {per_dot} per dot")
-                }
-            },
-            "ticks per graph dot · peaks kept, head stays live",
-        ),
-        (
-            "ping probe",
-            if app.config.ping {
-                format!("on · {}", app.config.ping_host)
-            } else {
-                "off".into()
-            },
-            "ICMP connectivity strip · applies at next launch",
-        ),
-    ];
-    // `selected` comes from the modal cursor; clamp before indexing `rows`
-    // below so the render can never panic if it ever drifts out of range.
-    let selected = selected.min(rows.len().saturating_sub(1));
-    let inner = modal_box(
-        buf,
-        screen,
-        (60, rows.len() as u16 + 6),
-        "settings",
-        th,
-        hits,
-        app.hover,
-    );
-    // Label column then `‹ value ›`; the arrows are their own (fatter) click
-    // targets so a step back is one click, not a lap through the cycle.
-    const LABEL_W: u16 = 17;
-    const VALUE_W: u16 = 34;
-    for (i, (label, value, _)) in rows.iter().enumerate() {
-        let y = i as u16;
-        let hovered = app.hover == Some(Target::SettingRow(i));
-        let (row_style, val_style) = if i == selected {
-            let s = Style::default()
-                .fg(th.bg)
-                .bg(th.accent)
-                .add_modifier(Modifier::BOLD);
-            (s, s)
-        } else if hovered {
-            (
-                Style::default().fg(th.text).add_modifier(Modifier::BOLD),
-                Style::default().fg(th.accent).add_modifier(Modifier::BOLD),
-            )
-        } else {
-            (Style::default().fg(th.text), Style::default().fg(th.accent))
-        };
-        let arrow = |t: Target| {
-            if app.hover == Some(t) {
-                val_style.add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
-            } else {
-                val_style
-            }
-        };
-        put(
-            buf,
-            inner,
-            y,
-            vec![
-                Span::styled(format!("  {label:<15}"), row_style),
-                Span::styled("‹", arrow(Target::SettingDec(i))),
-                Span::styled(format!(" {value:<w$} ", w = VALUE_W as usize), val_style),
-                Span::styled("›", arrow(Target::SettingInc(i))),
-            ],
-        );
-        hits.push(
-            Rect::new(inner.x, inner.y + y, inner.width, 1),
-            Target::SettingRow(i),
-        );
-        // Arrows registered after the row so they win the overlap; one cell
-        // of slack on each side keeps them easy to hit.
-        let dec_x = inner.x + 1 + LABEL_W;
-        let inc_x = dec_x + 1 + VALUE_W + 2;
-        hits.push(
-            Rect::new(dec_x.saturating_sub(1), inner.y + y, 3, 1),
-            Target::SettingDec(i),
-        );
-        hits.push(
-            Rect::new(inc_x.saturating_sub(1), inner.y + y, 3, 1),
-            Target::SettingInc(i),
-        );
-    }
-    // The selected row's explainer, then the key hints.
-    let dim = Style::default().fg(th.dim);
-    put(
-        buf,
-        inner,
-        rows.len() as u16 + 1,
-        vec![Span::styled(format!("  {}", rows[selected].2), dim)],
-    );
-    put(
-        buf,
-        inner,
-        rows.len() as u16 + 3,
-        vec![Span::styled("  ↑↓ select · ←→ change · esc close", dim)],
-    );
-}
-
-fn help(buf: &mut Buffer, screen: Rect, th: &Theme, hits: &mut HitMap, hover: Option<Target>) {
-    let inner = modal_box(buf, screen, (62, 20), "help", th, hits, hover);
-    let key = Style::default().fg(th.accent).add_modifier(Modifier::BOLD);
-    let dim = Style::default().fg(th.dim);
-    let entries: [(&str, &str); 17] = [
-        ("1 / 2 / 3 / 4", "overview · procs · thermal · connections"),
-        ("tab", "cycle views"),
-        ("j k / ↑ ↓", "select process"),
-        ("g / G", "jump to top / bottom"),
-        ("/ or F3", "filter processes (esc clears)"),
-        ("s or F6", "sort menu · click headers too"),
-        ("x or F9", "kill selected process"),
-        ("enter", "process details"),
-        ("o", "settings (panes · theme · sampling)"),
-        ("t", "cycle theme"),
-        ("p", "pause sampling"),
-        ("+ / -", "faster / slower sampling"),
-        ("d", "debug HUD"),
-        ("mouse", "what glows is clickable · wheel scrolls"),
-        ("q or F10", "quit"),
-        ("", ""),
-        ("mxmon", "sudoless Apple Silicon monitor"),
-    ];
-    for (i, (k, desc)) in entries.iter().enumerate() {
-        put(
-            buf,
-            inner,
-            i as u16 + 1,
-            vec![
-                Span::styled(format!("{k:>12}  "), key),
-                Span::styled((*desc).to_owned(), dim),
-            ],
-        );
     }
 }
 
@@ -424,7 +217,7 @@ fn details(buf: &mut Buffer, screen: Rect, app: &App, pid: i32, th: &Theme, hits
     let Some(r) = app.procs.rows.iter().find(|r| r.pid == pid) else {
         return;
     };
-    let inner = modal_box(buf, screen, (74, 20), "process", th, hits, app.hover);
+    let inner = modal_box(buf, screen, (74, 25), "process", th, hits, app.hover);
     let label = Style::default().fg(th.dim);
     let value = Style::default().fg(th.text);
     let strong = Style::default().fg(th.accent).add_modifier(Modifier::BOLD);
@@ -485,6 +278,45 @@ fn details(buf: &mut Buffer, screen: Rect, app: &App, pid: i32, th: &Theme, hits
                     let (tv, tu) = super::panels::split_bits_per_sec(tx);
                     format!("↓ {rv:>5} {ru} · ↑ {tv:>5} {tu}")
                 }),
+        ),
+        (
+            "write amp".into(),
+            match (r.logical_write_rate, r.disk_write_rate) {
+                // Logical writes the file system absorbed vs bytes that
+                // actually reached the device.
+                (Some(lg), Some(dev)) => format!("{lg:>5}/s logical → {dev:>5}/s device"),
+                _ => "–".into(),
+            },
+        ),
+        (
+            "qos".into(),
+            match (r.qos_interactive, r.qos_background) {
+                (Some(i), Some(b)) => format!(
+                    "interactive {:>3.0}% · background {:>3.0}%",
+                    i.as_percent(),
+                    b.as_percent()
+                ),
+                _ => "–".into(),
+            },
+        ),
+        (
+            "wakeups".into(),
+            r.wakeup_rate
+                .map_or("–".into(), |w| format!("{w:.0}/s interrupt-driven")),
+        ),
+        (
+            "switches".into(),
+            match (r.csw_rate, r.syscall_rate) {
+                (Some(c), Some(s)) => format!("{c:.0}/s ctx · {s:.0}/s syscalls"),
+                _ => "–".into(),
+            },
+        ),
+        (
+            "waiting".into(),
+            // Runnable-but-not-running: the process wants a core and is not
+            // getting one. Distinct from being blocked on I/O.
+            r.runnable
+                .map_or("–".into(), |v| format!("{v:.2} threads for a core")),
         ),
         (
             "cpu time".into(),

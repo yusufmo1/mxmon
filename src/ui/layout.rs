@@ -507,6 +507,25 @@ mod tests {
     }
 
     #[test]
+    fn zzz_scratch_dump() {
+        let Ok(dir) = std::env::var("MXMON_DUMP_DIR") else {
+            return;
+        };
+        let mut app = tu::app();
+        app.view = View::Overview;
+        for spec in std::env::var("MXMON_DUMP_SIZES")
+            .unwrap_or_default()
+            .split(',')
+        {
+            let Some((w, h)) = spec.split_once('x') else {
+                continue;
+            };
+            let (w, h): (u16, u16) = (w.parse().unwrap(), h.parse().unwrap());
+            std::fs::write(format!("{dir}/{w}x{h}.txt"), frame(&mut app, w, h)).unwrap();
+        }
+    }
+
+    #[test]
     fn views_render_stably() {
         let mut app = tu::app();
         for (view, tag) in [
@@ -571,10 +590,8 @@ mod tests {
         let name = app
             .selected_row()
             .map_or_else(String::new, |r| r.name.clone());
-        let modals: [(&str, Modal); 5] = [
-            ("help", Modal::Help),
+        let modals: [(&str, Modal); 3] = [
             ("sort", Modal::SortMenu { selected: 2 }),
-            ("settings", Modal::Settings { selected: 1 }),
             (
                 "kill",
                 Modal::Kill {
@@ -589,5 +606,50 @@ mod tests {
             app.modal = Some(modal);
             snap(&format!("modal_{tag}_120x36"), &mut app, 120, 36);
         }
+    }
+
+    /// The settings card, page by page: the surface that replaced both the
+    /// old settings modal and the help overlay, so every page — including the
+    /// two capture modes — is worth a golden frame.
+    #[test]
+    fn settings_card_renders_stably() {
+        let mut app = tu::app();
+        app.view = View::Overview;
+        app.modal = Some(Modal::Settings);
+        for (i, section) in crate::settings::SECTIONS.into_iter().enumerate() {
+            app.settings = crate::app::SettingsUi {
+                section: i,
+                row: 0,
+                edit: None,
+            };
+            snap(
+                &format!("settings_{}_120x36", section.title()),
+                &mut app,
+                120,
+                36,
+            );
+        }
+        // A small terminal: the card fills what it can and the rows that fit
+        // still line up.
+        app.settings.section = 0;
+        snap("settings_appearance_80x24", &mut app, 80, 24);
+        // Both capture modes.
+        app.settings = crate::app::SettingsUi {
+            section: 4, // network
+            row: 1,     // ping host
+            edit: Some(crate::app::Edit::Text {
+                id: crate::settings::Id::PingHost,
+                buf: "9.9.9.9".into(),
+            }),
+        };
+        snap("settings_editing_120x36", &mut app, 120, 36);
+        app.settings = crate::app::SettingsUi {
+            section: 5, // keys
+            row: 2,
+            edit: Some(crate::app::Edit::Capture {
+                action: crate::keys::Action::ViewThermal,
+            }),
+        };
+        snap("settings_capture_120x36", &mut app, 120, 36);
     }
 }

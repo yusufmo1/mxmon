@@ -67,6 +67,14 @@ pub struct Config {
     /// ticks (~30 fps while values move, zero frames at rest). Off renders
     /// exactly one frame per sample.
     pub motion: bool,
+    /// Key bindings for every global command, remappable from the settings
+    /// card's KEYS section. Absent (or partially specified) means the stock
+    /// bindings — see [`crate::keys`].
+    ///
+    /// **Must stay the last field:** TOML demands every scalar before the
+    /// first table, and this one serializes as `[keys]`. Moving it up makes
+    /// `toml::to_string_pretty` fail and silently stops the config saving.
+    pub keys: crate::keys::Keymap,
 }
 
 impl Default for Config {
@@ -84,6 +92,7 @@ impl Default for Config {
             contours: true,
             graph_window: 4,
             motion: true,
+            keys: crate::keys::Keymap::defaults(),
         }
     }
 }
@@ -233,6 +242,15 @@ mod tests {
             // stops — a hand-tuned value must survive the round trip.
             graph_window: 7,
             motion: false,
+            keys: {
+                let mut km = crate::keys::Keymap::defaults();
+                km.bind(
+                    crate::keys::Action::Quit,
+                    crate::keys::Chord::parse("ctrl+q").unwrap(),
+                )
+                .unwrap();
+                km
+            },
         };
         c.save();
         let l = Config::load();
@@ -248,5 +266,12 @@ mod tests {
         assert!(!l.contours);
         assert_eq!(l.graph_window, 7);
         assert!(!l.motion);
+        // The keymap is a table, so it also proves the field order still
+        // serializes: a scalar declared after it would break `save` outright.
+        assert_eq!(l.keys, c.keys);
+        assert_eq!(
+            l.keys.action(crate::keys::Chord::parse("ctrl+q").unwrap()),
+            Some(crate::keys::Action::Quit)
+        );
     }
 }

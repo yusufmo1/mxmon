@@ -566,14 +566,29 @@ pub enum Target {
     KillSignal(usize),
     /// Sort-menu row.
     SortOption(usize),
-    /// Footer button opening the settings modal.
+    /// Footer button opening the settings card.
     Settings,
-    /// Settings-modal row (click cycles the value forward).
+    /// Settings-card page tab (index into `settings::SECTIONS`).
+    SettingSection(usize),
+    /// Settings-card row — click selects it, nothing else.
     SettingRow(usize),
-    /// Settings-modal `‹` arrow (steps the row's value back).
+    /// Settings-card `‹` arrow (steps the row's value back).
     SettingDec(usize),
-    /// Settings-modal `›` arrow (steps the row's value forward).
+    /// Settings-card `›` arrow (steps the row's value forward).
     SettingInc(usize),
+    /// One option chip: `(row, option index)`. Clicking sets that value
+    /// directly — the reason picking a theme is one click, not eighteen.
+    SettingOption(usize, usize),
+    /// The `↺` chip that puts one row back to its shipped value.
+    SettingReset(usize),
+    /// A text setting's field — click opens the inline editor.
+    SettingEdit(usize),
+    /// A bound chord in the KEYS section: `(row, chord index)`. Click unbinds.
+    KeyChord(usize, usize),
+    /// The `+` that captures a new chord for a KEYS row.
+    KeyAdd(usize),
+    /// An ABOUT page action (index into `settings::ABOUT_ACTIONS`).
+    AboutAction(usize),
     /// Anywhere on a modal (consumes the click).
     ModalBody,
     /// The `✕` in a modal's top border.

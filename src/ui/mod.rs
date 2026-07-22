@@ -6,6 +6,7 @@ pub mod motion;
 pub mod overlays;
 pub mod panels;
 pub mod schematic;
+pub mod settings;
 pub mod theme;
 pub mod thermal;
 pub mod widgets;

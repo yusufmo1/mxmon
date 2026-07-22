@@ -6,6 +6,8 @@ mod config;
 mod event;
 mod ffi;
 mod history;
+mod keys;
+mod settings;
 mod trace;
 mod ui;
 mod units;

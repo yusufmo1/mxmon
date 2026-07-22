@@ -184,6 +184,34 @@ fn tui_boots_walks_views_and_quits_cleanly() {
     tui.quit();
 }
 
+/// The settings card end to end in the real binary: open it, walk its pages,
+/// close it, and quit — the surface every config change goes through, so a
+/// panic or a stuck modal here would be the worst kind of regression.
+#[test]
+fn tui_settings_card_opens_walks_pages_and_closes() {
+    if skip_without_hardware("the settings card walk") {
+        return;
+    }
+    let mut tui = boot(40, 120);
+    tui.drain();
+    tui.writer.write_all(b"o").expect("open settings");
+    tui.writer.flush().unwrap();
+    tui.expect(b"appearance", "settings card must paint its tab strip");
+    // Tab through every page (7), pausing enough for each to paint.
+    for _ in 0..7 {
+        tui.writer.write_all(b"\t").expect("next page");
+        tui.writer.flush().unwrap();
+        std::thread::sleep(Duration::from_millis(200));
+    }
+    tui.drain();
+    tui.writer.write_all(b"\x1b").expect("close settings");
+    tui.writer.flush().unwrap();
+    // The column header repaints over what the card covered; a panel *title*
+    // would not (see the mouse test's note on ratatui's cell diff).
+    tui.expect(b"CPU%", "esc must return to the dashboard");
+    tui.quit();
+}
+
 #[test]
 fn tui_mouse_drives_cards_tabs_wheel_and_hover() {
     // Needles must be chosen so ratatui's cell diff is forced to emit them:
