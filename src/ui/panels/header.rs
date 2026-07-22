@@ -165,10 +165,16 @@ pub fn footer(buf: &mut Buffer, area: Rect, app: &App, th: &Theme, hits: &mut Hi
         } else {
             dim
         };
+        // The graph-window multiplier joins the chip only when it bites, so
+        // the HUD stays exactly as before at ×1.
+        let zoom = match app.config.graph_window {
+            0 | 1 => String::new(),
+            k => format!(" ×{k}"),
+        };
         right.push((
             Span::styled(
                 format!(
-                    "frame {:>4}µs · {:>5} fps-e · {}ms tick ",
+                    "frame {:>4}µs · {:>5} fps-e · {}ms tick{zoom} ",
                     app.last_frame_us,
                     if app.last_frame_us > 0 {
                         1_000_000 / app.last_frame_us.max(1)

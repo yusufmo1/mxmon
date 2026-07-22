@@ -111,7 +111,8 @@ pub fn render(buf: &mut Buffer, area: Rect, app: &App, th: &Theme) {
 
 /// The wattages every flow rendering shares. `ac` is actual delivery (SMC
 /// PDTR, rated max as fallback), zeroed when unplugged; `bat` is signed
-/// (positive = charging); `other` is the SMC system total minus the
+/// (positive = charging); `ram` is the DRAM rail once it earns its own
+/// ribbon (see [`ram_sink`]); `other` is the SMC system total minus the
 /// telemetry we can attribute.
 struct FlowW {
     ac: f32,
@@ -119,6 +120,7 @@ struct FlowW {
     sys: f32,
     soc: f32,
     disp: f32,
+    ram: f32,
     other: f32,
 }
 
@@ -145,13 +147,39 @@ fn flow_watts(app: &App, b: &crate::collect::battery::BatterySample) -> FlowW {
         .and_then(|t| t.adapter_power)
         .or(b.adapter_watts)
         .unwrap_or_default();
+    let recent: Vec<f32> = app.hist.dram_w.last_n(RAM_GATE_WINDOW).collect();
+    let ram = ram_sink(&recent);
     FlowW {
         ac: if b.external_power { adapter.0 } else { 0.0 },
         bat: b.battery_watts.0,
         sys: sys.0,
         soc: soc.0,
         disp: disp.0,
-        other: (sys.0 - soc.0 - disp.0).max(0.0),
+        ram,
+        other: (sys.0 - soc.0 - disp.0 - ram).max(0.0),
+    }
+}
+
+/// Sustained draw that earns the DRAM rail its own ribbon.
+const RAM_GATE_W: f32 = 4.0;
+/// Power ticks averaged for the gate (~6 s at the default interval).
+const RAM_GATE_WINDOW: usize = 3;
+
+/// The DRAM rail earns its own ribbon only under sustained memory
+/// pressure: the recent power ticks must *average* over the gate, so a
+/// single spike (or dip) can't flap the ribbon in and out between frames.
+/// Returns the latest wattage to draw, `0.0` while RAM stays folded into
+/// "other". Non-finite samples (fuzzed rings) are ignored.
+fn ram_sink(recent: &[f32]) -> f32 {
+    let finite: Vec<f32> = recent.iter().copied().filter(|v| v.is_finite()).collect();
+    let Some(&latest) = finite.last() else {
+        return 0.0;
+    };
+    let mean = finite.iter().sum::<f32>() / finite.len() as f32;
+    if mean >= RAM_GATE_W {
+        latest.max(0.0)
+    } else {
+        0.0
     }
 }
 
@@ -174,7 +202,9 @@ fn flow(
 
     let fw = flow_watts(app, b);
     let (sys, soc, disp) = (Watts(fw.sys), Watts(fw.soc), Watts(fw.disp));
-    let (other, adapter, batt) = (Watts(fw.other), Watts(fw.ac), Watts(fw.bat));
+    // The three-row flow has no RAM row: fold a gated-in DRAM rail back
+    // into "other" so the totals stay honest.
+    let (other, adapter, batt) = (Watts(fw.other + fw.ram), Watts(fw.ac), Watts(fw.bat));
 
     let heat = |w: Watts, scale: f32| th.power.at((w.0 / scale).clamp(0.0, 1.0));
     let (y0, y1, y2) = (area.y, area.y + 1, area.y + 2);
@@ -280,6 +310,16 @@ fn ribbon_half_rows(watts: &[f32], per_watt: f32) -> Vec<usize> {
         .collect()
 }
 
+/// Half-rows reserved between sink blocks when budgeting ribbon thickness:
+/// 2 while every live sink can still average ≥2 half-rows of ink alongside
+/// that spacing, else 1. On short cards the airy spacing otherwise eats the
+/// whole budget and every ribbon collapses to its 1-half-row floor, erasing
+/// proportionality — and visual separation comes from the segment spread,
+/// not from this reservation.
+fn sink_gap(h2: usize, n_sinks: usize) -> usize {
+    if h2 >= n_sinks * 4 { 2 } else { 1 }
+}
+
 /// AlDente-style proportional Sankey at half-row resolution:
 ///
 /// sources (AC, battery while discharging) merge into the SYS node, SYS
@@ -294,7 +334,6 @@ fn sankey(
     b: &crate::collect::battery::BatterySample,
     th: &Theme,
 ) {
-    const GAP: usize = 2; // half-rows kept clear between sink blocks
     let dim = Style::default().fg(th.dim);
     let bold = |c| Style::default().fg(c).add_modifier(Modifier::BOLD);
 
@@ -314,6 +353,7 @@ fn sankey(
     let sinks = [
         ("SoC", w.soc, th.title),
         ("DISP", w.disp, th.cpu.at(0.55)),
+        ("RAM", w.ram, th.mem.at(0.65)),
         ("other", w.other, th.net_tx),
         ("BAT", bat_sink, th.ok),
     ];
@@ -322,12 +362,17 @@ fn sankey(
     let h2 = area.height as usize * 2;
     let live = |v: f32| v > 0.05;
     let n_sinks = sinks.iter().filter(|s| live(s.1)).count().max(1);
-    let usable = h2.saturating_sub((n_sinks - 1) * GAP).max(4);
+    let usable = h2
+        .saturating_sub((n_sinks - 1) * sink_gap(h2, n_sinks))
+        .max(4);
     let src_total: f32 = srcs.iter().map(|s| s.1).sum();
     let sink_total: f32 = sinks.iter().map(|s| s.1).sum();
     let per_watt = usable as f32 / src_total.max(sink_total).max(1.0);
     let t_src = ribbon_half_rows(&[srcs[0].1, srcs[1].1], per_watt);
-    let t_sink = ribbon_half_rows(&[sinks[0].1, sinks[1].1, sinks[2].1, sinks[3].1], per_watt);
+    let t_sink = ribbon_half_rows(
+        &[sinks[0].1, sinks[1].1, sinks[2].1, sinks[3].1, sinks[4].1],
+        per_watt,
+    );
 
     // Columns: [src labels][run 1][SYS][run 2][sink labels].
     const SRC_LBL: u16 = 10;
@@ -343,7 +388,7 @@ fn sankey(
     // their ribbons leave the SYS node contiguously, top to bottom.
     let sys_h = t_sink.iter().sum::<usize>().min(h2);
     let sys_top = (h2 - sys_h) / 2;
-    let mut sink_top = [0usize; 4];
+    let mut sink_top = [0usize; 5];
     {
         let seg = h2 / n_sinks;
         let mut si = 0;
@@ -416,7 +461,7 @@ fn sankey(
         );
         off += t;
     }
-    let mut departs = [0usize; 4];
+    let mut departs = [0usize; 5];
     let mut off = sys_top;
     for (i, (_, _, ink)) in sinks.iter().enumerate() {
         let t = t_sink[i];
@@ -585,6 +630,60 @@ mod tests {
         // Proportionality holds under scaling.
         let t = ribbon_half_rows(&[30.0, 15.0], 0.5);
         assert_eq!(t, vec![15, 8]);
+    }
+
+    #[test]
+    fn sink_gap_spends_spacing_on_ink_when_short() {
+        assert_eq!(sink_gap(16, 4), 2, "tall flow keeps the airy spacing");
+        assert_eq!(sink_gap(10, 4), 1, "short flow buys ribbon ink instead");
+        assert_eq!(sink_gap(12, 3), 2);
+        assert_eq!(sink_gap(10, 3), 1);
+        assert_eq!(sink_gap(4, 1), 2, "a lone sink has no gaps to fund");
+    }
+
+    #[test]
+    #[allow(clippy::float_cmp)] // gate outputs are exact pass-throughs
+    fn ram_sink_gates_on_the_smoothed_window() {
+        assert_eq!(ram_sink(&[]), 0.0);
+        assert_eq!(ram_sink(&[5.0]), 5.0, "a single hot sample gates in");
+        assert_eq!(ram_sink(&[1.0, 1.2, 0.9]), 0.0, "idle stays folded");
+        // One spike can't flap the ribbon in…
+        assert_eq!(ram_sink(&[1.0, 1.0, 9.0]), 0.0);
+        // …and one dip can't flap it out (the mean holds the gate open;
+        // the latest value is what's drawn).
+        assert_eq!(ram_sink(&[6.0, 6.0, 3.0]), 3.0);
+        // Non-finite ring data is ignored, never propagated.
+        assert_eq!(ram_sink(&[f32::NAN, 5.0]), 5.0);
+        assert_eq!(ram_sink(&[f32::NAN]), 0.0);
+        assert_eq!(ram_sink(&[f32::INFINITY, 5.0]), 5.0);
+        // Hostile negatives clamp instead of drawing an anti-ribbon.
+        assert_eq!(ram_sink(&[9.0, 9.0, -2.0]), 0.0);
+    }
+
+    #[test]
+    #[allow(clippy::float_cmp)] // an ungated rail is exactly 0.0
+    fn flow_watts_carves_ram_out_of_other_when_gated() {
+        use crate::collect::sampler::Update;
+
+        let b = crate::testutil::battery();
+        // Identical apps except for the DRAM rail: sustained pressure on
+        // one, idle on the other.
+        let mut hot = crate::testutil::app();
+        let mut cold = crate::testutil::app();
+        for _ in 0..RAM_GATE_WINDOW {
+            let mut p = crate::testutil::power_at(0);
+            p.dram = Watts(6.0);
+            hot.apply(Update::Power(Box::new(p)));
+            let mut p = crate::testutil::power_at(0);
+            p.dram = Watts(1.0);
+            cold.apply(Update::Power(Box::new(p)));
+        }
+        let (h, c) = (flow_watts(&hot, &b), flow_watts(&cold, &b));
+        assert_eq!(c.ram, 0.0, "under the gate RAM stays inside other");
+        assert!((h.ram - 6.0).abs() < 1e-3);
+        // The carve-out comes exactly out of "other" — nothing double
+        // counted, nothing lost (sys/soc/disp are identical between apps).
+        assert!(((c.other - h.other) - 6.0).abs() < 1e-3);
     }
 
     #[test]

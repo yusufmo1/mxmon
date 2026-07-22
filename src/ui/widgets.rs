@@ -390,6 +390,95 @@ pub fn core_bar(value: f32, gradient: Gradient) -> (char, Color) {
     (V_EIGHTHS[idx], gradient.at(v))
 }
 
+/// The classic per-cluster core meters scaled up to fill their area: each
+/// cluster keeps its horizontal row of one-column-per-core bars, but the
+/// rows become stacked bands ([`stacked_bands`] splits the height) and every
+/// bar grows up from its band's floor at eighth-block resolution, colored by
+/// height within the band like [`BrailleGraph`]. Any nonzero load lights at
+/// least one eighth so a busy blip never rounds to invisible; an idle core
+/// keeps a dim floor mark instead of vanishing.
+pub struct CoreBands<'a> {
+    /// Cluster-grouped per-core loads (`0..=1`), one band per cluster,
+    /// top to bottom.
+    pub groups: &'a [Vec<f32>],
+    pub gradient: Gradient,
+    /// Dim color for the floor mark under idle cores.
+    pub baseline: Color,
+}
+
+impl CoreBands<'_> {
+    /// Columns the widest cluster claims.
+    pub fn cols(&self) -> u16 {
+        let widest = self.groups.iter().map(Vec::len).max().unwrap_or(0);
+        widest.min(usize::from(u16::MAX)) as u16
+    }
+
+    pub fn render(&self, area: Rect, buf: &mut Buffer) {
+        let area = area.intersection(buf.area);
+        if area.width == 0 || area.height == 0 {
+            return;
+        }
+        let bands = stacked_bands(area.height, self.groups.len());
+        for ((y0, bh), group) in bands.into_iter().zip(self.groups) {
+            let h = bh as usize;
+            for (i, &value) in group.iter().enumerate() {
+                let x = area.x.saturating_add(i as u16);
+                if x >= area.right() {
+                    break;
+                }
+                let v = if value.is_finite() {
+                    value.clamp(0.0, 1.0)
+                } else {
+                    0.0
+                };
+                let mut eighths = (v * (h * 8) as f32).round() as usize;
+                if v > 0.0 {
+                    eighths = eighths.max(1);
+                }
+                if eighths == 0 {
+                    let cell = &mut buf[(x, area.y + y0 + bh - 1)];
+                    cell.set_char('▁');
+                    cell.set_fg(self.baseline);
+                    continue;
+                }
+                for row in 0..h {
+                    let from_bottom = h - 1 - row;
+                    let cell_eighths = eighths.saturating_sub(from_bottom * 8).min(8);
+                    if cell_eighths == 0 {
+                        continue;
+                    }
+                    let cell = &mut buf[(x, area.y + y0 + row as u16)];
+                    cell.set_char(V_EIGHTHS[cell_eighths]);
+                    cell.set_fg(self.gradient.at((h - row) as f32 / h as f32));
+                }
+            }
+        }
+    }
+}
+
+/// Split `height` rows into `n` stacked bands, top to bottom: one blank gap
+/// row between bands when every band still gets ≥2 rows, leftover rows to
+/// the top bands, and fewer than `n` bands when the height can't give each
+/// one row. Returns `(y_offset, height)` per band.
+pub(crate) fn stacked_bands(height: u16, n: usize) -> Vec<(u16, u16)> {
+    let h = u32::from(height);
+    let n = u32::try_from(n).unwrap_or(u32::MAX).min(h);
+    if n == 0 {
+        return Vec::new();
+    }
+    let gaps = if h >= 3 * n - 1 { n - 1 } else { 0 };
+    let avail = h - gaps;
+    let (base, extra) = (avail / n, avail % n);
+    let mut out = Vec::with_capacity(n as usize);
+    let mut y = 0u32;
+    for i in 0..n {
+        let bh = base + u32::from(i < extra);
+        out.push((y as u16, bh as u16));
+        y += bh + u32::from(gaps > 0);
+    }
+    out
+}
+
 /// Fill a rect with a background color (panels paint their own bg).
 pub fn fill_bg(area: Rect, buf: &mut Buffer, bg: Color) {
     for y in area.top()..area.bottom() {
@@ -700,7 +789,75 @@ mod tests {
         .render(Rect::new(2, 0, 40, 9), &mut buf);
     }
 
-    use super::{HitMap, Meter, Target, core_bar, fill_bg};
+    use super::{CoreBands, HitMap, Meter, Target, core_bar, fill_bg, stacked_bands};
+
+    #[test]
+    fn stacked_bands_split_gap_and_degrade() {
+        // Room for gaps: every band ≥2 rows, one blank row between.
+        assert_eq!(stacked_bands(8, 3), vec![(0, 2), (3, 2), (6, 2)]);
+        // Leftover rows go to the top bands.
+        assert_eq!(stacked_bands(10, 3), vec![(0, 3), (4, 3), (8, 2)]);
+        // Too tight for gaps: bands pack edge to edge.
+        assert_eq!(stacked_bands(7, 3), vec![(0, 3), (3, 2), (5, 2)]);
+        assert_eq!(stacked_bands(3, 3), vec![(0, 1), (1, 1), (2, 1)]);
+        // Shorter than n: trailing bands are dropped, never zero-height.
+        assert_eq!(stacked_bands(2, 3), vec![(0, 1), (1, 1)]);
+        assert!(stacked_bands(0, 3).is_empty());
+        assert!(stacked_bands(5, 0).is_empty());
+    }
+
+    #[test]
+    fn core_bands_fill_anchor_and_floor() {
+        let area = Rect::new(0, 0, 4, 8);
+        let mut buf = Buffer::empty(area);
+        // Three clusters → gapped bands of 2 rows each (see stacked_bands).
+        let groups = vec![vec![1.0, 0.0], vec![0.01], vec![1.0]];
+        CoreBands {
+            groups: &groups,
+            gradient: Gradient::Solid(Color::Red),
+            baseline: Color::Gray,
+        }
+        .render(area, &mut buf);
+        // Full core fills its own band only.
+        assert_eq!(buf[(0, 0)].symbol(), "█");
+        assert_eq!(buf[(0, 1)].symbol(), "█");
+        assert_eq!(buf[(0, 2)].symbol(), " ", "gap row stays blank");
+        // Idle core keeps a dim floor mark on its band's bottom row.
+        assert_eq!(buf[(1, 1)].symbol(), "▁");
+        assert_eq!(buf[(1, 1)].fg, Color::Gray);
+        assert_eq!(buf[(1, 0)].symbol(), " ");
+        // A whisper of load never rounds to invisible: one eighth, in the
+        // gradient's color rather than the baseline's.
+        assert_eq!(buf[(0, 4)].symbol(), "▁");
+        assert_eq!(buf[(0, 4)].fg, Color::Red);
+        // Third band anchors at the area's bottom.
+        assert_eq!(buf[(0, 6)].symbol(), "█");
+        assert_eq!(buf[(0, 7)].symbol(), "█");
+    }
+
+    #[test]
+    fn core_bands_total_under_hostile_input() {
+        // Clipped area, overload/negative/NaN values: never panics, never
+        // writes outside the buffer.
+        let screen = Rect::new(0, 0, 3, 2);
+        let mut buf = Buffer::empty(screen);
+        let groups = vec![vec![7.0, -2.0, f32::NAN, 0.5], vec![1.0; 8]];
+        CoreBands {
+            groups: &groups,
+            gradient: Gradient::Solid(Color::Red),
+            baseline: Color::Gray,
+        }
+        .render(Rect::new(1, 0, 40, 9), &mut buf);
+        assert_eq!(buf[(1, 0)].symbol(), "█", "overload clamps to full");
+        assert_eq!(buf[(2, 0)].symbol(), "▁", "negative idles at the floor");
+        // Zero-sized areas are a no-op.
+        CoreBands {
+            groups: &groups,
+            gradient: Gradient::Solid(Color::Red),
+            baseline: Color::Gray,
+        }
+        .render(Rect::new(0, 0, 0, 0), &mut buf);
+    }
 
     #[test]
     fn hitmap_topmost_wins_and_clears() {
@@ -772,10 +929,29 @@ mod tests {
     }
 
     mod prop {
-        use super::super::{axis_window, graph_dots};
+        use super::super::{axis_window, graph_dots, stacked_bands};
         use proptest::prelude::*;
 
         proptest! {
+            // Band math backs direct buffer indexing in CoreBands: every
+            // band must stay inside the height, keep ≥1 row, and never
+            // overlap the previous one.
+            #[test]
+            fn stacked_bands_stay_inside_and_ordered(
+                height in 0u16..=200,
+                n in 0usize..=64,
+            ) {
+                let bands = stacked_bands(height, n);
+                prop_assert!(bands.len() <= n.min(height as usize));
+                let mut prev_end = 0u32;
+                for (y, h) in bands {
+                    prop_assert!(h >= 1);
+                    prop_assert!(u32::from(y) >= prev_end);
+                    prev_end = u32::from(y) + u32::from(h);
+                    prop_assert!(prev_end <= u32::from(height));
+                }
+            }
+
             // Ring data reaches graphs unfiltered — any float must map into
             // the dot budget (this is what keeps panels panic-free).
             #[test]

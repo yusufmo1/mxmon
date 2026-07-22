@@ -33,6 +33,26 @@ fn unknown_flags_are_rejected() {
 }
 
 #[test]
+fn glyphs_flag_validates_its_value() {
+    let tmp = tempfile::tempdir().unwrap();
+    std::fs::write(tmp.path().join("config.toml"), "ping = false\n").unwrap();
+    // A valid mode rides along with --json (the flag only shapes TUI frames,
+    // so the snapshot path just proves it's accepted end-to-end).
+    let out = mxmon(&tmp)
+        .args(["--json", "--glyphs", "braille"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "--glyphs braille must be accepted");
+    // Clap rejects values outside the enum, not the code downstream.
+    let out = mxmon(&tmp).args(["--glyphs", "sixel"]).output().unwrap();
+    assert!(!out.status.success());
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("possible values"),
+        "clap should name the valid modes"
+    );
+}
+
+#[test]
 fn json_snapshot_honors_the_source_contract() {
     let tmp = tempfile::tempdir().unwrap();
     // Fully passive run: the ping prober is the only thing that ever emits

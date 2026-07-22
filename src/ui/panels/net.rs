@@ -7,7 +7,7 @@ use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::Span;
 
-use crate::app::App;
+use crate::app::{Agg, App};
 use crate::ui::theme::Theme;
 use crate::ui::widgets::MirrorGraph;
 use crate::units::Bytes;
@@ -125,8 +125,8 @@ pub fn render(buf: &mut Buffer, area: Rect, app: &App, th: &Theme) {
         let graph = Rect::new(inner.x, inner.y + 1, inner.width, inner.height - 1 - below);
         if graph.height >= 2 {
             let slots = graph.width as usize * 2;
-            let tx: Vec<f32> = app.hist.net_tx.last_n(slots).collect();
-            let rx: Vec<f32> = app.hist.net_rx.last_n(slots).collect();
+            let tx = app.hist.net_tx.buckets(slots, app.graph_k(), Agg::Max);
+            let rx = app.hist.net_rx.buckets(slots, app.graph_k(), Agg::Max);
             let (tx_max, rx_max) = (scale(&tx), scale(&rx));
             MirrorGraph {
                 tx: &tx,
@@ -163,7 +163,9 @@ pub fn render(buf: &mut Buffer, area: Rect, app: &App, th: &Theme) {
     if strip_row {
         let row = inner.height - 1 - u16::from(stats_row);
         let width = inner.width as usize;
-        let history: Vec<f32> = app.hist.ping_ms.last_n(width).collect();
+        // One bucket per cell; `Worst` keeps a missed probe visible — any
+        // NaN in the window paints the whole cell as a miss.
+        let history = app.hist.ping_ms.buckets(width, app.graph_k(), Agg::Worst);
         let pad = width - history.len();
         for x in 0..width {
             let color = match x.checked_sub(pad).and_then(|i| history.get(i)) {

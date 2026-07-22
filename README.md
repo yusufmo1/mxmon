@@ -93,7 +93,7 @@ cargo build --release && ./target/release/mxmon
 | <kbd>s</kbd> / <kbd>F6</kbd> / click header | sort |
 | <kbd>x</kbd> / <kbd>F9</kbd> | kill (signal picker) |
 | <kbd>Enter</kbd> | process details |
-| <kbd>o</kbd> | settings — process panes · theme · sampling · ping |
+| <kbd>o</kbd> | settings — process panes · theme · sampling · graph window · ping |
 | <kbd>t</kbd> | cycle theme |
 | <kbd>p</kbd> · <kbd>+</kbd> <kbd>-</kbd> · <kbd>d</kbd> | pause · sampling speed · debug HUD |
 | <kbd>?</kbd> · <kbd>q</kbd> | help · quit |
@@ -150,6 +150,8 @@ Sampling is **tiered** so expensive reads don't run more often than they need to
 | Procs | 2 s | full process table (incl. per-process watts) |
 
 All tiers scale together with <kbd>+</kbd> / <kbd>-</kbd>. The heat surface is cached and eased on the fast tier, and the UI **only redraws on new data or input**, so idle cost stays near zero. Config persists at `~/.config/mxmon/config.toml`.
+
+Numbers update every tick, but the history graphs don't have to scroll that fast: the **graph window** setting (×1/×2/×4/×8, default ×4) folds that many ticks into each graph column — peaks are kept, temperatures are averaged — so a card shows minutes of history instead of seconds. The rightmost column is a live partial bucket, so the graph's leading edge still moves at full tick rate while the body crawls.
 
 </details>
 

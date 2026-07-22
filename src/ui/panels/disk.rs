@@ -7,7 +7,7 @@ use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::Span;
 
-use crate::app::App;
+use crate::app::{Agg, App};
 use crate::ui::theme::Theme;
 use crate::ui::widgets::MirrorGraph;
 
@@ -101,8 +101,8 @@ pub fn render(buf: &mut Buffer, area: Rect, app: &App, th: &Theme) {
         let graph = Rect::new(inner.x, inner.y + 1, inner.width, inner.height - 1);
         if graph.height >= 2 {
             let slots = graph.width as usize * 2;
-            let wr: Vec<f32> = app.hist.disk_wr.last_n(slots).collect();
-            let rd: Vec<f32> = app.hist.disk_rd.last_n(slots).collect();
+            let wr = app.hist.disk_wr.buckets(slots, app.graph_k(), Agg::Max);
+            let rd = app.hist.disk_rd.buckets(slots, app.graph_k(), Agg::Max);
             let (wr_max, rd_max) = (
                 windowed_scale(&wr, SCALE_FLOOR),
                 windowed_scale(&rd, SCALE_FLOOR),

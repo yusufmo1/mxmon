@@ -449,9 +449,18 @@ pub fn flows() -> FlowSample {
 
 /// A populated `App` built the production way: every update folded through
 /// `App::apply`, rings advanced far enough that every graph has a window.
+/// Glyphs are pinned to braille so frames never depend on the host
+/// terminal's env (`Glyphs::Auto` probes `TERM_PROGRAM` et al.); tests that
+/// exercise the octant pass opt in explicitly.
 pub fn app() -> App {
-    let mut app = App::new(soc(), Config::default());
-    for i in 0..72 {
+    let mut config = Config::default();
+    config.glyphs = crate::config::Glyphs::Braille;
+    let mut app = App::new(soc(), config);
+    // Deep enough that every ring fills every dot column at the ×8 graph
+    // window across all snapshot widths (the 320-col overview included) —
+    // the slow tiers push at ÷4 here, so they need the headroom most. The
+    // waves are pure arithmetic; 3200 folds cost a few ms.
+    for i in 0..3200 {
         app.apply(Update::Fast(Box::new(fast_at(i))));
         if i % 2 == 0 {
             app.apply(Update::Power(Box::new(power_at(i))));

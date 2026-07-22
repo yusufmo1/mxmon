@@ -5,7 +5,7 @@ use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::Span;
 
-use crate::app::App;
+use crate::app::{Agg, App};
 use crate::collect::mem::Pressure;
 use crate::ui::theme::Theme;
 use crate::ui::widgets::{LineGraph, Meter, axis_window};
@@ -118,7 +118,10 @@ pub fn render(buf: &mut Buffer, area: Rect, app: &App, th: &Theme) {
     // meter above, so the hue still says how full.
     if inner.height > 4 {
         let graph = Rect::new(inner.x, inner.y + 4, inner.width, inner.height - 4);
-        let data: Vec<f32> = app.hist.mem_used.last_n(graph.width as usize * 2).collect();
+        let data = app
+            .hist
+            .mem_used
+            .buckets(graph.width as usize * 2, app.graph_k(), Agg::Mean);
         let window = axis_window(&data, 0.05, 0.10, (0.0, 1.0));
         let (lo, hi) = window.unwrap_or((0.0, 1.0));
         LineGraph {

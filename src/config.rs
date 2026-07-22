@@ -6,6 +6,22 @@ use serde::{Deserialize, Serialize};
 
 use crate::collect::sampler::{FAST_MS_DEFAULT, FAST_MS_MAX, FAST_MS_MIN};
 
+/// Sub-cell glyph set for the braille-drawn graphs. Rendering always happens
+/// in braille; `ui::glyphs::octantize_buffer` upgrades the finished frame to
+/// Unicode 16 octants (solid 2×4 blocks, no dot gaps) when this resolves on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, clap::ValueEnum)]
+#[serde(rename_all = "lowercase")]
+pub enum Glyphs {
+    /// Octants where the terminal is known to draw them (Ghostty, Kitty,
+    /// WezTerm, foot), braille everywhere else.
+    Auto,
+    /// Force octants (needs a terminal or font with Symbols for Legacy
+    /// Computing Supplement coverage).
+    Octant,
+    /// Force braille — safe in every terminal.
+    Braille,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Config {
@@ -14,9 +30,9 @@ pub struct Config {
     pub theme: String,
     /// Fast-tier sampling interval (ms); other tiers scale from it.
     pub interval_ms: u64,
-    /// Use octant characters for graphs (needs a font with legacy computing
-    /// symbols); braille otherwise.
-    pub octant_graphs: bool,
+    /// Sub-cell glyph set for graphs: `auto` (octants on terminals that draw
+    /// them, braille elsewhere), `octant`, or `braille`.
+    pub glyphs: Glyphs,
     /// Probe connectivity (latency/jitter/reachability) with ICMP echoes —
     /// the only thing mxmon ever sends on the network. `false` = fully passive.
     pub ping: bool,
@@ -33,6 +49,11 @@ pub struct Config {
     /// blueprint and every reading in place on a quiet deck — the field
     /// math is skipped entirely, not just hidden.
     pub contours: bool,
+    /// Fast ticks aggregated into each graph dot column (1–8). Rings still
+    /// fill every tick and the head column stays live; at ×4 the graph body
+    /// advances a quarter as fast, showing 4× the history. The settings
+    /// modal steps ×1/×2/×4/×8; hand-edited in-between values are honored.
+    pub graph_window: u16,
 }
 
 impl Default for Config {
@@ -40,12 +61,13 @@ impl Default for Config {
         Self {
             theme: "midnight".into(),
             interval_ms: FAST_MS_DEFAULT,
-            octant_graphs: false,
+            glyphs: Glyphs::Auto,
             ping: true,
             ping_host: "1.1.1.1".into(),
             procs_panes: 1,
             schematic: true,
             contours: true,
+            graph_window: 4,
         }
     }
 }
@@ -106,6 +128,7 @@ impl Config {
             .unwrap_or_default();
         config.interval_ms = config.interval_ms.clamp(FAST_MS_MIN, FAST_MS_MAX);
         config.procs_panes = config.procs_panes.clamp(1, 4);
+        config.graph_window = config.graph_window.clamp(1, 8);
         config
     }
 
@@ -123,7 +146,7 @@ impl Config {
 
 #[cfg(test)]
 mod tests {
-    use super::{Config, dir, test_dir};
+    use super::{Config, Glyphs, dir, test_dir};
     use crate::collect::sampler::FAST_MS_DEFAULT;
 
     #[test]
@@ -151,6 +174,12 @@ mod tests {
         assert_eq!(c.procs_panes, 4, "clamped down to the pane cap");
         assert_eq!(c.theme, "neon");
         assert!(c.ping, "absent keys keep their defaults");
+        assert_eq!(c.glyphs, Glyphs::Auto, "absent glyphs key stays auto");
+        assert_eq!(c.graph_window, 4, "absent graph_window keeps the default");
+        std::fs::write(tmp.path().join("config.toml"), "graph_window = 99\n").unwrap();
+        assert_eq!(Config::load().graph_window, 8, "clamped down to ×8");
+        std::fs::write(tmp.path().join("config.toml"), "graph_window = 0\n").unwrap();
+        assert_eq!(Config::load().graph_window, 1, "clamped up to ×1");
     }
 
     #[test]
@@ -169,22 +198,26 @@ mod tests {
         let c = Config {
             theme: "gruvbox".into(),
             interval_ms: 750,
-            octant_graphs: true,
+            glyphs: Glyphs::Octant,
             ping: false,
             ping_host: "9.9.9.9".into(),
             procs_panes: 3,
             schematic: false,
             contours: false,
+            // Odd on purpose: only the modal is limited to the ×1/2/4/8
+            // stops — a hand-tuned value must survive the round trip.
+            graph_window: 7,
         };
         c.save();
         let l = Config::load();
         assert_eq!(l.theme, "gruvbox");
         assert_eq!(l.interval_ms, 750);
-        assert!(l.octant_graphs);
+        assert_eq!(l.glyphs, Glyphs::Octant);
         assert!(!l.ping);
         assert_eq!(l.ping_host, "9.9.9.9");
         assert_eq!(l.procs_panes, 3);
         assert!(!l.schematic);
         assert!(!l.contours);
+        assert_eq!(l.graph_window, 7);
     }
 }

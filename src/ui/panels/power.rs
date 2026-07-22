@@ -5,7 +5,7 @@ use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::Span;
 
-use crate::app::{App, Ring};
+use crate::app::{Agg, App, Ring};
 use crate::ui::theme::Theme;
 use crate::ui::widgets::{BrailleGraph, Meter};
 use crate::units::Watts;
@@ -77,11 +77,10 @@ pub fn render(buf: &mut Buffer, area: Rect, app: &App, th: &Theme) {
     };
     if graph_h > 0 {
         let graph = Rect::new(inner.x, inner.y + 1, inner.width, graph_h);
-        let data: Vec<f32> = app
+        let data = app
             .hist
             .package_w
-            .last_n(graph.width as usize * 2)
-            .collect();
+            .buckets(graph.width as usize * 2, app.graph_k(), Agg::Max);
         // Scale to the visible window (the all-time session peak already
         // lives in the header text).
         BrailleGraph {
