@@ -605,6 +605,13 @@ fn json_snapshot(soc: &collect::soc::SocInfo) -> color_eyre::Result<()> {
             "gpu_freq_mhz": p.gpu_freq.0,
             "gpu_usage_pct": p.gpu_usage.as_percent(),
         })),
+        "kernel": procs.as_ref().map(|p| serde_json::json!({
+            "context_switches_per_sec": p.kernel.context_switches.round(),
+            "syscalls_per_sec": p.kernel.syscalls.round(),
+            "mach_messages_per_sec": p.kernel.mach_messages.round(),
+            "interrupt_wakeups_per_sec": p.kernel.interrupt_wakeups.round(),
+            "runnable_threads": (p.kernel.runnable * 100.0).round() / 100.0,
+        })),
         "temps": slow.as_ref().and_then(|s| s.temps.as_ref()).map(|t| serde_json::json!({
             "cpu_avg_c": t.cpu_avg.0,
             "cpu_max_c": t.cpu_max.0,
