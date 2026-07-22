@@ -63,7 +63,7 @@ impl Section {
             Self::Appearance => "theme and the chrome colors painted on top of it",
             Self::Graphs => "how the waveforms aggregate and move",
             Self::Layout => "how much room each surface gets",
-            Self::Panels => "which cards appear on the dashboard",
+            Self::Panels => "which cards appear on the dashboard, and where",
             Self::Sampling => "how often the collectors run",
             Self::Network => "the only thing mxmon ever sends",
             Self::Keys => "every command and the keys that fire it",
@@ -103,6 +103,7 @@ pub enum Id {
     ShowPower,
     ShowTemps,
     ShowBattery,
+    Arrangement,
 }
 
 /// How a value is presented and edited.
@@ -118,6 +119,10 @@ pub enum Kind {
     Stepper,
     /// Free text, edited inline.
     Text,
+    /// A value the card only *reports*: it is changed by direct manipulation
+    /// somewhere else in the UI, so the row has no stepper and no chips — just
+    /// the reading, and the `↺` chip every row gets once it drifts.
+    Readout,
 }
 
 pub struct Item {
@@ -129,7 +134,7 @@ pub struct Item {
     pub kind: Kind,
 }
 
-pub const ITEMS: [Item; 22] = [
+pub const ITEMS: [Item; 23] = [
     Item {
         id: Id::Theme,
         section: Section::Appearance,
@@ -257,6 +262,13 @@ pub const ITEMS: [Item; 22] = [
         kind: Kind::Toggle,
     },
     Item {
+        id: Id::Arrangement,
+        section: Section::Panels,
+        label: "arrangement",
+        help: "drag a card onto another to swap them · a arranges by keyboard",
+        kind: Kind::Readout,
+    },
+    Item {
         id: Id::StorageHealth,
         section: Section::Sampling,
         label: "storage health",
@@ -358,6 +370,7 @@ pub fn config_key(id: Id) -> &'static str {
         Id::ShowPower => "show_power",
         Id::ShowTemps => "show_temps",
         Id::ShowBattery => "show_battery",
+        Id::Arrangement => "arrangement",
         Id::Interval => "interval_ms",
         Id::Ping => "ping",
         Id::PingHost => "ping_host",
@@ -393,7 +406,7 @@ pub fn options(id: Id) -> Vec<String> {
         | Id::ShowPower
         | Id::ShowTemps
         | Id::ShowBattery => vec!["on".into(), "off".into()],
-        Id::Interval | Id::PingHost => Vec::new(),
+        Id::Interval | Id::PingHost | Id::Arrangement => Vec::new(),
     }
 }
 
@@ -504,6 +517,14 @@ pub fn current(app: &App, id: Id) -> Current {
                 "unused while the probe is off".into()
             },
         ),
+        Id::Arrangement => {
+            let moved = c.arrangement.moved();
+            if moved == 0 {
+                ("default".into(), "every card in its shipped place".into())
+            } else {
+                ("custom".into(), format!("{moved} cards moved"))
+            }
+        }
     };
     let index = index_of(app, id);
     Current {
@@ -562,7 +583,7 @@ fn index_of(app: &App, id: Id) -> Option<usize> {
         Id::StorageHealth => Some(usize::from(!c.storage_health)),
         Id::KernelStats => Some(usize::from(!c.kernel_stats)),
         Id::Ping => Some(usize::from(!c.ping)),
-        Id::Interval | Id::PingHost => None,
+        Id::Interval | Id::PingHost | Id::Arrangement => None,
     }
 }
 
@@ -650,7 +671,9 @@ pub fn set(app: &mut App, id: Id, index: usize) {
             app.toast("ping probe: applies at next launch", false);
         }
         // Not choices — reached only through `set_interval` / `set_text`.
-        Id::Interval | Id::PingHost => return,
+        // Not choices — the interval steps, the host opens an editor, and
+        // the arrangement is changed by dragging cards, not from this row.
+        Id::Interval | Id::PingHost | Id::Arrangement => return,
     }
     app.config.save();
 }
@@ -711,6 +734,7 @@ pub fn is_default(app: &App, id: Id) -> bool {
         Id::Interval => c.interval_ms == d.interval_ms,
         Id::Ping => c.ping == d.ping,
         Id::PingHost => c.ping_host == d.ping_host,
+        Id::Arrangement => c.arrangement.is_default(),
     }
 }
 
@@ -743,6 +767,7 @@ pub fn reset(app: &mut App, control: &Control, id: Id) {
         }
         Id::Ping => app.config.ping = d.ping,
         Id::PingHost => app.config.ping_host = d.ping_host,
+        Id::Arrangement => app.config.arrangement = d.arrangement,
     }
     app.config.save();
 }
@@ -892,7 +917,9 @@ mod tests {
             match i.kind {
                 Kind::Toggle => assert_eq!(options(i.id), ["on", "off"]),
                 Kind::Choice => assert!(options(i.id).len() >= 2, "{} has no choices", i.label),
-                Kind::Stepper | Kind::Text => assert!(options(i.id).is_empty()),
+                Kind::Stepper | Kind::Text | Kind::Readout => {
+                    assert!(options(i.id).is_empty());
+                }
             }
         }
         // Every row belongs to a section that exists, and the row-bearing

@@ -428,6 +428,14 @@ fn setting_row(
                     hits.push(rect, Target::SettingEdit(row));
                 }
             }
+        } else if item.kind == Kind::Readout {
+            // A reading, not a control: no chevrons to click, because this
+            // value is changed by dragging cards on the dashboard. The lanes
+            // still line up with the rows above and below.
+            p.put(" ", base);
+            p.put("    ", base);
+            p.put(&fit(&current.value, VALUE_W), value_style);
+            p.put(" ", base);
         } else {
             {
                 // Arrows stay quiet until the row is live: bright chevrons on

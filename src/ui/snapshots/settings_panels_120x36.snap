@@ -12,7 +12,7 @@ source: src/ui/layout.rs
 │P1 ██▆▃▂▅    39.0% @ 2.79GHz  3.40W⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿││FAB █▎▏▏▏▏▏▏▏▏▏▏▏▏▏▏▏▏▏▏▏▏▏▏▏▏▏▏▏▏         800mW│
 ╰───────────────╭ settings ───────────────────────────────────────────────────────────────────────── ✕ ╮───────────────╯
 ╭╸GPU╺  39.9% ──│   appearance   graphs   layout   panels   sampling   network   keys   about          │───────────────╮
-│@ 1.30GHz  2.82│   which cards appear on the dashboard                                                │  pressure  OK │
+│@ 1.30GHz  2.82│   which cards appear on the dashboard, and where                                     │  pressure  OK │
 │               │ ──────────────────────────────────────────────────────────────────────────────────── │▏▏▏▏▏▏▏▏▏▏▏▏▏▏▏│
 │⣠⣤  ⣠⣄ ⢀⣤⡄ ⢀⣤⡀ │ ▸ cpu            ‹    on             ›  cpu card shown                               │G              │
 │⣿⣿⣷⣾⣿⣿⣷⣾⣿⣿⣶⣿⣿⣿⣶│                   on  off                                                            │               │
@@ -23,11 +23,11 @@ source: src/ui/layout.rs
 │↑   7.5 Mb/s⣾⣧⣷│   power          ‹    on             ›  power card shown                             │4m to full  ada│
 │⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿│   temps          ‹    on             ›  temps card shown                             │ SoC     6.54W │
 │⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿│   battery        ‹    on             ›  battery card shown                           │ DISP    3.10W │
-│↓  47.5 Mb/s⢸⢸⢸│ ──────────────────────────────────────────────────────────────────────────────────── │ other   17.0W │
-╰───────────────│   per-core cluster meters, frequencies and utilization  ·  config.toml: show_cpu     │───────────────╯
-╭╸PROCESSES╺ 160│  ↑↓ row · ←→ change · ⏎ set · r reset · R all · ⇥ page · esc close                   │───────────────╮
-│    PID USER   ╰──────────────────────────────────────────────────────────────────────────────────────╯               │
-│    659 yusuf        171.0  783mW    1.0G       –       –    8 S   18m 39s bird                                       ┃
+│↓  47.5 Mb/s⢸⢸⢸│   arrangement         default           every card in its shipped place              │ other   17.0W │
+╰───────────────│ ──────────────────────────────────────────────────────────────────────────────────── │───────────────╯
+╭╸PROCESSES╺ 160│   per-core cluster meters, frequencies and utilization  ·  config.toml: show_cpu     │───────────────╮
+│    PID USER   │  ↑↓ row · ←→ change · ⏎ set · r reset · R all · ⇥ page · esc close                   │               │
+│    659 yusuf  ╰──────────────────────────────────────────────────────────────────────────────────────╯               ┃
 │    421 root         169.0  377mW    531M       –       –   17 S   10m 01s node                                       ┃
 │    642 _windowse…   158.0  754mW   1012M       –       –    7 I   18m 02s mds_stores                                 │
 │    404 yusuf        156.0  348mW    494M       –       –   16 R    9m 24s Xcode                                      │
