@@ -95,6 +95,7 @@ cargo build --release && ./target/release/mxmon
 | <kbd>x</kbd> / <kbd>F9</kbd> | kill (signal picker) |
 | <kbd>Enter</kbd> | process details |
 | <kbd>o</kbd> | settings card — every option in the app, on one surface |
+| <kbd>a</kbd> | arrange cards — arrows move, <kbd>Enter</kbd> picks up and drops |
 | <kbd>t</kbd> | cycle theme |
 | <kbd>p</kbd> · <kbd>+</kbd> <kbd>-</kbd> · <kbd>d</kbd> | pause · sampling speed · debug HUD |
 | <kbd>?</kbd> · <kbd>q</kbd> | key reference · quit |
@@ -102,6 +103,8 @@ cargo build --release && ./target/release/mxmon
 <sub>Every one of these is remappable — see [Settings](#settings).</sub>
 
 <sub>Full mouse support: every metric card is a button — hover it for a `▸ destination` hint, click to jump where that metric deepens (CPU/MEM/POWER open the process table sorted by it, NET the connections view, GPU/TEMPS/BATTERY the thermal view). Click tabs, column headers, rows, footer chips and the modal `✕`; scroll the process, sensor and connection lists, and everything in the settings card.</sub>
+
+<sub>Drag any card onto another to swap the two — the rects never move, only which panel draws into them, so every layout stays exactly as tuned at every terminal width. The process table drags by its title bar (its rows keep selecting processes). Rearrangements persist, survive resizing across every breakpoint, and reset from `panels › arrangement` in the settings card.</sub>
 
 <div align="center">
 
@@ -176,6 +179,7 @@ Modern macOS quantizes and 32-bit-wraps `NET_RT_IFLIST2` byte counters for ad-ho
 | `appearance` | theme · frames · labels · glyphs |
 | `graphs` | graph window (×1–×8) · motion |
 | `layout` | process panes · schematic · contours |
+| `panels` | which cards appear on the dashboard, and where they sit |
 | `sampling` | fast-tier interval, with the tiers it drags along |
 | `network` | ping probe on/off · ping host (editable in place) |
 | `keys` | every command and the keys bound to it |
