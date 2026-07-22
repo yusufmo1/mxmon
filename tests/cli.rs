@@ -16,6 +16,33 @@ fn mxmon(tmp: &tempfile::TempDir) -> Command {
     c
 }
 
+/// Everything a failed spawn knows about itself. A bare "it failed" is
+/// useless when the run only reproduces on another machine: a process that
+/// dies on a signal has no stderr at all, and the exit code is the only
+/// thing that distinguishes a crash from a clean non-zero exit.
+fn diagnose(what: &str, out: &std::process::Output, tmp: &tempfile::TempDir) -> String {
+    use std::fmt::Write;
+    let mut s = format!("{what} failed\n  status: {:?}", out.status);
+    if let Some(sig) = std::os::unix::process::ExitStatusExt::signal(&out.status) {
+        let _ = write!(s, "\n  killed by signal: {sig}");
+    }
+    let _ = write!(
+        s,
+        "\n  stderr: {}\n  stdout (first 400): {}",
+        String::from_utf8_lossy(&out.stderr).trim(),
+        String::from_utf8_lossy(&out.stdout)
+            .chars()
+            .take(400)
+            .collect::<String>()
+    );
+    // A panic in the TUI path is written here rather than to stderr.
+    let log = tmp.path().join("last-panic.log");
+    if let Ok(panic_log) = std::fs::read_to_string(&log) {
+        let _ = write!(s, "\n  last-panic.log: {}", panic_log.trim());
+    }
+    s
+}
+
 #[test]
 fn version_and_help_exit_cleanly() {
     let tmp = tempfile::tempdir().unwrap();
@@ -42,7 +69,11 @@ fn glyphs_flag_validates_its_value() {
         .args(["--json", "--glyphs", "braille"])
         .output()
         .unwrap();
-    assert!(out.status.success(), "--glyphs braille must be accepted");
+    assert!(
+        out.status.success(),
+        "{}",
+        diagnose("--json --glyphs braille", &out, &tmp)
+    );
     // Clap rejects values outside the enum, not the code downstream.
     let out = mxmon(&tmp).args(["--glyphs", "sixel"]).output().unwrap();
     assert!(!out.status.success());
@@ -61,11 +92,7 @@ fn json_snapshot_honors_the_source_contract() {
     std::fs::write(tmp.path().join("config.toml"), "ping = false\n").unwrap();
 
     let out = mxmon(&tmp).arg("--json").output().unwrap();
-    assert!(
-        out.status.success(),
-        "--json failed: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
+    assert!(out.status.success(), "{}", diagnose("--json", &out, &tmp));
     let v: serde_json::Value =
         serde_json::from_slice(&out.stdout).expect("stdout is one JSON document");
     let obj = v.as_object().expect("top level is an object");
