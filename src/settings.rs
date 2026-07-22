@@ -93,6 +93,8 @@ pub enum Id {
     Interval,
     Ping,
     PingHost,
+    StorageHealth,
+    KernelStats,
     ShowCpu,
     ShowGpu,
     ShowMem,
@@ -254,6 +256,19 @@ pub const ITEMS: [Item; 22] = [
         help: "charge, health and the power-flow diagram",
         kind: Kind::Toggle,
     },
+    Item {
+        id: Id::StorageHealth,
+        section: Section::Sampling,
+        label: "storage health",
+        help: "SMART · volume cache · controller throttle, every 10 s",
+        kind: Kind::Toggle,
+    },
+    Item {
+        id: Id::KernelStats,
+        section: Section::Sampling,
+        label: "kernel stats",
+        help: "per-device interrupt rates and what is holding the Mac awake",
+        kind: Kind::Toggle,
     },
     Item {
         id: Id::Ping,
@@ -333,6 +348,8 @@ pub fn config_key(id: Id) -> &'static str {
         Id::ProcsPanes => "procs_panes",
         Id::Schematic => "schematic",
         Id::Contours => "contours",
+        Id::StorageHealth => "storage_health",
+        Id::KernelStats => "kernel_stats",
         Id::ShowCpu => "show_cpu",
         Id::ShowGpu => "show_gpu",
         Id::ShowMem => "show_mem",
@@ -366,6 +383,8 @@ pub fn options(id: Id) -> Vec<String> {
         | Id::Schematic
         | Id::Contours
         | Id::Ping
+        | Id::StorageHealth
+        | Id::KernelStats
         | Id::ShowCpu
         | Id::ShowGpu
         | Id::ShowMem
@@ -456,6 +475,16 @@ pub fn current(app: &App, id: Id) -> Current {
         Id::ShowPower => on_off(c.show_power, "power card shown", "power card hidden"),
         Id::ShowTemps => on_off(c.show_temps, "temps card shown", "temps card hidden"),
         Id::ShowBattery => on_off(c.show_battery, "battery card shown", "battery card hidden"),
+        Id::StorageHealth => on_off(
+            c.storage_health,
+            "SMART, cache and throttle polled",
+            "storage health not sampled",
+        ),
+        Id::KernelStats => on_off(
+            c.kernel_stats,
+            "interrupts and wake locks polled",
+            "kernel activity not sampled",
+        ),
         Id::Interval => (
             format!("{} ms", c.interval_ms),
             // The tiers the fast interval drags along with it — the reason
@@ -530,6 +559,8 @@ fn index_of(app: &App, id: Id) -> Option<usize> {
         Id::ShowPower => Some(usize::from(!c.show_power)),
         Id::ShowTemps => Some(usize::from(!c.show_temps)),
         Id::ShowBattery => Some(usize::from(!c.show_battery)),
+        Id::StorageHealth => Some(usize::from(!c.storage_health)),
+        Id::KernelStats => Some(usize::from(!c.kernel_stats)),
         Id::Ping => Some(usize::from(!c.ping)),
         Id::Interval | Id::PingHost => None,
     }
@@ -612,6 +643,8 @@ pub fn set(app: &mut App, id: Id, index: usize) {
         Id::ShowPower => app.config.show_power = index == 0,
         Id::ShowTemps => app.config.show_temps = index == 0,
         Id::ShowBattery => app.config.show_battery = index == 0,
+        Id::StorageHealth => app.config.storage_health = index == 0,
+        Id::KernelStats => app.config.kernel_stats = index == 0,
         Id::Ping => {
             app.config.ping = index == 0;
             app.toast("ping probe: applies at next launch", false);
@@ -673,6 +706,8 @@ pub fn is_default(app: &App, id: Id) -> bool {
         Id::ShowPower => c.show_power == d.show_power,
         Id::ShowTemps => c.show_temps == d.show_temps,
         Id::ShowBattery => c.show_battery == d.show_battery,
+        Id::StorageHealth => c.storage_health == d.storage_health,
+        Id::KernelStats => c.kernel_stats == d.kernel_stats,
         Id::Interval => c.interval_ms == d.interval_ms,
         Id::Ping => c.ping == d.ping,
         Id::PingHost => c.ping_host == d.ping_host,
@@ -700,6 +735,8 @@ pub fn reset(app: &mut App, control: &Control, id: Id) {
         Id::ShowPower => app.config.show_power = d.show_power,
         Id::ShowTemps => app.config.show_temps = d.show_temps,
         Id::ShowBattery => app.config.show_battery = d.show_battery,
+        Id::StorageHealth => app.config.storage_health = d.storage_health,
+        Id::KernelStats => app.config.kernel_stats = d.kernel_stats,
         Id::Interval => {
             set_interval(app, control, d.interval_ms);
             return; // set_interval already saved and toasted

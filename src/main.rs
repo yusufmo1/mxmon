@@ -75,6 +75,10 @@ struct Cli {
     /// Dump the raw ntstat message stream + self-calibrated field offsets.
     #[arg(long, hide = true)]
     flows_debug: bool,
+
+    /// Dump the NVMe SMART health page and exit.
+    #[arg(long, hide = true)]
+    smart_debug: bool,
 }
 
 fn main() -> color_eyre::Result<()> {
@@ -117,6 +121,40 @@ fn main() -> color_eyre::Result<()> {
             if let Ok(v) = smc.read_f32(&key, info) {
                 println!("{key} = {v:10.3}");
             }
+        }
+        return Ok(());
+    }
+
+    if cli.smart_debug {
+        let mut storage = collect::storage::StorageCollector::new();
+        // Two passes: the controller counters are deltas and the first pass
+        // only establishes their baseline.
+        let _ = storage.sample();
+        let s = storage.sample();
+        println!("{:#?}", s.smart);
+        println!("controller: {:?}", s.controller);
+        let mut kc = collect::kernel::KernelCollector::new();
+        let _ = kc.sample();
+        std::thread::sleep(Duration::from_millis(1500));
+        let k = kc.sample();
+        println!("interrupts {:.0}/s", k.total_per_sec);
+        for src in &k.top_sources {
+            println!(
+                "  {:<22} {:>9.0}/s  handler {:>6.3}%",
+                src.device,
+                src.per_sec,
+                src.cpu_share * 100.0
+            );
+        }
+        for v in &s.volumes {
+            println!(
+                "{:<28} hit {:>6} amp {:>5}",
+                v.name,
+                v.cache_hit()
+                    .map_or("-".into(), |r| format!("{:.1}%", r.as_percent())),
+                v.write_amplification()
+                    .map_or("-".into(), |a| format!("{a:.2}x")),
+            );
         }
         return Ok(());
     }
@@ -262,6 +300,8 @@ fn run_tui(soc: collect::soc::SocInfo, config: Config) -> color_eyre::Result<()>
         std::sync::Arc::clone(&control),
         data_tx,
         ping_host,
+        config.storage_health,
+        config.kernel_stats,
     );
     {
         let tx = tx.clone();
@@ -434,6 +474,8 @@ fn json_snapshot(soc: &collect::soc::SocInfo) -> color_eyre::Result<()> {
         std::sync::Arc::clone(&control),
         tx,
         config.ping.then(|| config.ping_host.clone()),
+        config.storage_health,
+        config.kernel_stats,
     );
 
     // Collect until every tier has reported at least twice (deltas settled).
@@ -446,6 +488,8 @@ fn json_snapshot(soc: &collect::soc::SocInfo) -> color_eyre::Result<()> {
     let mut ping = None;
     let mut flows = None;
     let mut battery: Option<collect::battery::BatterySample> = None;
+    let mut health: Option<Box<collect::storage::StorageSample>> = None;
+    let mut kernel_snap: Option<Box<collect::kernel::KernelSnapshot>> = None;
     let mut errors: Vec<(String, String)> = Vec::new();
     let mut down: std::collections::HashSet<String> = std::collections::HashSet::new();
     let (mut n_fast, mut n_power, mut n_slow, mut n_procs, mut n_flows) = (0, 0, 0, 0, 0);
@@ -474,6 +518,11 @@ fn json_snapshot(soc: &collect::soc::SocInfo) -> color_eyre::Result<()> {
                 procs = Some(s);
             }
             Ok(Update::Ping(s)) => ping = Some(s),
+            // Health is not part of the settle gate: its tier is 10 s, far
+            // longer than the 8 s budget, so `--json` reports whatever the
+            // warm-up pass produced and never waits for a second one.
+            Ok(Update::Health(s)) => health = Some(s),
+            Ok(Update::Kernel(s)) => kernel_snap = Some(s),
             Ok(Update::Flows(s)) => {
                 n_flows += 1;
                 flows = Some(s);
@@ -626,6 +675,44 @@ fn json_snapshot(soc: &collect::soc::SocInfo) -> color_eyre::Result<()> {
             "fans": t.fans.iter().map(|f| serde_json::json!({"label": f.label, "rpm": f.rpm, "max": f.max_rpm})).collect::<Vec<_>>(),
             "sensor_count": t.sensors.len(),
             "sensors": t.sensors.iter().map(|s| serde_json::json!({"group": s.group.title_with(soc.tier_low, soc.tier_high), "label": s.label, "c": (s.temp.0*10.0).round()/10.0})).collect::<Vec<_>>(),
+        })),
+        "storage": health.as_ref().map(|h| serde_json::json!({
+            "smart": h.smart.as_ref().map(|s| serde_json::json!({
+                "critical_warning": s.critical_warning,
+                "temperature_c": s.temperature_c,
+                "available_spare_pct": s.available_spare_pct,
+                "available_spare_threshold_pct": s.available_spare_threshold_pct,
+                "percentage_used": s.percentage_used,
+                "bytes_read": s.bytes_read.to_string(),
+                "bytes_written": s.bytes_written.to_string(),
+                "power_cycles": s.power_cycles.to_string(),
+                "power_on_hours": s.power_on_hours.to_string(),
+                "unsafe_shutdowns": s.unsafe_shutdowns.to_string(),
+                "media_errors": s.media_errors.to_string(),
+                "unhealthy": s.unhealthy(),
+            })),
+            "throttled_pct": h.controller.throttled.map(|r| f64::from((r.as_percent() * 100.0).round()) / 100.0),
+            "nand_written_bytes": h.controller.nand_written.0,
+            "volumes": h.volumes.iter().map(|v| serde_json::json!({
+                "name": v.name,
+                "user_read_bytes": v.user_read.0,
+                "device_read_bytes": v.device_read.0,
+                "cache_hit_pct": v.cache_hit().map(|r| f64::from((r.as_percent() * 10.0).round()) / 10.0),
+                "write_amplification": v.write_amplification().map(|a| f64::from((a * 100.0).round()) / 100.0),
+            })).collect::<Vec<_>>(),
+        })),
+        "kernel_activity": kernel_snap.as_ref().map(|k| serde_json::json!({
+            "interrupts_per_sec": k.total_per_sec.round(),
+            "top_sources": k.top_sources.iter().map(|s| serde_json::json!({
+                "device": s.device,
+                "per_sec": s.per_sec.round(),
+                "handler_cpu_pct": (s.cpu_share * 10000.0).round() / 100.0,
+            })).collect::<Vec<_>>(),
+            "keeping_awake": k.sleep_blockers().iter().map(|a| serde_json::json!({
+                "pid": a.pid,
+                "type": a.kind,
+                "reason": a.name,
+            })).collect::<Vec<_>>(),
         })),
         "volumes": serde_json::json!(ffi::sys::mounts().iter()
             // Only real, sized file systems — the dozens of synthetic and

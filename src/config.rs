@@ -74,6 +74,14 @@ pub struct Config {
     /// **Must stay the last field:** TOML demands every scalar before the
     /// first table, and this one serializes as `[keys]`. Moving it up makes
     /// `toml::to_string_pretty` fail and silently stops the config saving.
+    /// Poll NVMe SMART, APFS volume statistics, and the drive controller's
+    /// throttle counters on the slow health tier. The priciest thing mxmon
+    /// asks the system for, so it is switchable.
+    pub storage_health: bool,
+
+    /// Poll per-device interrupt counts and wake assertions.
+    pub kernel_stats: bool,
+
     /// Per-card visibility. Hiding a card only removes it from the layout —
     /// its collector keeps running, because other surfaces (the JSON snapshot,
     /// the flow diagram, the heat map) still read the same data. Sampling is
@@ -124,6 +132,8 @@ impl Default for Config {
             contours: true,
             graph_window: 4,
             motion: true,
+            storage_health: true,
+            kernel_stats: true,
             show_cpu: true,
             show_gpu: true,
             show_mem: true,
@@ -296,6 +306,8 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let _guard = test_dir(tmp.path().to_path_buf());
         let c = Config {
+            storage_health: false,
+            kernel_stats: false,
             show_cpu: false,
             show_gpu: false,
             show_mem: false,

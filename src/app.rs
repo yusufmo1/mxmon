@@ -360,6 +360,11 @@ pub struct App {
     pub ping: Option<PingSample>,
     pub procs: ProcSample,
     pub flows: FlowSample,
+    /// Latest storage-health pass; `None` until the first one lands (or
+    /// forever, when the setting is off).
+    pub storage: Option<crate::collect::storage::StorageSample>,
+    /// Latest interrupt/assertion pass; `None` until the first one lands.
+    pub kernel: Option<crate::collect::kernel::KernelSnapshot>,
     pub source_errors: Vec<(&'static str, String)>,
 
     pub hist: Histories,
@@ -413,6 +418,8 @@ impl App {
             ping: None,
             procs: ProcSample::default(),
             flows: FlowSample::default(),
+            storage: None,
+            kernel: None,
             source_errors: Vec::new(),
             hist: Histories::new(cores),
             view: View::Overview,
@@ -567,6 +574,12 @@ impl App {
                 if self.sort == SortKey::Net {
                     self.refresh_visible();
                 }
+            }
+            Update::Health(h) => {
+                self.storage = Some(*h);
+            }
+            Update::Kernel(k) => {
+                self.kernel = Some(*k);
             }
             Update::SourceDown { source, error } => {
                 self.source_errors.push((source, error));

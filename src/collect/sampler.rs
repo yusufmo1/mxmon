@@ -13,6 +13,7 @@ use super::cpu::{CpuCollector, CpuSample, load_avg, uptime_secs};
 use super::disk::{DiskCollector, DiskSample};
 use super::flows::{FlowSample, FlowsCollector};
 use super::gpu::{GpuCollector, GpuSample};
+use super::kernel::{KernelCollector, KernelSnapshot};
 use super::mem::{self, MemSample};
 use super::net::{NetCollector, NetSample};
 use super::ping::{PingCollector, PingSample};
@@ -20,6 +21,7 @@ use super::power::{PowerCollector, PowerSample};
 use super::procs::{ProcCollector, ProcSample};
 use super::selfcpu::SelfCpu;
 use super::soc::SocInfo;
+use super::storage::{StorageCollector, StorageSample};
 use super::temps::{TempCollector, TempSample};
 
 /// Messages flowing from the sampler threads to the UI.
@@ -30,6 +32,11 @@ pub enum Update {
     Procs(Box<ProcSample>),
     Ping(Box<PingSample>),
     Flows(Box<FlowSample>),
+    /// Slow-moving health facts: SMART, volume cache behaviour, controller
+    /// throttle. Its own tier because none of it changes at UI cadence.
+    Health(Box<StorageSample>),
+    /// Interrupt activity and wake assertions, on the same slow tier.
+    Kernel(Box<KernelSnapshot>),
     /// A collector failed at startup; its panel should show why.
     SourceDown {
         source: &'static str,
@@ -75,6 +82,12 @@ const SLOW_EVERY: u64 = 4; // × fast — HID die-sensor refresh + battery regis
 const PROCS_EVERY: u64 = 8;
 pub(crate) const PING_EVERY: u64 = 4; // × fast — one 64-byte ICMP echo (1 s at defaults)
 const FLOWS_EVERY: u64 = 4; // × fast — one ntstat poll (1 s at defaults)
+/// × fast — SMART + APFS + controller counters (10 s at defaults). None of it
+/// moves faster than that, and the SMART call is the priciest thing the app
+/// makes, so it earns the slowest tier.
+const HEALTH_EVERY: u64 = 40;
+const _: () = assert!(HEALTH_EVERY.is_multiple_of(FLOWS_EVERY));
+const HEALTH_PER_WAKE: u64 = HEALTH_EVERY / FLOWS_EVERY;
 // The procs thread wakes at the flows cadence and runs the process pass on
 // every Nth wake; that only divides evenly when:
 const _: () = assert!(PROCS_EVERY.is_multiple_of(FLOWS_EVERY));
@@ -92,7 +105,14 @@ impl Control {
 
 /// Spawn the metric + process sampler threads, and the connectivity prober
 /// when a ping host is configured (`None` = probing disabled).
-pub fn spawn(soc: SocInfo, control: Arc<Control>, tx: Sender<Update>, ping_host: Option<String>) {
+pub fn spawn(
+    soc: SocInfo,
+    control: Arc<Control>,
+    tx: Sender<Update>,
+    ping_host: Option<String>,
+    health_on: bool,
+    kernel_on: bool,
+) {
     let tx_metrics = tx.clone();
     let ctl_metrics = Arc::clone(&control);
     let soc_metrics = soc;
@@ -112,7 +132,7 @@ pub fn spawn(soc: SocInfo, control: Arc<Control>, tx: Sender<Update>, ping_host:
 
     thread::Builder::new()
         .name("mxmon-procs".into())
-        .spawn(move || procs_loop(&control, &tx))
+        .spawn(move || procs_loop(&control, &tx, health_on, kernel_on))
         .expect("spawn procs thread");
 }
 
@@ -295,8 +315,13 @@ fn metrics_loop(soc: SocInfo, ctl: &Control, tx: &Sender<Update>) {
 /// The "expensive stuff" thread: process table every `PROCS_EVERY` fast
 /// ticks, ntstat flow poll every `FLOWS_EVERY` (each wake). One thread —
 /// both collectors together cost a few ms per second.
-fn procs_loop(ctl: &Control, tx: &Sender<Update>) {
+fn procs_loop(ctl: &Control, tx: &Sender<Update>, health_on: bool, kernel_on: bool) {
     let mut procs = ProcCollector::new();
+    // Storage health shares this thread: it is slow, occasional, and must not
+    // sit on the metrics cadence. Constructed only when enabled, so a disabled
+    // setting costs not even a subscription.
+    let mut storage = health_on.then(StorageCollector::new);
+    let mut kernel = kernel_on.then(KernelCollector::new);
     let mut flows = match FlowsCollector::new() {
         Ok(f) => Some(f),
         Err(e) => {
@@ -339,6 +364,20 @@ fn procs_loop(ctl: &Control, tx: &Sender<Update>) {
         if !sample_flows(&mut flows) {
             return;
         }
+        if round == 1 {
+            if let Some(st) = storage.as_mut()
+                && tx.send(Update::Health(Box::new(st.sample()))).is_err()
+            {
+                return;
+            }
+            // Primes the interrupt deltas; the first real numbers land one
+            // health tick later.
+            if let Some(kc) = kernel.as_mut()
+                && tx.send(Update::Kernel(Box::new(kc.sample()))).is_err()
+            {
+                return;
+            }
+        }
         if let Ok(sample) = procs.sample() {
             if tx.send(Update::Procs(Box::new(sample))).is_err() {
                 return;
@@ -369,6 +408,18 @@ fn procs_loop(ctl: &Control, tx: &Sender<Update>) {
         wake += 1;
         if !sample_flows(&mut flows) {
             return;
+        }
+        if wake.is_multiple_of(HEALTH_PER_WAKE) {
+            if let Some(st) = storage.as_mut()
+                && tx.send(Update::Health(Box::new(st.sample()))).is_err()
+            {
+                return;
+            }
+            if let Some(kc) = kernel.as_mut()
+                && tx.send(Update::Kernel(Box::new(kc.sample()))).is_err()
+            {
+                return;
+            }
         }
         if wake.is_multiple_of(PROCS_PER_WAKE)
             && let Ok(sample) = procs.sample()
