@@ -3,7 +3,7 @@ source: src/ui/layout.rs
 ---
  ◉ mxmon cpu  0.4% │ Apple M3 Max  4E+12P · 40-core GPU · 48G                   load 3.42 2.87 2.51  up 1d 2h  HH:MM:SS
 ╭╸CPU╺  44.0% ──╭ settings ───────────────────────────────────────────────────────────────────────── ✕ ╮───────────────╮
-│     ▂     E 2.│   appearance   graphs   layout   sampling   network   keys   about                   │               │
+│     ▂     E 2.│   appearance   graphs   layout   panels   sampling   network   keys   about          │               │
 │   ▄██▅        │   every command and the keys that fire it                                            │▏         3.70W│
 │E  ████      62│ ──────────────────────────────────────────────────────────────────────────────────── │▏         2.82W│
 │        ▃  ⣀⣀⣀⣀│   views ╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌                               ┃│▏          20mW│
@@ -27,11 +27,11 @@ source: src/ui/layout.rs
 ╰───────────────│                                                                                     ┃│───────────────╯
 ╭╸PROCESSES╺ 160│   app ╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌                                 ┃│───────────────╮
 │    PID USER   │   settings        o   +                 this card — every setting in one place      ┃│               │
-│    659 yusuf  │   help            ?   F1   +            the key reference (this section)            ┃│               ┃
-│    421 root   │   cycle theme     t   +                 next theme, applied and saved live          ┃│               ┃
-│    642 _window│   pause           p   +                 freeze sampling; the app keeps drawing      ┃│               │
-│    404 yusuf  │   debug hud       d   +                 frame time, fps and tick in the footer      ┃│               │
-│    863 yusuf  │   sample faster   +   =   +             shorten the fast-tier interval by 50 ms      │               │
+│    659 yusuf  │   inspect         i   +                 storage health, kernel activity, battery dep┃│               ┃
+│    421 root   │   help            ?   F1   +            the key reference (this section)            ┃│               ┃
+│    642 _window│   cycle theme     t   +                 next theme, applied and saved live          ┃│               │
+│    404 yusuf  │   pause           p   +                 freeze sampling; the app keeps drawing       │               │
+│    863 yusuf  │   debug hud       d   +                 frame time, fps and tick in the footer       │               │
 │    625 root   │ ──────────────────────────────────────────────────────────────────────────────────── │               │
 │    387 _window│   the dashboard: every metric card at once  ·  config.toml: keys                     │               │
 │    829 root   │  ↑↓ row · ⏎ bind · ⌫ unbind · r reset · ⇥ page · esc close                           │               │

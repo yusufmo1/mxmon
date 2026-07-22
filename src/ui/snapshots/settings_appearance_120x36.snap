@@ -12,7 +12,7 @@ source: src/ui/layout.rs
 │P1 ██▆▃▂▅    39.0% @ 2.79GHz  3.40W⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿││FAB █▎▏▏▏▏▏▏▏▏▏▏▏▏▏▏▏▏▏▏▏▏▏▏▏▏▏▏▏▏         800mW│
 ╰────────────────────────────────────────────────────────────────────╯╰────────────────────────────────────────────────╯
 ╭╸GPU╺  39.9% ──╭ settings ───────────────────────────────────────────────────────────────────────── ✕ ╮───────────────╮
-│@ 1.30GHz  2.82│   appearance   graphs   layout   sampling   network   keys   about                   │  pressure  OK │
+│@ 1.30GHz  2.82│   appearance   graphs   layout   panels   sampling   network   keys   about          │  pressure  OK │
 │               │   theme and the chrome colors painted on top of it                                   │▏▏▏▏▏▏▏▏▏▏▏▏▏▏▏│
 │⣠⣤  ⣠⣄ ⢀⣤⡄ ⢀⣤⡀ │ ──────────────────────────────────────────────────────────────────────────────────── │G              │
 │⣿⣿⣷⣾⣿⣿⣷⣾⣿⣿⣶⣿⣿⣿⣶│ ▸ theme          ‹ ██ midnight       ›  18 themes · t cycles                         │               │
