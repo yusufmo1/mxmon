@@ -472,7 +472,7 @@ mod tests {
 
     /// One frame at `w`×`h`, right-trimmed, one line per row.
     fn frame(app: &mut App, w: u16, h: u16) -> String {
-        let th = theme::by_name(&app.config.theme);
+        let th = theme::resolve(&app.config);
         let mut term = Terminal::new(TestBackend::new(w, h)).expect("backend");
         let mut hits = HitMap::default();
         let mut rs = RenderState::default();
