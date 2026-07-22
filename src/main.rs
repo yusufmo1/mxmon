@@ -583,6 +583,7 @@ fn json_snapshot(soc: &collect::soc::SocInfo) -> color_eyre::Result<()> {
             "gpu_avg_c": t.gpu_avg.0,
             "sys_power_w": t.sys_power.map(|w| w.0),
             "adapter_power_w": t.adapter_power.map(|w| w.0),
+            "backlight_power_w": t.backlight_power.map(|w| w.0),
             "fans": t.fans.iter().map(|f| serde_json::json!({"label": f.label, "rpm": f.rpm, "max": f.max_rpm})).collect::<Vec<_>>(),
             "sensor_count": t.sensors.len(),
             "sensors": t.sensors.iter().map(|s| serde_json::json!({"group": s.group.title_with(soc.tier_low, soc.tier_high), "label": s.label, "c": (s.temp.0*10.0).round()/10.0})).collect::<Vec<_>>(),

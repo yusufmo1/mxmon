@@ -98,9 +98,11 @@ pub fn render(buf: &mut Buffer, area: Rect, app: &App, th: &Theme) {
     }
 
     // Flow diagram: proportional Sankey when there's room to breathe,
-    // otherwise the compact three-row line flow.
+    // otherwise the compact three-row line flow. The Sankey's fixed
+    // columns total 34 cells, so 48 still leaves a 14-cell ribbon run —
+    // below that the S-curves shred and the compact flow reads better.
     let flow_h = inner.height.saturating_sub(2).min(16);
-    if flow_h >= 5 && inner.width >= 56 {
+    if flow_h >= 5 && inner.width >= 48 {
         let flow_area = Rect::new(inner.x, inner.y + 2, inner.width, flow_h);
         sankey(buf, flow_area, app, b, th);
     } else if inner.height >= 5 && inner.width >= 44 {
@@ -112,8 +114,9 @@ pub fn render(buf: &mut Buffer, area: Rect, app: &App, th: &Theme) {
 /// The wattages every flow rendering shares. `ac` is actual delivery (SMC
 /// PDTR, rated max as fallback), zeroed when unplugged; `bat` is signed
 /// (positive = charging); `ram` is the DRAM rail once it earns its own
-/// ribbon (see [`ram_sink`]); `other` is the SMC system total minus the
-/// telemetry we can attribute.
+/// ribbon (see [`earned_sink`]); `bl` is the SMC backlight rail on the
+/// same terms; `other` is the SMC system total minus the telemetry we can
+/// attribute.
 struct FlowW {
     ac: f32,
     bat: f32,
@@ -121,6 +124,7 @@ struct FlowW {
     soc: f32,
     disp: f32,
     ram: f32,
+    bl: f32,
     other: f32,
 }
 
@@ -147,8 +151,10 @@ fn flow_watts(app: &App, b: &crate::collect::battery::BatterySample) -> FlowW {
         .and_then(|t| t.adapter_power)
         .or(b.adapter_watts)
         .unwrap_or_default();
-    let recent: Vec<f32> = app.hist.dram_w.last_n(RAM_GATE_WINDOW).collect();
-    let ram = ram_sink(&recent);
+    let recent: Vec<f32> = app.hist.dram_w.last_n(SINK_GATE_WINDOW).collect();
+    let ram = earned_sink(&recent);
+    let recent: Vec<f32> = app.hist.backlight_w.last_n(SINK_GATE_WINDOW).collect();
+    let bl = earned_sink(&recent);
     FlowW {
         ac: if b.external_power { adapter.0 } else { 0.0 },
         bat: b.battery_watts.0,
@@ -156,40 +162,68 @@ fn flow_watts(app: &App, b: &crate::collect::battery::BatterySample) -> FlowW {
         soc: soc.0,
         disp: disp.0,
         ram,
-        other: (sys.0 - soc.0 - disp.0 - ram).max(0.0),
+        bl,
+        other: (sys.0 - soc.0 - disp.0 - ram - bl).max(0.0),
     }
 }
 
-/// Sustained draw that earns the DRAM rail its own ribbon.
-const RAM_GATE_W: f32 = 4.0;
-/// Power ticks averaged for the gate (~6 s at the default interval).
-const RAM_GATE_WINDOW: usize = 3;
+/// Sustained draw that earns an auxiliary rail (RAM, backlight) its own
+/// ribbon; below it the rail stays folded into "other".
+const SINK_GATE_W: f32 = 4.0;
+/// Rail ticks averaged for the gate — enough smoothing that a single
+/// spike (or dip) can't flap a ribbon in and out between frames.
+const SINK_GATE_WINDOW: usize = 3;
 
-/// The DRAM rail earns its own ribbon only under sustained memory
-/// pressure: the recent power ticks must *average* over the gate, so a
-/// single spike (or dip) can't flap the ribbon in and out between frames.
-/// Returns the latest wattage to draw, `0.0` while RAM stays folded into
-/// "other". Non-finite samples (fuzzed rings) are ignored.
-fn ram_sink(recent: &[f32]) -> f32 {
+/// An auxiliary rail earns its own ribbon only under sustained draw: the
+/// recent ticks must *average* over the gate. Returns the latest wattage
+/// to draw, `0.0` while the rail stays folded into "other". Non-finite
+/// samples (absent SMC keys, fuzzed rings) are ignored.
+fn earned_sink(recent: &[f32]) -> f32 {
     let finite: Vec<f32> = recent.iter().copied().filter(|v| v.is_finite()).collect();
     let Some(&latest) = finite.last() else {
         return 0.0;
     };
     let mean = finite.iter().sum::<f32>() / finite.len() as f32;
-    if mean >= RAM_GATE_W {
+    if mean >= SINK_GATE_W {
         latest.max(0.0)
     } else {
         0.0
     }
 }
 
+/// Compact-flow column widths (no emoji — cell widths must be exact):
+/// the source column, the classic sink column (arrow + label + watts),
+/// and each extra sink column (gutter + label + watts). `FLOW_MID_MIN` is
+/// the narrowest the SYS node and its run may become before an extra sink
+/// column is worth taking.
+const FLOW_LEFT_W: u16 = 11;
+const FLOW_MID_MIN: u16 = 15;
+const SINK_COL0_W: u16 = 16;
+const SINK_COL_W: u16 = 14;
+/// Rows in the compact flow — also the sink grid's column height.
+const FLOW_ROWS: usize = 3;
+
+/// The compact flow's sink-grid plan at `width`, given `rails` earned
+/// rails (backlight, RAM) competing for space beyond the classic
+/// SoC · DISP · other column. Returns `(extra_columns, rails_named)`:
+/// rails past `rails_named` fold back into "other", so the drawn sinks
+/// sum to SYS at every width instead of a rail silently vanishing.
+fn sink_grid(width: u16, rails: usize) -> (usize, usize) {
+    let base = FLOW_LEFT_W + 1 + FLOW_MID_MIN + 1 + SINK_COL0_W + 1;
+    let cols = usize::from(width.saturating_sub(base) / SINK_COL_W).min(rails.div_ceil(FLOW_ROWS));
+    (cols, (cols * FLOW_ROWS).min(rails))
+}
+
 /// Three-row power flow, columns computed from the rect (no emoji — cell
 /// widths must be exact):
 /// ```text
-/// AC  140.0W ─┐               ┌─▶ SoC    26.9W
-///             ├─▶ SYS  63.0W ─┼─▶ DISP    1.2W
+/// AC  140.0W ─┐               ┌─▶ SoC    26.9W  BKLT    6.3W
+///             ├─▶ SYS  63.0W ─┼─▶ DISP    1.2W  RAM     4.5W
 /// BAT  +0.0W ─┘               └─▶ other  34.9W
 /// ```
+/// The sink side is a grid: the classic column always hangs off the
+/// bracket, and each further column the width affords names three more
+/// earned rails that would otherwise disappear into "other".
 fn flow(
     buf: &mut Buffer,
     area: Rect,
@@ -202,18 +236,27 @@ fn flow(
 
     let fw = flow_watts(app, b);
     let (sys, soc, disp) = (Watts(fw.sys), Watts(fw.soc), Watts(fw.disp));
-    // The three-row flow has no RAM row: fold a gated-in DRAM rail back
-    // into "other" so the totals stay honest.
-    let (other, adapter, batt) = (Watts(fw.other + fw.ram), Watts(fw.ac), Watts(fw.bat));
+    let (adapter, batt) = (Watts(fw.ac), Watts(fw.bat));
+    // Earned rails claim the extra sink columns in order; whatever the
+    // width can't name folds back into "other" so the totals stay honest.
+    let mut rails: Vec<(&str, f32)> = Vec::new();
+    if fw.bl > 0.05 {
+        rails.push(("BKLT", fw.bl));
+    }
+    if fw.ram > 0.05 {
+        rails.push(("RAM", fw.ram));
+    }
+    let (extra_cols, named) = sink_grid(area.width, rails.len());
+    let other = Watts(fw.other + rails[named..].iter().map(|r| r.1).sum::<f32>());
 
     let heat = |w: Watts, scale: f32| th.power.at((w.0 / scale).clamp(0.0, 1.0));
     let (y0, y1, y2) = (area.y, area.y + 1, area.y + 2);
 
-    // Column plan: [left 11][junction 1][middle …][junction 1][right 17]
-    let left_w: u16 = 11;
+    // Column plan: [left 11][junction 1][middle …][junction 1][sink grid]
+    let left_w = FLOW_LEFT_W;
     let junction_l = area.x + left_w; // '┐', '├', '┘'
-    let right_w: u16 = 17;
-    let junction_r = area.right().saturating_sub(right_w + 1); // '┌', '┼', '└'
+    let sinks_w = SINK_COL0_W + SINK_COL_W * extra_cols as u16;
+    let junction_r = area.right().saturating_sub(sinks_w + 2); // '┌', '┼', '└'
     let mid_x = junction_l + 1;
 
     // Left column: sources, right-aligned watts.
@@ -265,23 +308,30 @@ fn flow(
     buf.set_span(junction_r, y0, &Span::styled("┌", dim), 1);
     buf.set_span(junction_r, y1, &Span::styled("┼", dim), 1);
     buf.set_span(junction_r, y2, &Span::styled("└", dim), 1);
-    let mut consumer = |y: u16, label: &str, w: Watts, scale: f32| {
+    let mut sink = |x: u16, y: u16, head: String, head_w: u16, w: Watts, scale: f32| {
+        buf.set_span(x, y, &Span::styled(head, dim), head_w);
         buf.set_span(
-            junction_r + 1,
-            y,
-            &Span::styled(format!("─▶ {label:<6}"), dim),
-            10,
-        );
-        buf.set_span(
-            junction_r + 11,
+            x + head_w,
             y,
             &Span::styled(format!("{:>6}", w.to_string()), bold(heat(w, scale))),
             6,
         );
     };
-    consumer(y0, "SoC", soc, 45.0);
-    consumer(y1, "DISP", disp, 12.0);
-    consumer(y2, "other", other, 30.0);
+    // The classic column hangs off the bracket…
+    let col0 = junction_r + 1;
+    for (y, label, w, scale) in [
+        (y0, "SoC", soc, 45.0),
+        (y1, "DISP", disp, 12.0),
+        (y2, "other", other, 30.0),
+    ] {
+        sink(col0, y, format!("─▶ {label:<6}"), 10, w, scale);
+    }
+    // …and the earned rails continue the rows, filling column by column.
+    for (i, (label, w)) in rails[..named].iter().enumerate() {
+        let x = col0 + SINK_COL0_W + SINK_COL_W * (i / FLOW_ROWS) as u16;
+        let y = area.y + (i % FLOW_ROWS) as u16;
+        sink(x, y, format!("{label:<6}"), 8, Watts(*w), 12.0);
+    }
 }
 
 /// Blend `c` toward the theme background (ribbon fills stay dim; labels
@@ -353,6 +403,7 @@ fn sankey(
     let sinks = [
         ("SoC", w.soc, th.title),
         ("DISP", w.disp, th.cpu.at(0.55)),
+        ("BKLT", w.bl, th.power.at(0.45)),
         ("RAM", w.ram, th.mem.at(0.65)),
         ("other", w.other, th.net_tx),
         ("BAT", bat_sink, th.ok),
@@ -370,7 +421,9 @@ fn sankey(
     let per_watt = usable as f32 / src_total.max(sink_total).max(1.0);
     let t_src = ribbon_half_rows(&[srcs[0].1, srcs[1].1], per_watt);
     let t_sink = ribbon_half_rows(
-        &[sinks[0].1, sinks[1].1, sinks[2].1, sinks[3].1, sinks[4].1],
+        &[
+            sinks[0].1, sinks[1].1, sinks[2].1, sinks[3].1, sinks[4].1, sinks[5].1,
+        ],
         per_watt,
     );
 
@@ -388,7 +441,7 @@ fn sankey(
     // their ribbons leave the SYS node contiguously, top to bottom.
     let sys_h = t_sink.iter().sum::<usize>().min(h2);
     let sys_top = (h2 - sys_h) / 2;
-    let mut sink_top = [0usize; 5];
+    let mut sink_top = [0usize; 6];
     {
         let seg = h2 / n_sinks;
         let mut si = 0;
@@ -461,7 +514,7 @@ fn sankey(
         );
         off += t;
     }
-    let mut departs = [0usize; 5];
+    let mut departs = [0usize; 6];
     let mut off = sys_top;
     for (i, (_, _, ink)) in sinks.iter().enumerate() {
         let t = t_sink[i];
@@ -633,6 +686,26 @@ mod tests {
     }
 
     #[test]
+    fn sink_grid_spends_spare_width_on_earned_rails() {
+        // The classic column is all a narrow flow can hold: both rails
+        // fold back into "other" rather than being dropped silently.
+        assert_eq!(sink_grid(44, 2), (0, 0));
+        assert_eq!(sink_grid(58, 2), (0, 0), "one cell short of a column");
+        // One extra column names up to FLOW_ROWS rails.
+        assert_eq!(sink_grid(59, 2), (1, 2));
+        assert_eq!(sink_grid(59, 1), (1, 1));
+        assert_eq!(sink_grid(200, 2), (1, 2), "no empty columns past need");
+        // No rails means no extra columns, however wide the panel.
+        assert_eq!(sink_grid(300, 0), (0, 0));
+        // A fourth rail would need a second extra column, and only takes
+        // one when the width is actually there.
+        assert_eq!(sink_grid(72, 4), (1, 3));
+        assert_eq!(sink_grid(73, 4), (2, 4));
+        // Degenerate widths saturate instead of underflowing.
+        assert_eq!(sink_grid(0, 2), (0, 0));
+    }
+
+    #[test]
     fn sink_gap_spends_spacing_on_ink_when_short() {
         assert_eq!(sink_gap(16, 4), 2, "tall flow keeps the airy spacing");
         assert_eq!(sink_gap(10, 4), 1, "short flow buys ribbon ink instead");
@@ -643,21 +716,22 @@ mod tests {
 
     #[test]
     #[allow(clippy::float_cmp)] // gate outputs are exact pass-throughs
-    fn ram_sink_gates_on_the_smoothed_window() {
-        assert_eq!(ram_sink(&[]), 0.0);
-        assert_eq!(ram_sink(&[5.0]), 5.0, "a single hot sample gates in");
-        assert_eq!(ram_sink(&[1.0, 1.2, 0.9]), 0.0, "idle stays folded");
+    fn earned_sink_gates_on_the_smoothed_window() {
+        assert_eq!(earned_sink(&[]), 0.0);
+        assert_eq!(earned_sink(&[5.0]), 5.0, "a single hot sample gates in");
+        assert_eq!(earned_sink(&[1.0, 1.2, 0.9]), 0.0, "idle stays folded");
         // One spike can't flap the ribbon in…
-        assert_eq!(ram_sink(&[1.0, 1.0, 9.0]), 0.0);
+        assert_eq!(earned_sink(&[1.0, 1.0, 9.0]), 0.0);
         // …and one dip can't flap it out (the mean holds the gate open;
         // the latest value is what's drawn).
-        assert_eq!(ram_sink(&[6.0, 6.0, 3.0]), 3.0);
-        // Non-finite ring data is ignored, never propagated.
-        assert_eq!(ram_sink(&[f32::NAN, 5.0]), 5.0);
-        assert_eq!(ram_sink(&[f32::NAN]), 0.0);
-        assert_eq!(ram_sink(&[f32::INFINITY, 5.0]), 5.0);
+        assert_eq!(earned_sink(&[6.0, 6.0, 3.0]), 3.0);
+        // Non-finite ring data is ignored, never propagated — an absent
+        // SMC key (desktops) fills the ring with NaN and never gates in.
+        assert_eq!(earned_sink(&[f32::NAN, 5.0]), 5.0);
+        assert_eq!(earned_sink(&[f32::NAN]), 0.0);
+        assert_eq!(earned_sink(&[f32::INFINITY, 5.0]), 5.0);
         // Hostile negatives clamp instead of drawing an anti-ribbon.
-        assert_eq!(ram_sink(&[9.0, 9.0, -2.0]), 0.0);
+        assert_eq!(earned_sink(&[9.0, 9.0, -2.0]), 0.0);
     }
 
     #[test]
@@ -670,7 +744,7 @@ mod tests {
         // one, idle on the other.
         let mut hot = crate::testutil::app();
         let mut cold = crate::testutil::app();
-        for _ in 0..RAM_GATE_WINDOW {
+        for _ in 0..SINK_GATE_WINDOW {
             let mut p = crate::testutil::power_at(0);
             p.dram = Watts(6.0);
             hot.apply(Update::Power(Box::new(p)));
@@ -684,6 +758,38 @@ mod tests {
         // The carve-out comes exactly out of "other" — nothing double
         // counted, nothing lost (sys/soc/disp are identical between apps).
         assert!(((c.other - h.other) - 6.0).abs() < 1e-3);
+    }
+
+    #[test]
+    #[allow(clippy::float_cmp)] // an ungated rail is exactly 0.0
+    fn flow_watts_carves_backlight_out_of_other_when_gated() {
+        use crate::collect::sampler::SlowSnapshot;
+        use crate::collect::sampler::Update;
+
+        let b = crate::testutil::battery();
+        let mut hot = crate::testutil::app();
+        let mut cold = crate::testutil::app();
+        for i in 0..SINK_GATE_WINDOW {
+            let mut t = crate::testutil::temps_at(i);
+            t.backlight_power = Some(Watts(6.3));
+            hot.apply(Update::Slow(Box::new(SlowSnapshot {
+                temps: Some(t),
+                battery: None,
+            })));
+            let mut t = crate::testutil::temps_at(i);
+            t.backlight_power = None; // desktop: key absent, ring gets NaN
+            cold.apply(Update::Slow(Box::new(SlowSnapshot {
+                temps: Some(t),
+                battery: None,
+            })));
+        }
+        let (h, c) = (flow_watts(&hot, &b), flow_watts(&cold, &b));
+        assert_eq!(c.bl, 0.0, "an absent rail never earns a ribbon");
+        assert!((h.bl - 6.3).abs() < 1e-3);
+        assert!(
+            h.other < c.other,
+            "the carve-out comes out of other, not thin air"
+        );
     }
 
     #[test]

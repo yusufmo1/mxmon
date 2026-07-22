@@ -164,6 +164,9 @@ pub struct Histories {
     pub disk_wr: Ring,
     pub cpu_temp: Ring,
     pub gpu_temp: Ring,
+    /// SMC backlight rail (temps tier); NaN when the key is absent
+    /// (desktops) so the flow panel's sink gate can average total windows.
+    pub backlight_w: Ring,
 }
 
 impl Histories {
@@ -192,6 +195,7 @@ impl Histories {
             disk_wr: r(),
             cpu_temp: r(),
             gpu_temp: r(),
+            backlight_w: r(),
         }
     }
 }
@@ -410,6 +414,9 @@ impl App {
                 if let Some(t) = &s.temps {
                     self.hist.cpu_temp.push(t.cpu_avg.0);
                     self.hist.gpu_temp.push(t.gpu_avg.0);
+                    self.hist
+                        .backlight_w
+                        .push(t.backlight_power.map_or(f32::NAN, |w| w.0));
                     if let Some(w) = t.sys_power {
                         self.hist.sys_w.push(w.0);
                     }

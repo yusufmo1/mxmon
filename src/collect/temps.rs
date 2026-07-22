@@ -87,6 +87,10 @@ pub struct TempSample {
     /// SMC `PDTR`: watts actually delivered by the adapter right now
     /// (the registry's `AdapterDetails.Watts` is only the rated maximum).
     pub adapter_power: Option<Watts>,
+    /// SMC `PDBR`: display backlight rail — the panel LEDs, which dwarf
+    /// the SoC's display-engine channel at real brightness. Absent on
+    /// desktops (no backlight) and machines that drop the key.
+    pub backlight_power: Option<Watts>,
 }
 
 /// Classify an IOHID sensor by its product name; `None` = not a display
@@ -456,6 +460,7 @@ pub struct TempCollector {
     fans: Vec<FanKeys>,
     pstr: Option<KeyInfo>,
     pdtr: Option<KeyInfo>,
+    pdbr: Option<KeyInfo>,
     /// Last HID readings (die/PMU sensors). The HID sweep costs ~40 ms of
     /// IOKit IPC wall time vs ~10 ms for all of SMC, so it refreshes at a
     /// slower cadence and is merged from this cache in between.
@@ -476,6 +481,7 @@ impl TempCollector {
         let mut fans = Vec::new();
         let mut pstr = None;
         let mut pdtr = None;
+        let mut pdbr = None;
 
         if let Some(smc) = &smc {
             // Enumerating every SMC key costs ~500 ms of IOKit IPC on an
@@ -507,6 +513,7 @@ impl TempCollector {
             }
             pstr = smc.key_info("PSTR").ok();
             pdtr = smc.key_info("PDTR").ok();
+            pdbr = smc.key_info("PDBR").ok();
         }
 
         if hid.is_none() && smc.is_none() {
@@ -521,6 +528,7 @@ impl TempCollector {
             fans,
             pstr,
             pdtr,
+            pdbr,
             hid_cache: Vec::new(),
         })
     }
@@ -608,6 +616,10 @@ impl TempCollector {
             out.adapter_power = self
                 .pdtr
                 .and_then(|info| smc.read_f32("PDTR", info).ok())
+                .map(Watts);
+            out.backlight_power = self
+                .pdbr
+                .and_then(|info| smc.read_f32("PDBR", info).ok())
                 .map(Watts);
         }
 
