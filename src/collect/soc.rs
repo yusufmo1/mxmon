@@ -116,12 +116,15 @@ pub(crate) fn parse_acc_clusters(bytes: &[u8]) -> Option<(String, String)> {
     ))
 }
 
-/// Read the three DVFS tables from the `pmgr` registry entry. A machine with
-/// no such entry — virtualized macOS, where the whole IODeviceTree power
-/// domain is absent — yields empty tables instead of an error: the tables
-/// only map residency indices to MHz, so losing them costs the frequency
-/// readouts (`freq_from_residency` returns 0 MHz against an empty table),
-/// not the process. Everything else mxmon reads is still there.
+/// Read the three DVFS tables from the `pmgr` registry entry.
+///
+/// A missing entry stays fatal on purpose. It means the IODeviceTree power
+/// domain isn't published at all — virtualized macOS — and on such a host
+/// the private telemetry frameworks are absent too: the first IOReport call
+/// raises SIGTRAP from inside the framework, killing the process with no
+/// output. Failing here yields a legible error instead of that crash, and
+/// `render_fuzz::sampled_app` keys its fixture fallback on exactly this
+/// signal. Degrading to empty tables would only move the death later.
 fn dvfs_tables() -> io::Result<(Vec<Mhz>, Vec<Mhz>, Vec<Mhz>)> {
     for dev in services("AppleARMIODevice")? {
         if dev.name() != "pmgr" {
@@ -153,7 +156,7 @@ fn dvfs_tables() -> io::Result<(Vec<Mhz>, Vec<Mhz>, Vec<Mhz>)> {
         }
         return Ok((ecpu, pcpu, gpu));
     }
-    Ok((Vec::new(), Vec::new(), Vec::new()))
+    Err(io::Error::other("pmgr device not found"))
 }
 
 /// GPU core count from the AGXAccelerator registry entry (instant, unlike
