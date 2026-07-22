@@ -93,6 +93,25 @@ impl Ring {
     }
 }
 
+/// Ring sample meaning "no one was watching this tick" — the app was not
+/// running (see `history`), as opposed to a NaN, which means a sample was
+/// due and didn't arrive (a missed probe, a downed source).
+///
+/// Negative infinity is safe as the sentinel because every ring stores a
+/// display-space quantity that is bounded below in practice — percentages,
+/// watts, bytes/s, milliseconds, degrees — so no collector can produce it.
+/// It survives [`Agg::fold`] and reaches the renderer, where
+/// `widgets::slot_at` maps it to `Slot::Uncovered` and nothing is drawn.
+/// That is what lets a restored shutdown gap of *any* length stay honest at
+/// every graph width: unobserved time renders as absence, never as a floor
+/// reading, with no threshold to tune.
+pub const UNOBSERVED: f32 = f32::NEG_INFINITY;
+
+/// Whether a ring sample marks unobserved time (see [`UNOBSERVED`]).
+pub fn is_unobserved(v: f32) -> bool {
+    v.is_infinite() && v.is_sign_negative()
+}
+
 /// Per-bucket aggregation for [`Ring::buckets`], curated per metric by the
 /// panels — never configurable, always chosen by what the series means.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -110,8 +129,22 @@ pub enum Agg {
 
 impl Agg {
     /// Fold one bucket; NaN when no sample survives the finite filter.
-    fn fold(self, bucket: &[f32]) -> f32 {
-        if self == Self::Worst && bucket.iter().any(|v| !v.is_finite()) {
+    /// `pub(crate)` for the motion layer, which folds the live head with and
+    /// without its newest sample to ease between the two.
+    pub(crate) fn fold(self, bucket: &[f32]) -> f32 {
+        // A bucket nothing ever looked at stays unobserved, and survives the
+        // fold as such — otherwise it would collapse into the same NaN a
+        // missed sample produces, and the graph would draw time the app
+        // wasn't running as a gap in data it was watching.
+        if !bucket.is_empty() && bucket.iter().copied().all(is_unobserved) {
+            return UNOBSERVED;
+        }
+        // `Worst` means "a probe was due here and didn't land". Unobserved
+        // time had no probe due, so it must not poison the bucket — else a
+        // bucket straddling a shutdown boundary (part restored, part live)
+        // reports an outage that never happened, and every relaunch paints
+        // a fake miss into the strip.
+        if self == Self::Worst && bucket.iter().any(|v| !v.is_finite() && !is_unobserved(*v)) {
             return f32::NAN;
         }
         let finite = bucket.iter().copied().filter(|v| v.is_finite());
@@ -170,7 +203,7 @@ pub struct Histories {
 }
 
 impl Histories {
-    fn new(cores: usize) -> Self {
+    pub(crate) fn new(cores: usize) -> Self {
         let r = || Ring::new(HISTORY);
         Self {
             cpu_total: r(),
@@ -529,7 +562,7 @@ impl App {
 
 #[cfg(test)]
 mod tests {
-    use super::{Agg, App, Ring, SortKey};
+    use super::{Agg, App, Ring, SortKey, UNOBSERVED, is_unobserved};
     use crate::collect::sampler::{SlowSnapshot, Update};
     use crate::config::Config;
     use crate::testutil as tu;
@@ -645,6 +678,30 @@ mod tests {
         assert_eq!(worst[1].to_bits(), 6.0f32.to_bits());
         assert_eq!(r.buckets(2, 3, Agg::Max), vec![3.0, 6.0]);
         assert_eq!(r.buckets(2, 3, Agg::Mean), vec![2.0, 5.0]);
+
+        // Unobserved time is not a miss. A bucket straddling a shutdown
+        // boundary — part restored history, part live — reports the live
+        // samples, not an outage; otherwise every relaunch paints a fake
+        // red cell into the ping strip.
+        let edge = ring_of([UNOBSERVED, UNOBSERVED, 7.0]);
+        assert_eq!(
+            edge.buckets(1, 3, Agg::Worst)[0].to_bits(),
+            7.0f32.to_bits(),
+            "unobserved samples must not poison Worst"
+        );
+        // But a real miss beside unobserved time still reads as a miss.
+        let missed = ring_of([UNOBSERVED, f32::NAN, 7.0]);
+        assert!(missed.buckets(1, 3, Agg::Worst)[0].is_nan());
+        // Wholly unobserved folds to unobserved under every aggregator, so
+        // the renderer can tell "we weren't watching" from "we missed".
+        let away = ring_of([UNOBSERVED, UNOBSERVED, UNOBSERVED]);
+        for agg in [Agg::Max, Agg::Mean, Agg::Worst] {
+            assert!(
+                is_unobserved(away.buckets(1, 3, agg)[0]),
+                "{agg:?} must preserve unobserved time"
+            );
+        }
+
         // A bucket with no finite sample at all renders as a gap.
         let dead = ring_of([f32::NAN, f32::INFINITY, f32::NEG_INFINITY]);
         assert!(dead.buckets(1, 3, Agg::Max)[0].is_nan());

@@ -19,9 +19,66 @@ const H_EIGHTHS: [char; 9] = [' ', '▏', '▎', '▍', '▌', '▋', '▊', '�
 /// schematic layer's dotted fan rings.
 pub(crate) const BRAILLE: [[u16; 4]; 2] = [[0x01, 0x02, 0x04, 0x40], [0x08, 0x10, 0x20, 0x80]];
 
+/// What one slot of a right-aligned graph has to say.
+///
+/// Graphs draw newest-on-the-right across a fixed slot count, so a ring that
+/// hasn't filled its window yet leaves the leftmost columns *outside* the
+/// recorded range. That is a different fact from a column whose sample is
+/// missing or whose series is idle, and collapsing the two paints unobserved
+/// history as a floor reading — a fresh CPU graph claiming 0% for the last
+/// twenty minutes. The ping strip already keeps them apart (`panels::net`
+/// pads its history and gives the uncollected track its own color); every
+/// braille graph goes through this type to do the same.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) enum Slot {
+    /// A real, finite sample.
+    Value(f32),
+    /// Inside the recorded window with nothing to draw: a non-finite gap (a
+    /// missed probe, a downed source) or a genuinely idle series.
+    Gap,
+    /// Never observed, so nothing is drawn — either outside the recorded
+    /// window, or inside it but marked [`crate::app::UNOBSERVED`] (time the
+    /// app wasn't running, restored from `history`).
+    Uncovered,
+}
+
+impl Slot {
+    /// The finite sample, if there is one — the input [`graph_dots`] takes.
+    pub(crate) fn value(self) -> Option<f32> {
+        match self {
+            Self::Value(v) => Some(v),
+            Self::Gap | Self::Uncovered => None,
+        }
+    }
+
+    /// Whether the recorded window reaches this slot at all.
+    pub(crate) fn covered(self) -> bool {
+        !matches!(self, Self::Uncovered)
+    }
+}
+
+/// Classify `slot` of a `slots`-wide graph right-aligned over `data`
+/// (slot `k` ← `data[len - slots + k]`). Out of range in either direction is
+/// [`Slot::Uncovered`]: the window simply doesn't reach there.
+pub(crate) fn slot_at(data: &[f32], slots: usize, slot: usize) -> Slot {
+    let idx = data.len() as i64 - slots as i64 + slot as i64;
+    if idx < 0 {
+        return Slot::Uncovered;
+    }
+    match data.get(idx as usize) {
+        Some(&v) if v.is_finite() => Slot::Value(v),
+        // Unobserved time is an absence, not a gap: it must read the same as
+        // history the window never reached, however much of it there is.
+        Some(&v) if crate::app::is_unobserved(v) => Slot::Uncovered,
+        Some(_) => Slot::Gap,
+        None => Slot::Uncovered,
+    }
+}
+
 /// Filled area graph rendered in braille, newest data on the right, colored
-/// with a vertical gradient (btop-style). Idle or not-yet-filled columns
-/// keep a dotted baseline, and any nonzero value paints at least one dot.
+/// with a vertical gradient (btop-style). Idle and gapped columns keep a
+/// dotted baseline; columns the recorded window doesn't reach yet stay blank
+/// (see [`Slot`]). Any nonzero value paints at least one dot.
 pub struct BrailleGraph<'a> {
     pub data: &'a [f32],
     pub max: f32,
@@ -39,25 +96,20 @@ impl BrailleGraph<'_> {
         let height = area.height as usize;
         let slots = width * 2;
 
-        // Right-align: slot k ← data[len - slots + k].
-        let offset = self.data.len() as i64 - slots as i64;
-        let value_at = |slot: usize| -> Option<f32> {
-            let idx = offset + slot as i64;
-            (idx >= 0)
-                .then(|| self.data.get(idx as usize).copied())
-                .flatten()
-        };
-
         let dot_rows = (height * 4) as i64;
         for x in 0..width {
+            let cols: [Slot; 2] = [0, 1].map(|c| slot_at(self.data, slots, x * 2 + c));
             // Filled dot-height per sub-column.
-            let heights: [i64; 2] =
-                [0, 1].map(|c| graph_dots(value_at(x * 2 + c), self.max, dot_rows));
+            let heights: [i64; 2] = cols.map(|s| graph_dots(s.value(), self.max, dot_rows));
             if heights == [0, 0] {
-                // Dotted baseline instead of a void where the series is idle.
-                let cell = &mut buf[(area.x + x as u16, area.y + (height - 1) as u16)];
-                cell.set_char('⣀');
-                cell.set_fg(self.baseline);
+                // Idle or gapped *inside* the window keeps a dotted baseline
+                // instead of a void; a column the window doesn't reach draws
+                // nothing, so unobserved history can't read as a floor value.
+                if cols.iter().any(|s| s.covered()) {
+                    let cell = &mut buf[(area.x + x as u16, area.y + (height - 1) as u16)];
+                    cell.set_char('⣀');
+                    cell.set_fg(self.baseline);
+                }
                 continue;
             }
             for row in 0..height {
@@ -146,8 +198,8 @@ pub(crate) fn axis_window(
 /// *value* — absolute meaning (how hot, how full) survives the zoom. Dots
 /// OR-merge with braille already in the buffer, so several series overlay in
 /// one graph area: draw the dim series first and the bright one last (later
-/// fg wins shared cells). Columns with no finite sample keep the dotted
-/// baseline.
+/// fg wins shared cells). Idle and gapped columns keep the dotted baseline;
+/// columns before the series starts stay blank (see [`Slot`]).
 pub struct LineGraph<'a, F: Fn(f32) -> Color> {
     pub data: &'a [f32],
     pub lo: f32,
@@ -167,14 +219,6 @@ impl<F: Fn(f32) -> Color> LineGraph<'_, F> {
         let width = area.width as usize;
         let height = area.height as usize;
         let slots = width * 2;
-        let offset = self.data.len() as i64 - slots as i64;
-        let value_at = |slot: usize| -> Option<f32> {
-            let idx = offset + slot as i64;
-            (idx >= 0)
-                .then(|| self.data.get(idx as usize).copied())
-                .flatten()
-                .filter(|v| v.is_finite())
-        };
         let span = (self.hi - self.lo).max(f32::EPSILON);
         let top_dot = (height * 4 - 1) as f32;
         let dot_of =
@@ -183,8 +227,11 @@ impl<F: Fn(f32) -> Color> LineGraph<'_, F> {
         let mut prev: Option<i64> = None;
         for x in 0..width {
             let mut drew = false;
+            let mut covered = false;
             for (c, bits_col) in BRAILLE.iter().enumerate() {
-                let Some(v) = value_at(x * 2 + c) else {
+                let slot = slot_at(self.data, slots, x * 2 + c);
+                covered |= slot.covered();
+                let Some(v) = slot.value() else {
                     prev = None;
                     continue;
                 };
@@ -209,8 +256,9 @@ impl<F: Fn(f32) -> Color> LineGraph<'_, F> {
                     );
                 }
             }
-            if !drew {
-                // Dotted baseline instead of a void where the series is idle.
+            if !drew && covered {
+                // Dotted baseline instead of a void where the series is idle
+                // or gapped — but only inside the recorded window.
                 merge_dots(
                     buf,
                     area.x + x as u16,
@@ -245,7 +293,8 @@ fn merge_dots(buf: &mut Buffer, x: u16, y: u16, bits: u16, color: Color, own_fg:
 /// Mirrored two-series braille graph: `tx` grows up from a shared axis, `rx`
 /// hangs below it (Stats-style network history). Each side autoscales
 /// independently, any nonzero value paints at least one dot so light traffic
-/// never vanishes, and idle columns keep a dotted axis line.
+/// never vanishes, and idle columns keep a dotted axis line — columns the
+/// recorded window doesn't reach stay blank instead (see [`Slot`]).
 pub struct MirrorGraph<'a> {
     pub tx: &'a [f32],
     pub rx: &'a [f32],
@@ -277,31 +326,17 @@ impl MirrorGraph<'_> {
         let top_h = (area.height / 2) as usize; // upload rows; download gets the rest
         let bot_h = area.height as usize - top_h;
         let slots = width * 2;
-        // Right-align both series on the same slot grid.
-        let tx_off = self.tx.len() as i64 - slots as i64;
-        let rx_off = self.rx.len() as i64 - slots as i64;
-        let value = |data: &[f32], off: i64, slot: usize| -> Option<f32> {
-            let idx = off + slot as i64;
-            (idx >= 0)
-                .then(|| data.get(idx as usize).copied())
-                .flatten()
-        };
-
         for x in 0..width {
-            let tx_dots: [i64; 2] = [0, 1].map(|c| {
-                graph_dots(
-                    value(self.tx, tx_off, x * 2 + c),
-                    self.tx_max,
-                    (top_h * 4) as i64,
-                )
-            });
-            let rx_dots: [i64; 2] = [0, 1].map(|c| {
-                graph_dots(
-                    value(self.rx, rx_off, x * 2 + c),
-                    self.rx_max,
-                    (bot_h * 4) as i64,
-                )
-            });
+            // Both series right-align on the same slot grid, each classified
+            // against its own length.
+            let tx_cols: [Slot; 2] = [0, 1].map(|c| slot_at(self.tx, slots, x * 2 + c));
+            let rx_cols: [Slot; 2] = [0, 1].map(|c| slot_at(self.rx, slots, x * 2 + c));
+            let tx_dots: [i64; 2] =
+                tx_cols.map(|s| graph_dots(s.value(), self.tx_max, (top_h * 4) as i64));
+            let rx_dots: [i64; 2] =
+                rx_cols.map(|s| graph_dots(s.value(), self.rx_max, (bot_h * 4) as i64));
+            // The axis line belongs to the upload side that draws it.
+            let tx_covered = tx_cols.iter().any(|s| s.covered());
 
             // Upload: dots counted up from the axis (bottom of the top half).
             for row in 0..top_h {
@@ -317,8 +352,9 @@ impl MirrorGraph<'_> {
                 let mut color = self.up;
                 if bits == 0 {
                     // Keep a thin dotted axis where upload is idle, so the
-                    // graph reads as a chart instead of a void.
-                    if row + 1 == top_h && tx_dots == [0, 0] {
+                    // graph reads as a chart instead of a void — but not
+                    // before the series starts, where there is nothing to say.
+                    if row + 1 == top_h && tx_dots == [0, 0] && tx_covered {
                         bits = 0xC0; // both bottom dots of the cell
                         color = self.baseline;
                     } else {
@@ -621,15 +657,55 @@ mod tests {
         let buf = render(&[], &full);
         assert_eq!(buf[(0, 2)].symbol(), "⣿");
         assert_eq!(buf[(0, 0)].symbol(), " ", "upload half stays clear");
-        // Idle columns keep a dotted axis on the boundary row, in the
-        // baseline color — the graph never renders as a blank void.
-        let buf = render(&[], &[]);
+        // A recorded-but-idle column keeps a dotted axis on the boundary row,
+        // in the baseline color — the graph reads as a chart, not a void.
+        let buf = render(&[0.0; 8], &[0.0; 8]);
         assert_eq!(buf[(0, 1)].symbol(), "⣀");
         assert_eq!(buf[(0, 1)].fg, Color::Gray);
+        // A non-finite gap inside the window is still an observed column.
+        let buf = render(&[f32::NAN; 8], &[f32::NAN; 8]);
+        assert_eq!(buf[(0, 1)].symbol(), "⣀");
+        // Before the series starts there is nothing to say: no axis, no dots.
+        // "Not recorded yet" must never read as "idle at zero".
+        let buf = render(&[], &[]);
+        assert_eq!(buf[(0, 1)].symbol(), " ");
+        // Half a window: the axis starts where the data does.
+        let buf = render(&[0.0; 4], &[0.0; 4]);
+        assert_eq!(buf[(0, 1)].symbol(), " ", "left of the recorded window");
+        assert_eq!(buf[(3, 1)].symbol(), "⣀", "inside it");
         // A tiny download hangs its minimum dot pair just below the axis.
         let buf = render(&[], &[1.0; 8]);
         assert_eq!(buf[(0, 2)].symbol(), "⠉");
         assert_eq!(buf[(0, 2)].fg, Color::Green);
+    }
+
+    #[test]
+    fn slot_at_separates_uncovered_from_gap() {
+        use super::{Slot, slot_at};
+        // A window the data exactly fills: every slot is a real sample.
+        let data = [1.0, 2.0, 3.0, 4.0];
+        assert_eq!(slot_at(&data, 4, 0), Slot::Value(1.0));
+        assert_eq!(slot_at(&data, 4, 3), Slot::Value(4.0));
+        // A young ring right-aligns, so the leading slots were never
+        // observed — a different fact from a sample that is missing.
+        assert_eq!(slot_at(&data, 6, 0), Slot::Uncovered);
+        assert_eq!(slot_at(&data, 6, 1), Slot::Uncovered);
+        assert_eq!(slot_at(&data, 6, 2), Slot::Value(1.0));
+        assert_eq!(slot_at(&[], 4, 0), Slot::Uncovered);
+        // Non-finite samples inside the window are gaps, not absences.
+        let gappy = [f32::NAN, 1.0, f32::INFINITY];
+        assert_eq!(slot_at(&gappy, 3, 0), Slot::Gap);
+        assert_eq!(slot_at(&gappy, 3, 1), Slot::Value(1.0));
+        assert_eq!(slot_at(&gappy, 3, 2), Slot::Gap);
+        // Past the end is outside the window too.
+        assert_eq!(slot_at(&data, 2, 9), Slot::Uncovered);
+        // The two projections the widgets consume.
+        assert_eq!(Slot::Value(2.5).value(), Some(2.5));
+        assert_eq!(Slot::Gap.value(), None);
+        assert_eq!(Slot::Uncovered.value(), None);
+        assert!(Slot::Value(0.0).covered());
+        assert!(Slot::Gap.covered(), "a gap was observed, just not drawable");
+        assert!(!Slot::Uncovered.covered());
     }
 
     #[test]
@@ -646,10 +722,21 @@ mod tests {
             .render(area, &mut buf);
             buf
         };
-        // No data yet: a dotted baseline, not a void.
-        let buf = render(&[], 100.0);
+        // A recorded-but-idle column keeps its dotted baseline, not a void.
+        let buf = render(&[0.0; 8], 100.0);
         assert_eq!(buf[(0, 1)].symbol(), "⣀");
         assert_eq!(buf[(3, 1)].fg, Color::Gray);
+        // A non-finite gap inside the window reads the same way.
+        let buf = render(&[f32::NAN; 8], 100.0);
+        assert_eq!(buf[(0, 1)].symbol(), "⣀");
+        // Nothing recorded yet: blank, so an unfilled graph can't be read as
+        // a series pinned to the floor.
+        let buf = render(&[], 100.0);
+        assert_eq!(buf[(0, 1)].symbol(), " ");
+        // Half a window: blank left of the data, baseline inside it.
+        let buf = render(&[0.0; 4], 100.0);
+        assert_eq!(buf[(0, 1)].symbol(), " ");
+        assert_eq!(buf[(3, 1)].symbol(), "⣀");
         // A sliver of activity still lands one dot, in series color.
         let buf = render(&[0.2; 8], 100.0);
         assert_eq!(buf[(0, 1)].symbol(), "⣀");
@@ -745,8 +832,20 @@ mod tests {
         assert_ne!(buf[(1, 0)].symbol(), " ");
         assert_ne!(buf[(1, 1)].symbol(), " ");
 
-        // No data / all-NaN: dotted baseline, never a void — and the
-        // baseline must not repaint cells a line already occupies.
+        // An all-NaN window is recorded-but-gapped: dotted baseline, never a
+        // void — and the baseline must not repaint cells a line occupies.
+        let mut buf = Buffer::empty(area);
+        LineGraph {
+            data: &[f32::NAN; 8],
+            lo: 0.0,
+            hi: 1.0,
+            color: |_| Color::Red,
+            baseline: Color::Gray,
+        }
+        .render(area, &mut buf);
+        assert_eq!(buf[(0, 1)].symbol(), "⣀");
+        assert_eq!(buf[(0, 1)].fg, Color::Gray);
+        // Nothing recorded yet draws nothing at all.
         let mut buf = Buffer::empty(area);
         LineGraph {
             data: &[],
@@ -756,8 +855,7 @@ mod tests {
             baseline: Color::Gray,
         }
         .render(area, &mut buf);
-        assert_eq!(buf[(0, 1)].symbol(), "⣀");
-        assert_eq!(buf[(0, 1)].fg, Color::Gray);
+        assert_eq!(buf[(0, 1)].symbol(), " ");
         let mut buf = Buffer::empty(area);
         LineGraph {
             data: &[0.05; 8], // line lives in the bottom cell
@@ -949,6 +1047,26 @@ mod tests {
                     prop_assert!(u32::from(y) >= prev_end);
                     prev_end = u32::from(y) + u32::from(h);
                     prop_assert!(prev_end <= u32::from(height));
+                }
+            }
+
+            // slot_at does signed index math on lengths the callers derive
+            // from terminal geometry; it must be total, and it must only
+            // ever report Value for a finite sample actually in `data`.
+            #[test]
+            fn slot_at_is_total_and_honest(
+                data in proptest::collection::vec(proptest::num::f32::ANY, 0..64),
+                slots in 0usize..=256,
+                slot in 0usize..=256,
+            ) {
+                match crate::ui::widgets::slot_at(&data, slots, slot) {
+                    crate::ui::widgets::Slot::Value(v) => {
+                        prop_assert!(v.is_finite());
+                        prop_assert!(data.contains(&v));
+                    }
+                    // Anything not drawable is one of the two absences, and
+                    // neither may hand a value to the dot math.
+                    s => prop_assert!(s.value().is_none()),
                 }
             }
 

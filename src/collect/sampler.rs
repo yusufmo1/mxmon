@@ -67,11 +67,13 @@ pub struct Control {
 pub const FAST_MS_DEFAULT: u64 = 250;
 pub const FAST_MS_MIN: u64 = 100;
 pub const FAST_MS_MAX: u64 = 2000;
-const POWER_EVERY: u64 = 2; // × fast
-const TEMPS_EVERY: u64 = 2; // × fast — SMC sweep (cores, clusters, fans, power)
+// Power/temps multipliers are pub(crate): the motion layer derives each
+// tier's inter-sample interval from them for interpolation phases.
+pub(crate) const POWER_EVERY: u64 = 2; // × fast
+pub(crate) const TEMPS_EVERY: u64 = 2; // × fast — SMC sweep (cores, clusters, fans, power)
 const SLOW_EVERY: u64 = 4; // × fast — HID die-sensor refresh + battery registry
 const PROCS_EVERY: u64 = 8;
-const PING_EVERY: u64 = 4; // × fast — one 64-byte ICMP echo (1 s at defaults)
+pub(crate) const PING_EVERY: u64 = 4; // × fast — one 64-byte ICMP echo (1 s at defaults)
 const FLOWS_EVERY: u64 = 4; // × fast — one ntstat poll (1 s at defaults)
 // The procs thread wakes at the flows cadence and runs the process pass on
 // every Nth wake; that only divides evenly when:

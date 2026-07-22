@@ -5,6 +5,7 @@ mod collect;
 mod config;
 mod event;
 mod ffi;
+mod history;
 mod trace;
 mod ui;
 mod units;
@@ -293,6 +294,12 @@ fn run_tui(soc: collect::soc::SocInfo, config: Config) -> color_eyre::Result<()>
     trace::mark("terminal ready");
 
     let mut app = App::new(soc, config);
+    // Refill the graphs from the last run before the first paint, so a
+    // relaunch doesn't start from a blank window. Anything the file can't
+    // honestly account for is dropped inside `restore`.
+    let fast_ms = app.config.interval_ms;
+    history::restore(&mut app.hist, &app.soc, fast_ms, history::unix_now());
+    trace::mark("history restored");
     let mut hits = HitMap::default();
     let mut rs = RenderState::default();
 
@@ -304,6 +311,7 @@ fn run_tui(soc: collect::soc::SocInfo, config: Config) -> color_eyre::Result<()>
     let _ = execute!(std::io::stdout(), DisableMouseCapture);
     ratatui::restore();
     app.config.save();
+    history::save(&mut app.hist, &app.soc, history::unix_now());
     result
 }
 
