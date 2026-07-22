@@ -23,9 +23,11 @@ env:
   # said to tighten toward the observed number once known. This is that.
   COVERAGE_FLOOR: "78"
   # `make cov-gate` on a real Mac, where all of the above executes for real.
-  # Measured 2026-07-22: 92.73% lines. Raised 85 -> 90: the standard that
-  # governs the code we actually ship goes up, not down.
-  COVERAGE_FLOOR_ONDEVICE: "90"
+  # Measured 2026-07-22: 93.76% lines (was 92.73% before the settings card;
+  # its schema, keymap and renderer are pure logic and fully covered).
+  # Raised 90 -> 93: the standard that governs the code we actually ship
+  # goes up, not down.
+  COVERAGE_FLOOR_ONDEVICE: "93"
 
 jobs:
   check:
