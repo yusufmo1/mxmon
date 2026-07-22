@@ -1,5 +1,6 @@
 //! Custom drawing primitives: filled braille graphs with vertical gradients,
-//! eighth-block meters, single-cell core bars, and the mouse hit-map.
+//! zoomed-axis braille polylines, eighth-block meters, single-cell core bars,
+//! and the mouse hit-map.
 
 use ratatui::buffer::Buffer;
 use ratatui::layout::{Position, Rect};
@@ -80,6 +81,164 @@ impl BrailleGraph<'_> {
                 cell.set_fg(self.gradient.at(vertical));
             }
         }
+    }
+}
+
+/// Auto-ranged y-axis for a bounded-below series (temperature, memory): the
+/// visible window's `[min, max]` snapped outward to whole `step`s, widened to
+/// at least `min_span` (downward first — headroom above stays honest), and
+/// kept inside `clamp`. `None` when the window holds no finite sample.
+/// Snapping to steps is what keeps the axis calm: bounds only move when the
+/// data actually crosses a step boundary, so the graph doesn't rescale every
+/// tick.
+pub(crate) fn axis_window(
+    values: &[f32],
+    step: f32,
+    min_span: f32,
+    clamp: (f32, f32),
+) -> Option<(f32, f32)> {
+    let step = step.max(f32::EPSILON);
+    let (floor, ceil) = clamp;
+    let mut min = f32::INFINITY;
+    let mut max = f32::NEG_INFINITY;
+    for v in values.iter().copied().filter(|v| v.is_finite()) {
+        min = min.min(v);
+        max = max.max(v);
+    }
+    if min > max {
+        return None;
+    }
+    let mut lo = ((min.clamp(floor, ceil) / step).floor() * step).max(floor);
+    let mut hi = ((max.clamp(floor, ceil) / step).ceil() * step).min(ceil);
+    // Widen to the minimum span one whole step at a time, alternating sides
+    // and pinning at the clamp. The iteration cap keeps this total under
+    // hostile step/min_span combinations (ring data is not hostile; fuzz
+    // inputs are).
+    let eps = step * 1e-3;
+    let mut grow_down = true;
+    for _ in 0..64 {
+        if hi - lo >= min_span - eps {
+            break;
+        }
+        let down_ok = lo - step >= floor - eps;
+        let up_ok = hi + step <= ceil + eps;
+        match (down_ok, up_ok) {
+            (true, true) => {
+                if grow_down {
+                    lo -= step;
+                } else {
+                    hi += step;
+                }
+                grow_down = !grow_down;
+            }
+            (true, false) => lo -= step,
+            (false, true) => hi += step,
+            (false, false) => break,
+        }
+    }
+    let (lo, hi) = (lo.max(floor), hi.min(ceil));
+    (hi > lo).then_some((lo, hi))
+}
+
+/// Braille polyline over an explicit `[lo, hi]` value window (the zoomed axis
+/// from [`axis_window`]), newest data on the right like [`BrailleGraph`]. One
+/// dot per sub-column with vertical runs joining neighbors, colored per
+/// *value* — absolute meaning (how hot, how full) survives the zoom. Dots
+/// OR-merge with braille already in the buffer, so several series overlay in
+/// one graph area: draw the dim series first and the bright one last (later
+/// fg wins shared cells). Columns with no finite sample keep the dotted
+/// baseline.
+pub struct LineGraph<'a, F: Fn(f32) -> Color> {
+    pub data: &'a [f32],
+    pub lo: f32,
+    pub hi: f32,
+    /// Color for a given data value.
+    pub color: F,
+    /// Dim color for the dotted baseline through empty columns.
+    pub baseline: Color,
+}
+
+impl<F: Fn(f32) -> Color> LineGraph<'_, F> {
+    pub fn render(&self, area: Rect, buf: &mut Buffer) {
+        let area = area.intersection(buf.area);
+        if area.width == 0 || area.height == 0 {
+            return;
+        }
+        let width = area.width as usize;
+        let height = area.height as usize;
+        let slots = width * 2;
+        let offset = self.data.len() as i64 - slots as i64;
+        let value_at = |slot: usize| -> Option<f32> {
+            let idx = offset + slot as i64;
+            (idx >= 0)
+                .then(|| self.data.get(idx as usize).copied())
+                .flatten()
+                .filter(|v| v.is_finite())
+        };
+        let span = (self.hi - self.lo).max(f32::EPSILON);
+        let top_dot = (height * 4 - 1) as f32;
+        let dot_of =
+            |v: f32| -> i64 { (((v - self.lo) / span).clamp(0.0, 1.0) * top_dot).round() as i64 };
+
+        let mut prev: Option<i64> = None;
+        for x in 0..width {
+            let mut drew = false;
+            for (c, bits_col) in BRAILLE.iter().enumerate() {
+                let Some(v) = value_at(x * 2 + c) else {
+                    prev = None;
+                    continue;
+                };
+                drew = true;
+                let dot = dot_of(v);
+                let (run_lo, run_hi) = match prev {
+                    Some(p) => (dot.min(p), dot.max(p)),
+                    None => (dot, dot),
+                };
+                prev = Some(dot);
+                let color = (self.color)(v);
+                for d in run_lo..=run_hi {
+                    let row = height - 1 - (d / 4) as usize;
+                    let bit = bits_col[(3 - (d % 4)) as usize];
+                    merge_dots(
+                        buf,
+                        area.x + x as u16,
+                        area.y + row as u16,
+                        bit,
+                        color,
+                        true,
+                    );
+                }
+            }
+            if !drew {
+                // Dotted baseline instead of a void where the series is idle.
+                merge_dots(
+                    buf,
+                    area.x + x as u16,
+                    area.y + (height - 1) as u16,
+                    0xC0, // both bottom dots: '⣀'
+                    self.baseline,
+                    false,
+                );
+            }
+        }
+    }
+}
+
+/// OR a braille dot-pattern into a cell: existing braille in the cell is kept
+/// (series overlay), anything else is overwritten. `own_fg` takes the cell's
+/// color; the baseline passes `false` so it never dims a line already drawn
+/// through the cell.
+fn merge_dots(buf: &mut Buffer, x: u16, y: u16, bits: u16, color: Color, own_fg: bool) {
+    let cell = &mut buf[(x, y)];
+    let mut chars = cell.symbol().chars();
+    let existing = match (chars.next(), chars.next()) {
+        (Some(ch), None) if ('\u{2800}'..='\u{28FF}').contains(&ch) => (ch as u32 - 0x2800) as u16,
+        _ => 0,
+    };
+    let merged = existing | bits;
+    cell.set_char(char::from_u32(0x2800 + u32::from(merged)).unwrap_or('⠀'));
+    if own_fg || existing == 0 {
+        cell.set_fg(color);
     }
 }
 
@@ -240,6 +399,23 @@ pub fn fill_bg(area: Rect, buf: &mut Buffer, bg: Color) {
     }
 }
 
+/// Which metric card a [`Target::Panel`] refers to. Every card is a
+/// navigation surface: clicking it jumps to the view where that metric
+/// continues (the hover hint names the destination).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PanelKind {
+    Cpu,
+    Gpu,
+    Mem,
+    Net,
+    Disk,
+    Power,
+    Temps,
+    Battery,
+    /// The inline chassis heat map on the overview.
+    HeatMap,
+}
+
 /// Everything the mouse can interact with, rebuilt each frame.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Target {
@@ -259,6 +435,8 @@ pub enum Target {
     SensorList,
     /// Connections table body (scrollable in the connections view).
     FlowList,
+    /// One connection row (click opens the owning process's details).
+    FlowRow(usize),
     /// Kill-modal signal row.
     KillSignal(usize),
     /// Sort-menu row.
@@ -267,8 +445,24 @@ pub enum Target {
     Settings,
     /// Settings-modal row (click cycles the value forward).
     SettingRow(usize),
+    /// Settings-modal `‹` arrow (steps the row's value back).
+    SettingDec(usize),
+    /// Settings-modal `›` arrow (steps the row's value forward).
+    SettingInc(usize),
     /// Anywhere on a modal (consumes the click).
     ModalBody,
+    /// The `✕` in a modal's top border.
+    ModalClose,
+    /// Kill button inside the details modal (carries the shown pid).
+    KillPid(i32),
+    /// A whole metric card — click navigates to its deep-dive view.
+    Panel(PanelKind),
+    /// Header `◉ mxmon cpu` chip — click toggles the perf HUD.
+    Hud,
+    /// Footer HUD chip — click opens settings at sampling; wheel tunes it.
+    Tick,
+    /// Footer toast — click dismisses it early.
+    Toast,
 }
 
 #[derive(Default)]
@@ -376,6 +570,136 @@ mod tests {
         assert_eq!(buf[(0, 0)].symbol(), "⣿");
     }
 
+    use super::{LineGraph, axis_window};
+
+    #[test]
+    fn axis_window_hugs_and_snaps() {
+        // A 71..79° band on 5° steps hugs the data: (70, 80).
+        assert_eq!(
+            axis_window(&[71.0, 74.5, 79.0], 5.0, 10.0, (0.0, 110.0)),
+            Some((70.0, 80.0))
+        );
+        // Flat data still gets the minimum span, extended downward first.
+        assert_eq!(
+            axis_window(&[79.2; 8], 5.0, 10.0, (0.0, 110.0)),
+            Some((70.0, 80.0))
+        );
+        // Non-finite samples are ignored; a window with none is None.
+        assert_eq!(
+            axis_window(&[f32::NAN, 42.0, f32::INFINITY], 5.0, 10.0, (0.0, 110.0)),
+            Some((35.0, 45.0))
+        );
+        assert_eq!(axis_window(&[f32::NAN], 5.0, 10.0, (0.0, 110.0)), None);
+        assert_eq!(axis_window(&[], 5.0, 10.0, (0.0, 110.0)), None);
+        // Absurd values clamp into range instead of exploding the axis.
+        assert_eq!(
+            axis_window(&[1e30], 5.0, 10.0, (0.0, 110.0)),
+            Some((100.0, 110.0))
+        );
+
+        // Ratio-scale windows pin at the clamp and widen the other way.
+        let close = |got: Option<(f32, f32)>, want: (f32, f32)| {
+            let (lo, hi) = got.expect("window");
+            assert!(
+                (lo - want.0).abs() < 1e-4 && (hi - want.1).abs() < 1e-4,
+                "got ({lo}, {hi}), want {want:?}"
+            );
+        };
+        close(
+            axis_window(&[0.97, 1.0], 0.05, 0.10, (0.0, 1.0)),
+            (0.90, 1.0),
+        );
+        close(axis_window(&[0.01], 0.05, 0.10, (0.0, 1.0)), (0.0, 0.10));
+    }
+
+    #[test]
+    fn line_graph_zoomed_line_gaps_and_overlay_merge() {
+        let area = Rect::new(0, 0, 4, 2); // 8 sub-columns × 8 dot-rows
+        let mut buf = Buffer::empty(area);
+        // A flat mid-window value sits mid-panel (top cell's bottom dots),
+        // not on the floor — the whole point of the zoomed axis.
+        LineGraph {
+            data: &[4.0; 8],
+            lo: 0.0,
+            hi: 8.0,
+            color: |_| Color::Red,
+            baseline: Color::Gray,
+        }
+        .render(area, &mut buf);
+        assert_eq!(buf[(0, 0)].symbol(), "⣀");
+        assert_eq!(buf[(0, 0)].fg, Color::Red);
+        assert_eq!(buf[(0, 1)].symbol(), " ", "below the line stays empty");
+
+        // A second series through the same cells ORs its dots in and, drawn
+        // later, owns the shared cell's color.
+        LineGraph {
+            data: &[5.7; 8],
+            lo: 0.0,
+            hi: 8.0,
+            color: |_| Color::Blue,
+            baseline: Color::Gray,
+        }
+        .render(area, &mut buf);
+        assert_eq!(buf[(0, 0)].symbol(), "⣤", "both series' dots survive");
+        assert_eq!(buf[(0, 0)].fg, Color::Blue, "later series wins the cell");
+
+        // A steep move draws a connecting vertical run, not a gap.
+        let mut buf = Buffer::empty(area);
+        LineGraph {
+            data: &[0.0, 0.0, 8.0, 8.0, 8.0, 8.0, 8.0, 8.0],
+            lo: 0.0,
+            hi: 8.0,
+            color: |_| Color::Red,
+            baseline: Color::Gray,
+        }
+        .render(area, &mut buf);
+        assert_ne!(buf[(1, 0)].symbol(), " ");
+        assert_ne!(buf[(1, 1)].symbol(), " ");
+
+        // No data / all-NaN: dotted baseline, never a void — and the
+        // baseline must not repaint cells a line already occupies.
+        let mut buf = Buffer::empty(area);
+        LineGraph {
+            data: &[],
+            lo: 0.0,
+            hi: 1.0,
+            color: |_| Color::Red,
+            baseline: Color::Gray,
+        }
+        .render(area, &mut buf);
+        assert_eq!(buf[(0, 1)].symbol(), "⣀");
+        assert_eq!(buf[(0, 1)].fg, Color::Gray);
+        let mut buf = Buffer::empty(area);
+        LineGraph {
+            data: &[0.05; 8], // line lives in the bottom cell
+            lo: 0.0,
+            hi: 1.0,
+            color: |_| Color::Red,
+            baseline: Color::Gray,
+        }
+        .render(area, &mut buf);
+        LineGraph {
+            data: &[f32::NAN; 8],
+            lo: 0.0,
+            hi: 1.0,
+            color: |_| Color::Blue,
+            baseline: Color::Gray,
+        }
+        .render(area, &mut buf);
+        assert_eq!(buf[(0, 1)].fg, Color::Red, "baseline never dims a line");
+
+        // Total under a hostile rect: area beyond the buffer clips, no panic.
+        let mut buf = Buffer::empty(area);
+        LineGraph {
+            data: &[4.0; 64],
+            lo: 0.0,
+            hi: 8.0,
+            color: |_| Color::Red,
+            baseline: Color::Gray,
+        }
+        .render(Rect::new(2, 0, 40, 9), &mut buf);
+    }
+
     use super::{HitMap, Meter, Target, core_bar, fill_bg};
 
     #[test]
@@ -448,7 +772,7 @@ mod tests {
     }
 
     mod prop {
-        use super::super::graph_dots;
+        use super::super::{axis_window, graph_dots};
         use proptest::prelude::*;
 
         proptest! {
@@ -462,6 +786,22 @@ mod tests {
             ) {
                 let d = graph_dots(Some(v), max, budget);
                 prop_assert!((0..=budget).contains(&d));
+            }
+
+            // Any float soup (ring data, fuzzed step/span) must yield either
+            // no window or an ordered one inside the clamp — LineGraph
+            // divides by (hi - lo), so hi > lo is load-bearing.
+            #[test]
+            fn axis_window_is_total_and_ordered(
+                values in proptest::collection::vec(proptest::num::f32::ANY, 0..64),
+                step in proptest::num::f32::ANY,
+                min_span in proptest::num::f32::ANY,
+            ) {
+                if let Some((lo, hi)) = axis_window(&values, step, min_span, (0.0, 110.0)) {
+                    prop_assert!(lo < hi);
+                    prop_assert!((0.0..=110.0).contains(&lo));
+                    prop_assert!((0.0..=110.0).contains(&hi));
+                }
             }
         }
     }

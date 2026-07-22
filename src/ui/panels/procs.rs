@@ -14,7 +14,7 @@ use crate::collect::procs::ProcState;
 use crate::ui::theme::Theme;
 use crate::ui::widgets::{HitMap, Target};
 
-use super::{chrome, format_duration, line};
+use super::{chrome_with, format_duration, line};
 
 /// Fixed column widths (name flexes).
 const W_PID: u16 = 7;
@@ -63,17 +63,23 @@ pub fn render(
     hits: &mut HitMap,
     cap: u16,
 ) {
-    let title = format!(
-        "PROCESSES {} · {} running · {} thr",
-        app.procs.total, app.procs.running, app.procs.threads
-    );
-    let inner = chrome(buf, area, &title, th);
+    let dim = Style::default().fg(th.dim);
+    let bold = |c| Style::default().fg(c).add_modifier(Modifier::BOLD);
+    let headline = vec![
+        Span::styled(app.procs.total.to_string(), bold(th.text)),
+        Span::styled(" · ", dim),
+        Span::styled(app.procs.running.to_string(), bold(th.ok)),
+        Span::styled(" running · ", dim),
+        Span::styled(app.procs.threads.to_string(), bold(th.text)),
+        Span::styled(" thr", dim),
+    ];
+    let inner = chrome_with(buf, area, "PROCESSES", headline, th);
     if inner.height < 2 {
         return;
     }
-    let dim = Style::default().fg(th.dim);
 
     // Filter line (only when active or non-empty), spanning every pane.
+    // Clicking it re-enters editing, same as `/`.
     let mut top = 0u16;
     if app.filter_editing || !app.filter.is_empty() {
         let cursor = if app.filter_editing { "▏" } else { "" };
@@ -93,6 +99,9 @@ pub fn render(
                 ),
             ],
         );
+        if inner.height > 0 {
+            hits.push(Rect::new(inner.x, inner.y, inner.width, 1), Target::Filter);
+        }
         top = 1;
     }
 
@@ -251,8 +260,15 @@ fn draw_pane(buf: &mut Buffer, hits: &mut HitMap, rect: Rect, p: &Pane) {
         let r = &app.procs.rows[row_i];
         let y = rect.y + 1 + (vis_i - p.first) as u16;
         let selected = vis_i == app.selected;
+        let hovered = app.hover == Some(Target::ProcRow(vis_i));
 
-        let row_bg = if selected { th.selection_bg } else { th.bg };
+        let row_bg = if selected {
+            th.selection_bg
+        } else if hovered {
+            th.panel_bg
+        } else {
+            th.bg
+        };
         for cx in rect.left()..rect.right() {
             buf[(cx, y)].set_style(Style::default().bg(row_bg));
         }

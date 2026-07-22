@@ -12,16 +12,13 @@ use crate::ui::theme::Theme;
 use crate::ui::widgets::Meter;
 use crate::units::Watts;
 
-use super::{chrome, line, line_right};
+use super::{chrome, chrome_with, line, line_right};
 
 pub fn render(buf: &mut Buffer, area: Rect, app: &App, th: &Theme) {
-    let inner = chrome(buf, area, "BATTERY · FLOW", th);
-    if inner.height == 0 {
-        return;
-    }
     let dim = Style::default().fg(th.dim);
     let bold = |c| Style::default().fg(c).add_modifier(Modifier::BOLD);
     let Some(b) = &app.battery else {
+        let inner = chrome(buf, area, "BATTERY · FLOW", th);
         line(
             buf,
             inner,
@@ -31,7 +28,7 @@ pub fn render(buf: &mut Buffer, area: Rect, app: &App, th: &Theme) {
         return;
     };
 
-    // Row 0: charge meter + %.
+    // Headline: charge percent, promoted into the title bar.
     let pct = b.charge.as_percent();
     let charge_color = if pct < 20.0 {
         th.crit
@@ -40,6 +37,13 @@ pub fn render(buf: &mut Buffer, area: Rect, app: &App, th: &Theme) {
     } else {
         th.ok
     };
+    let headline = vec![Span::styled(format!("{pct:3.0}%"), bold(charge_color))];
+    let inner = chrome_with(buf, area, "BATTERY · FLOW", headline, th);
+    if inner.height == 0 {
+        return;
+    }
+
+    // Row 0: charge meter + state chip.
     let state = if b.charging {
         ("⚡ charging", th.ok)
     } else if b.fully_charged {
@@ -49,19 +53,13 @@ pub fn render(buf: &mut Buffer, area: Rect, app: &App, th: &Theme) {
     } else {
         ("▽ battery", th.warn)
     };
-    line(
-        buf,
-        inner,
-        0,
-        vec![Span::styled(format!("{pct:3.0}%"), bold(charge_color))],
-    );
-    let meter_w = inner.width.saturating_sub(18).max(4);
+    let meter_w = inner.width.saturating_sub(14).max(4);
     Meter {
         ratio: b.charge.0,
         gradient: crate::ui::theme::Gradient::Solid(charge_color),
         track: th.border,
     }
-    .render(Rect::new(inner.x + 5, inner.y, meter_w, 1), buf);
+    .render(Rect::new(inner.x, inner.y, meter_w, 1), buf);
     line_right(buf, inner, 0, vec![Span::styled(state.0, bold(state.1))]);
 
     // Row 1: stats.

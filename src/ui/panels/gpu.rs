@@ -9,24 +9,27 @@ use crate::app::App;
 use crate::ui::theme::Theme;
 use crate::ui::widgets::{BrailleGraph, Meter};
 
-use super::{chrome, line, line_right};
+use super::{chrome_with, line, line_right};
 
 pub fn render(buf: &mut Buffer, area: Rect, app: &App, th: &Theme) {
-    let inner = chrome(buf, area, "GPU", th);
-    if inner.height == 0 {
-        return;
-    }
     let dim = Style::default().fg(th.dim);
     let bold = |c| Style::default().fg(c).add_modifier(Modifier::BOLD);
 
     let device = app.fast.gpu.as_ref().map_or(0.0, |g| g.device.0);
-    let mut spans = vec![Span::styled(
+    // Headline: device utilization, promoted into the title bar.
+    let headline = vec![Span::styled(
         format!("{:5.1}%", device * 100.0),
         bold(th.gpu.at(device)),
     )];
+    let inner = chrome_with(buf, area, "GPU", headline, th);
+    if inner.height == 0 {
+        return;
+    }
+
+    let mut spans = Vec::new();
     if let Some(p) = &app.power {
         spans.push(Span::styled(
-            format!("  @ {:>7}", p.gpu_freq),
+            format!("@ {:>7}", p.gpu_freq),
             Style::default().fg(th.accent),
         ));
         spans.push(Span::styled(
@@ -35,7 +38,7 @@ pub fn render(buf: &mut Buffer, area: Rect, app: &App, th: &Theme) {
         ));
     }
     line(buf, inner, 0, spans);
-    // The left text is a fixed 24 cells (pct 6 + freq 11 + watts 7); the
+    // The left text is a fixed 18 cells (freq 9 + watts 7 + gaps); the
     // right temp needs 5 more or it overwrites the wattage.
     if inner.width >= 30
         && let Some(t) = &app.temps

@@ -11,7 +11,7 @@ use crate::ui::widgets::{HitMap, Target, fill_bg};
 
 use super::{format_duration, line, line_right};
 
-pub fn header(buf: &mut Buffer, area: Rect, app: &App, th: &Theme) {
+pub fn header(buf: &mut Buffer, area: Rect, app: &App, th: &Theme, hits: &mut HitMap) {
     fill_bg(area, buf, th.panel_bg);
     let bold = |c| Style::default().fg(c).add_modifier(Modifier::BOLD);
     let dim = Style::default().fg(th.dim);
@@ -22,22 +22,42 @@ pub fn header(buf: &mut Buffer, area: Rect, app: &App, th: &Theme) {
     let medium = area.width >= 100;
 
     // mxmon's own CPU footprint, right next to the name — the whole point of a
-    // sudoless monitor is that it's nearly free, so show it.
+    // sudoless monitor is that it's nearly free, so show it. The chip doubles
+    // as the perf-HUD toggle (same as `d`), and underlines under the pointer.
+    let hud_hover = app.hover == Some(Target::Hud);
+    let hover_line = |s: Style| {
+        if hud_hover {
+            s.add_modifier(Modifier::UNDERLINED)
+        } else {
+            s
+        }
+    };
     let self_pct = app.fast.self_cpu * 100.0;
     let mut spans = vec![
         Span::styled(" ◉ ", bold(th.accent)),
-        Span::styled("mxmon ", bold(th.title)),
-        Span::styled("cpu ", dim),
+        Span::styled("mxmon ", hover_line(bold(th.title))),
+        Span::styled("cpu ", hover_line(dim)),
         Span::styled(
             format!("{self_pct:>4.1}% "),
-            Style::default().fg(th.severity(app.fast.self_cpu)),
+            hover_line(Style::default().fg(th.severity(app.fast.self_cpu))),
         ),
         Span::styled("│ ", dim),
         Span::styled(soc.chip_name.clone(), bold(th.text)),
     ];
+    let hud_w: u16 = spans[..4]
+        .iter()
+        .map(|s| s.content.chars().count() as u16)
+        .sum();
+    hits.push(
+        Rect::new(area.x, area.y, hud_w.min(area.width), 1),
+        Target::Hud,
+    );
     if medium {
         spans.push(Span::styled(
-            format!("  {}E+{}P", soc.ecpu_count, soc.pcpu_count),
+            format!(
+                "  {}{}+{}{}",
+                soc.ecpu_count, soc.tier_low, soc.pcpu_count, soc.tier_high
+            ),
             Style::default().fg(th.accent),
         ));
         if let Some(g) = soc.gpu_core_count {
@@ -98,11 +118,14 @@ pub fn footer(buf: &mut Buffer, area: Rect, app: &App, th: &Theme, hits: &mut Hi
     let mut x = area.x + 1;
     for (view, label) in tabs {
         let active = app.view == view;
+        let hovered = app.hover == Some(Target::Tab(view));
         let style = if active {
             Style::default()
                 .fg(th.bg)
                 .bg(th.accent)
                 .add_modifier(Modifier::BOLD)
+        } else if hovered {
+            Style::default().fg(th.accent).add_modifier(Modifier::BOLD)
         } else {
             Style::default().fg(th.text)
         };
@@ -114,46 +137,71 @@ pub fn footer(buf: &mut Buffer, area: Rect, app: &App, th: &Theme, hits: &mut Hi
     }
 
     // Right side first (so buttons know where they must stop): toast beats
-    // hints, badges beat everything.
-    let mut right: Vec<Span> = Vec::new();
+    // hints, badges beat everything. Each chip is rendered by hand right to
+    // left of the edge so it can register its own click target: the toast
+    // dismisses, PAUSED resumes, and the HUD chip deep-links to the
+    // sampling setting (wheel over it retunes the interval directly).
+    let mut right: Vec<(Span, Option<Target>)> = Vec::new();
     if let Some(toast) = &app.toast {
         let color = if toast.error { th.crit } else { th.ok };
-        right.push(Span::styled(
-            format!("{} ", toast.text),
-            Style::default().fg(color).add_modifier(Modifier::BOLD),
+        right.push((
+            Span::styled(
+                format!("{} ", toast.text),
+                Style::default().fg(color).add_modifier(Modifier::BOLD),
+            ),
+            Some(Target::Toast),
         ));
     }
     if app.paused {
-        right.push(Span::styled(
-            " PAUSED ",
-            Style::default().fg(th.bg).bg(th.warn),
+        right.push((
+            Span::styled(" PAUSED ", Style::default().fg(th.bg).bg(th.warn)),
+            Some(Target::Pause),
         ));
-        right.push(Span::raw(" "));
+        right.push((Span::raw(" "), None));
     }
     if app.show_hud {
-        right.push(Span::styled(
-            format!(
-                "frame {:>4}µs · {:>5} fps-e · {}ms tick ",
-                app.last_frame_us,
-                if app.last_frame_us > 0 {
-                    1_000_000 / app.last_frame_us.max(1)
-                } else {
-                    0
-                },
-                app.config.interval_ms,
+        let tick_style = if app.hover == Some(Target::Tick) {
+            Style::default().fg(th.accent)
+        } else {
+            dim
+        };
+        right.push((
+            Span::styled(
+                format!(
+                    "frame {:>4}µs · {:>5} fps-e · {}ms tick ",
+                    app.last_frame_us,
+                    if app.last_frame_us > 0 {
+                        1_000_000 / app.last_frame_us.max(1)
+                    } else {
+                        0
+                    },
+                    app.config.interval_ms,
+                ),
+                tick_style,
             ),
-            dim,
+            Some(Target::Tick),
         ));
     }
     if right.is_empty() && app.procs.restricted && area.width >= 140 {
-        right.push(Span::styled(
-            "sudo for all procs ",
-            Style::default().fg(th.dim),
+        right.push((
+            Span::styled("sudo for all procs ", Style::default().fg(th.dim)),
+            None,
         ));
     }
-    let right_w: u16 = right.iter().map(|s| s.content.chars().count() as u16).sum();
+    let right_w: u16 = right
+        .iter()
+        .map(|(s, _)| s.content.chars().count() as u16)
+        .sum();
     let x_limit = area.right().saturating_sub(right_w + 1);
-    line_right(buf, area, 0, right);
+    let mut rx = area.x + area.width.saturating_sub(right_w);
+    for (span, target) in right {
+        let w = span.content.chars().count() as u16;
+        buf.set_span(rx, area.y, &span, w);
+        if let Some(t) = target {
+            hits.push(Rect::new(rx, area.y, w, 1), t);
+        }
+        rx += w;
+    }
 
     let buttons: [(&str, &str, Target); 7] = [
         ("?", "help", Target::Help),
@@ -175,10 +223,15 @@ pub fn footer(buf: &mut Buffer, area: Rect, app: &App, th: &Theme, hits: &mut Hi
         if x + w >= x_limit {
             break; // out of room — keys still work, buttons just hide
         }
+        let label_style = if app.hover == Some(target) {
+            Style::default().fg(th.accent).add_modifier(Modifier::BOLD)
+        } else {
+            dim
+        };
         let start = x;
         buf.set_span(x, area.y, &Span::styled(k.to_owned(), key), 2);
         x += 1;
-        buf.set_span(x, area.y, &Span::styled(text, dim), w - 1);
+        buf.set_span(x, area.y, &Span::styled(text, label_style), w - 1);
         x += w - 1;
         hits.push(Rect::new(start, area.y, w, 1), target);
     }

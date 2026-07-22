@@ -222,6 +222,10 @@ pub struct App {
     pub paused: bool,
     pub show_hud: bool,
     pub toast: Option<Toast>,
+    /// Interactive element currently under the mouse (drives hover
+    /// affordances). Updated only when the pointer crosses a target
+    /// boundary, so idle motion never costs a redraw.
+    pub hover: Option<crate::ui::widgets::Target>,
 
     /// Sorted + filtered view of `procs.rows` (indices into it).
     pub visible_rows: Vec<usize>,
@@ -258,6 +262,7 @@ impl App {
             paused: false,
             show_hud: false,
             toast: None,
+            hover: None,
             visible_rows: Vec::new(),
             last_frame_us: 0,
             frames: 0,

@@ -76,6 +76,15 @@ fn json_snapshot_honors_the_source_contract() {
         !obj["soc"]["chip"].as_str().unwrap_or_default().is_empty(),
         "chip identity must always resolve"
     );
+    // Tier letters are machine facts too: single uppercase letters (E/P on
+    // two-tier chips, P/S on M5 Pro/Max).
+    for tier in ["tier_low", "tier_high"] {
+        let v = obj["soc"][tier].as_str().unwrap_or_default();
+        assert!(
+            v.len() == 1 && v.chars().all(|c| c.is_ascii_uppercase()),
+            "{tier} must be one uppercase letter, got {v:?}"
+        );
+    }
     assert!(obj["uptime_secs"].as_u64().unwrap_or(0) > 0);
     // Ping was disabled — it must be absent-as-null, not fabricated.
     assert!(obj["ping"].is_null());

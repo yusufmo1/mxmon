@@ -9,7 +9,7 @@ use crate::app::{App, KILL_SIGNALS, Modal, SORT_KEYS, SortKey, View};
 use crate::collect::procs;
 use crate::collect::sampler::{Control, FAST_MS_MAX, FAST_MS_MIN};
 use crate::ui::layout::RenderState;
-use crate::ui::widgets::{HitMap, Target};
+use crate::ui::widgets::{HitMap, PanelKind, Target};
 
 /// What the caller should do after handling an event.
 #[derive(PartialEq, Eq)]
@@ -247,19 +247,10 @@ fn handle_mouse(
 ) -> Outcome {
     match mouse.kind {
         MouseEventKind::Down(MouseButton::Left) => {
-            let target = hits.hit(mouse.column, mouse.row);
-            // Click outside any modal closes it.
-            if app.modal.is_some()
-                && !matches!(
-                    target,
-                    Some(
-                        Target::ModalBody
-                            | Target::KillSignal(_)
-                            | Target::SortOption(_)
-                            | Target::SettingRow(_)
-                    )
-                )
-            {
+            let target = hover_target(app, hits.hit(mouse.column, mouse.row));
+            app.hover = target;
+            // Click outside any modal closes it (modal-layer targets pass).
+            if app.modal.is_some() && !target.is_some_and(modal_target) {
                 app.modal = None;
                 return Outcome::Continue;
             }
@@ -299,6 +290,14 @@ fn handle_mouse(
                     app.modal = Some(Modal::Settings { selected: i });
                     settings_step(app, control, i, 1);
                 }
+                Some(Target::SettingDec(i)) => {
+                    app.modal = Some(Modal::Settings { selected: i });
+                    settings_step(app, control, i, -1);
+                }
+                Some(Target::SettingInc(i)) => {
+                    app.modal = Some(Modal::Settings { selected: i });
+                    settings_step(app, control, i, 1);
+                }
                 Some(Target::Quit) => return Outcome::Quit,
                 Some(Target::KillSignal(i)) => {
                     if let Some(Modal::Kill { pid, .. }) = app.modal.clone() {
@@ -309,27 +308,180 @@ fn handle_mouse(
                     apply_sort(app, SORT_KEYS[i]);
                     app.modal = None;
                 }
+                Some(Target::ModalClose) => app.modal = None,
+                Some(Target::KillPid(pid)) => open_kill(app, pid),
+                Some(Target::Panel(kind)) => open_panel(app, kind),
+                Some(Target::Hud) => app.show_hud = !app.show_hud,
+                Some(Target::Tick) => {
+                    app.modal = Some(Modal::Settings {
+                        selected: SETTINGS_SAMPLING_ROW,
+                    });
+                }
+                Some(Target::Toast) => app.toast = None,
+                Some(Target::FlowRow(i)) => open_flow(app, i),
                 _ => {}
             }
         }
-        MouseEventKind::ScrollDown => scroll(app, rs, hits, mouse, 3),
-        MouseEventKind::ScrollUp => scroll(app, rs, hits, mouse, -3),
-        // Motion, drags, and button releases mutate nothing above — no redraw.
+        MouseEventKind::ScrollDown => return scroll(app, control, rs, hits, mouse, 3),
+        MouseEventKind::ScrollUp => return scroll(app, control, rs, hits, mouse, -3),
+        MouseEventKind::Moved => {
+            // Hover tracking: repaint only when the pointer crosses a target
+            // boundary. Motion inside one target — or across dead space —
+            // stays Idle, so any-motion capture keeps costing nothing.
+            let hover = hover_target(app, hits.hit(mouse.column, mouse.row));
+            if hover == app.hover {
+                return Outcome::Idle;
+            }
+            app.hover = hover;
+        }
+        // Drags and button releases mutate nothing above — no redraw.
         _ => return Outcome::Idle,
     }
     Outcome::Continue
 }
 
-fn scroll(app: &mut App, rs: &mut RenderState, hits: &HitMap, mouse: MouseEvent, delta: i64) {
-    match hits.hit(mouse.column, mouse.row) {
+/// Targets that belong to the modal layer: clicking them while a modal is
+/// open must reach the target instead of counting as "outside, close it".
+fn modal_target(t: Target) -> bool {
+    matches!(
+        t,
+        Target::ModalBody
+            | Target::ModalClose
+            | Target::KillSignal(_)
+            | Target::SortOption(_)
+            | Target::SettingRow(_)
+            | Target::SettingDec(_)
+            | Target::SettingInc(_)
+            | Target::KillPid(_)
+    )
+}
+
+/// The effective hover/click target: while a modal is open, elements on the
+/// dimmed layer beneath it must not glow (or act) through the overlay.
+fn hover_target(app: &App, raw: Option<Target>) -> Option<Target> {
+    match raw {
+        Some(t) if app.modal.is_some() && !modal_target(t) => None,
+        t => t,
+    }
+}
+
+fn scroll(
+    app: &mut App,
+    control: &Control,
+    rs: &mut RenderState,
+    hits: &HitMap,
+    mouse: MouseEvent,
+    delta: i64,
+) -> Outcome {
+    match hover_target(app, hits.hit(mouse.column, mouse.row)) {
         Some(Target::SensorList) => {
             rs.sensor_scroll = rs.sensor_scroll.saturating_add_signed(delta as isize);
         }
-        Some(Target::FlowList) => {
+        Some(Target::FlowList | Target::FlowRow(_)) => {
             rs.flows_scroll = rs.flows_scroll.saturating_add_signed(delta as isize);
         }
-        Some(Target::ProcList | Target::ProcRow(_)) => app.move_selection(delta),
+        Some(Target::ProcList | Target::ProcRow(_) | Target::ProcHeader(_)) => {
+            app.move_selection(delta);
+        }
+        // The footer theme chip: wheel cycles in both directions.
+        Some(Target::ThemeCycle) => cycle_theme(app, if delta > 0 { 1 } else { -1 }),
+        // The footer tick chip: wheel-up samples faster, wheel-down slower.
+        Some(Target::Tick) => adjust_speed(app, control, if delta > 0 { 50 } else { -50 }),
+        // Inside modals the wheel moves the cursor — it never edits values,
+        // so an overshooting scroll can't silently rewrite the config.
+        Some(
+            Target::ModalBody
+            | Target::KillSignal(_)
+            | Target::SortOption(_)
+            | Target::SettingRow(_)
+            | Target::SettingDec(_)
+            | Target::SettingInc(_),
+        ) => modal_cursor(app, if delta > 0 { 1 } else { -1 }),
+        // Dead space: nothing changed, skip the repaint.
+        _ => return Outcome::Idle,
+    }
+    Outcome::Continue
+}
+
+/// Move the open modal's cursor by `dir`, clamped to its list.
+fn modal_cursor(app: &mut App, dir: i64) {
+    let step = |sel: usize, len: usize| (sel as i64 + dir).clamp(0, len as i64 - 1) as usize;
+    match app.modal.clone() {
+        Some(Modal::Kill {
+            pid,
+            name,
+            selected,
+        }) => {
+            app.modal = Some(Modal::Kill {
+                pid,
+                name,
+                selected: step(selected, KILL_SIGNALS.len()),
+            });
+        }
+        Some(Modal::SortMenu { selected }) => {
+            app.modal = Some(Modal::SortMenu {
+                selected: step(selected, SORT_KEYS.len()),
+            });
+        }
+        Some(Modal::Settings { selected }) => {
+            app.modal = Some(Modal::Settings {
+                selected: step(selected, SETTINGS_ROWS),
+            });
+        }
         _ => {}
+    }
+}
+
+/// A metric card was clicked: jump to the view where that metric deepens
+/// (the hover hint on the card names this destination).
+fn open_panel(app: &mut App, kind: PanelKind) {
+    match kind {
+        PanelKind::Cpu => jump_sorted(app, SortKey::Cpu),
+        PanelKind::Mem => jump_sorted(app, SortKey::Memory),
+        PanelKind::Power => jump_sorted(app, SortKey::Power),
+        PanelKind::Disk => app.view = View::Processes,
+        PanelKind::Net => app.view = View::Connections,
+        PanelKind::Gpu | PanelKind::Temps | PanelKind::Battery | PanelKind::HeatMap => {
+            app.view = View::Thermal;
+        }
+    }
+}
+
+/// Navigate to the process table sorted by `key` — absolute, unlike
+/// [`apply_sort`]: re-clicking a card must not flip the direction.
+fn jump_sorted(app: &mut App, key: SortKey) {
+    app.view = View::Processes;
+    if app.sort != key || !app.sort_desc {
+        app.sort = key;
+        app.sort_desc = true; // the card keys are all value columns
+        app.refresh_visible();
+    }
+}
+
+/// Click on a connection row: open the owning process's details when the
+/// table can see that pid, otherwise say why nothing happened.
+fn open_flow(app: &mut App, idx: usize) {
+    let Some(flow) = app.flows.flows.get(idx) else {
+        return;
+    };
+    if app.procs.rows.iter().any(|r| r.pid == flow.pid) {
+        app.modal = Some(Modal::Details { pid: flow.pid });
+    } else {
+        app.toast(
+            format!("{}:{} isn't in the process table", flow.pname, flow.pid),
+            false,
+        );
+    }
+}
+
+/// The details-modal kill button: open the signal picker for the shown pid.
+fn open_kill(app: &mut App, pid: i32) {
+    if let Some(r) = app.procs.rows.iter().find(|r| r.pid == pid) {
+        app.modal = Some(Modal::Kill {
+            pid,
+            name: r.name.clone(),
+            selected: 0,
+        });
     }
 }
 
@@ -347,6 +499,8 @@ fn cycle_theme(app: &mut App, dir: i64) {
 
 /// Rows of the settings modal, top to bottom (must match the overlay).
 pub const SETTINGS_ROWS: usize = 6;
+/// The sampling-interval row — the footer tick chip deep-links to it.
+pub const SETTINGS_SAMPLING_ROW: usize = 4;
 
 /// Step a settings row's value forward (`dir` 1) or back (`-1`); every
 /// change applies live and persists immediately.
@@ -422,13 +576,13 @@ mod tests {
     };
     use ratatui::layout::Rect;
 
-    use super::{Outcome, SETTINGS_ROWS, handle};
+    use super::{Outcome, SETTINGS_ROWS, SETTINGS_SAMPLING_ROW, handle};
     use crate::app::{App, KILL_SIGNALS, Modal, SORT_KEYS, SortKey, View};
     use crate::collect::sampler::{Control, FAST_MS_MAX, FAST_MS_MIN, Update};
     use crate::config;
     use crate::testutil as tu;
     use crate::ui::layout::RenderState;
-    use crate::ui::widgets::{HitMap, Target};
+    use crate::ui::widgets::{HitMap, PanelKind, Target};
 
     /// One-keystroke harness: fixture app, isolated config dir (so the
     /// save-on-change paths can never touch the real `~/.config/mxmon`),
@@ -862,15 +1016,259 @@ mod tests {
     }
 
     #[test]
-    fn motion_is_idle_and_resize_repaints() {
+    fn hover_repaints_only_on_target_boundaries() {
         let mut h = h();
-        let motion = Event::Mouse(MouseEvent {
-            kind: MouseEventKind::Moved,
-            column: 3,
-            row: 3,
+        h.hits.push(Rect::new(0, 0, 10, 1), Target::Pause);
+        // Dead-space motion with nothing hovered: no state, no repaint.
+        assert!(h.ev(&tu::moved(30, 30)) == Outcome::Idle);
+        assert_eq!(h.app.hover, None);
+        // Entering a target repaints once; motion inside it stays free.
+        assert!(h.ev(&tu::moved(1, 0)) == Outcome::Continue);
+        assert_eq!(h.app.hover, Some(Target::Pause));
+        assert!(h.ev(&tu::moved(8, 0)) == Outcome::Idle, "same target");
+        // Leaving clears the glow with one repaint; resize still repaints.
+        assert!(h.ev(&tu::moved(30, 30)) == Outcome::Continue);
+        assert_eq!(h.app.hover, None);
+        assert!(h.ev(&Event::Resize(80, 24)) == Outcome::Continue);
+        // Drags and releases stay inert.
+        let drag = Event::Mouse(MouseEvent {
+            kind: MouseEventKind::Drag(ratatui::crossterm::event::MouseButton::Left),
+            column: 1,
+            row: 0,
             modifiers: KeyModifiers::NONE,
         });
-        assert!(h.ev(&motion) == Outcome::Idle, "hover must not redraw");
-        assert!(h.ev(&Event::Resize(80, 24)) == Outcome::Continue);
+        assert!(h.ev(&drag) == Outcome::Idle);
+    }
+
+    #[test]
+    fn hover_masks_the_dimmed_layer_under_modals() {
+        let mut h = h();
+        h.hits
+            .push(Rect::new(0, 0, 10, 1), Target::Tab(View::Thermal));
+        h.hits.push(Rect::new(0, 5, 10, 1), Target::SortOption(2));
+        h.app.modal = Some(Modal::SortMenu { selected: 0 });
+        // Base-layer targets must not glow through the overlay…
+        assert!(h.ev(&tu::moved(1, 0)) == Outcome::Idle);
+        assert_eq!(h.app.hover, None);
+        // …while modal-layer elements hover normally.
+        assert!(h.ev(&tu::moved(1, 5)) == Outcome::Continue);
+        assert_eq!(h.app.hover, Some(Target::SortOption(2)));
+    }
+
+    #[test]
+    fn panel_cards_navigate_to_their_deep_views() {
+        let mut h = h();
+        let card = Rect::new(0, 0, 10, 5);
+        for (kind, view) in [
+            (PanelKind::Net, View::Connections),
+            (PanelKind::Gpu, View::Thermal),
+            (PanelKind::Temps, View::Thermal),
+            (PanelKind::Battery, View::Thermal),
+            (PanelKind::HeatMap, View::Thermal),
+        ] {
+            h.hits.clear();
+            h.hits.push(card, Target::Panel(kind));
+            h.app.view = View::Overview;
+            h.click(1, 1);
+            assert_eq!(h.app.view, view, "{kind:?}");
+        }
+        // The disk card jumps to the table but respects the active sort.
+        h.hits.clear();
+        h.hits.push(card, Target::Panel(PanelKind::Disk));
+        h.app.view = View::Overview;
+        h.app.sort = SortKey::Name;
+        h.app.sort_desc = false;
+        h.click(1, 1);
+        assert_eq!(h.app.view, View::Processes);
+        assert_eq!((h.app.sort, h.app.sort_desc), (SortKey::Name, false));
+        // Value cards land sorted by their own column — absolute, so a
+        // re-click never flips the direction like a header click would.
+        for (kind, key) in [
+            (PanelKind::Cpu, SortKey::Cpu),
+            (PanelKind::Mem, SortKey::Memory),
+            (PanelKind::Power, SortKey::Power),
+        ] {
+            h.hits.clear();
+            h.hits.push(card, Target::Panel(kind));
+            h.app.view = View::Overview;
+            h.click(1, 1);
+            assert_eq!((h.app.view, h.app.sort), (View::Processes, key));
+            assert!(h.app.sort_desc);
+            h.click(1, 1);
+            assert!(h.app.sort_desc, "re-click must not flip direction");
+        }
+    }
+
+    #[test]
+    fn header_and_footer_chips_click() {
+        let mut h = h();
+        h.hits.push(Rect::new(0, 0, 10, 1), Target::Hud);
+        h.hits.push(Rect::new(0, 2, 10, 1), Target::Toast);
+        h.hits.push(Rect::new(0, 4, 10, 1), Target::Tick);
+        h.click(1, 0);
+        assert!(h.app.show_hud);
+        h.click(1, 0);
+        assert!(!h.app.show_hud);
+        h.app.toast("hello", false);
+        h.click(1, 2);
+        assert!(h.app.toast.is_none(), "toast dismissed early");
+        h.click(1, 4);
+        assert_eq!(
+            h.app.modal,
+            Some(Modal::Settings {
+                selected: SETTINGS_SAMPLING_ROW
+            }),
+            "tick chip deep-links to the sampling row"
+        );
+    }
+
+    #[test]
+    fn modal_close_button_closes_every_modal() {
+        let mut h = h();
+        h.hits.push(Rect::new(5, 5, 20, 10), Target::ModalBody);
+        h.hits.push(Rect::new(22, 5, 3, 1), Target::ModalClose);
+        for modal in [
+            Modal::Help,
+            Modal::SortMenu { selected: 1 },
+            Modal::Settings { selected: 2 },
+        ] {
+            h.app.modal = Some(modal);
+            h.click(23, 5);
+            assert_eq!(h.app.modal, None);
+        }
+    }
+
+    #[test]
+    fn settings_arrows_step_both_ways_and_select_their_row() {
+        let mut h = h();
+        h.app.modal = Some(Modal::Settings { selected: 3 });
+        h.hits.push(Rect::new(0, 0, 3, 1), Target::SettingDec(0));
+        h.hits.push(Rect::new(10, 0, 3, 1), Target::SettingInc(0));
+        assert_eq!(h.app.config.procs_panes, 1);
+        h.click(11, 0); // ›
+        assert_eq!(h.app.modal, Some(Modal::Settings { selected: 0 }));
+        assert_eq!(h.app.config.procs_panes, 2);
+        h.click(1, 0); // ‹
+        h.click(1, 0); // ‹ again wraps below 1
+        assert_eq!(h.app.config.procs_panes, 4);
+    }
+
+    #[test]
+    fn wheel_cycles_theme_and_tunes_tick_chip() {
+        let mut h = h();
+        h.hits.push(Rect::new(0, 0, 6, 1), Target::ThemeCycle);
+        h.hits.push(Rect::new(0, 2, 6, 1), Target::Tick);
+        let start = h.app.config.theme.clone();
+        h.ev(&tu::scroll(1, 0, true));
+        assert_ne!(h.app.config.theme, start);
+        h.ev(&tu::scroll(1, 0, false));
+        assert_eq!(h.app.config.theme, start, "wheel-up cycles back");
+        let ms = h.app.config.interval_ms;
+        h.ev(&tu::scroll(1, 2, true)); // wheel-down: slower
+        assert_eq!(h.app.config.interval_ms, ms + 50);
+        h.ev(&tu::scroll(1, 2, false)); // wheel-up: faster
+        assert_eq!(h.app.config.interval_ms, ms);
+    }
+
+    #[test]
+    fn wheel_moves_modal_cursors_and_never_edits_values() {
+        let mut h = h();
+        h.hits.push(Rect::new(0, 0, 20, 10), Target::ModalBody);
+        h.hits.push(Rect::new(0, 3, 20, 1), Target::SettingRow(2));
+        h.app.modal = Some(Modal::Settings { selected: 0 });
+        let theme = h.app.config.theme.clone();
+        let panes = h.app.config.procs_panes;
+        h.ev(&tu::scroll(1, 1, true));
+        assert_eq!(h.app.modal, Some(Modal::Settings { selected: 1 }));
+        // Over a value row the wheel still only moves the cursor — an
+        // overshooting scroll must never silently rewrite the config.
+        h.ev(&tu::scroll(1, 3, true));
+        assert_eq!(h.app.modal, Some(Modal::Settings { selected: 2 }));
+        assert_eq!(
+            (h.app.config.procs_panes, h.app.config.theme.clone()),
+            (panes, theme)
+        );
+        for _ in 0..20 {
+            h.ev(&tu::scroll(1, 1, true));
+        }
+        assert_eq!(
+            h.app.modal,
+            Some(Modal::Settings {
+                selected: SETTINGS_ROWS - 1
+            }),
+            "cursor clamps at the bottom"
+        );
+        h.ev(&tu::scroll(1, 1, false));
+        assert_eq!(
+            h.app.modal,
+            Some(Modal::Settings {
+                selected: SETTINGS_ROWS - 2
+            })
+        );
+        // The other pickers scroll the same way.
+        h.app.modal = Some(Modal::SortMenu { selected: 0 });
+        h.ev(&tu::scroll(1, 1, true));
+        assert_eq!(h.app.modal, Some(Modal::SortMenu { selected: 1 }));
+        h.app.modal = Some(Modal::Kill {
+            pid: 1,
+            name: "x".into(),
+            selected: 0,
+        });
+        h.ev(&tu::scroll(1, 1, true));
+        assert!(matches!(h.app.modal, Some(Modal::Kill { selected: 1, .. })));
+    }
+
+    #[test]
+    fn flow_row_click_opens_details_or_explains() {
+        let mut h = h();
+        // Flow 0 is Safari (pid 251), present in the process fixture.
+        h.hits.push(Rect::new(0, 0, 20, 1), Target::FlowRow(0));
+        h.click(1, 0);
+        assert_eq!(h.app.modal, Some(Modal::Details { pid: 251 }));
+        h.app.modal = None;
+        // A flow whose pid the table can't see explains itself in a toast.
+        let ghost = h
+            .app
+            .flows
+            .flows
+            .iter()
+            .position(|f| !h.app.procs.rows.iter().any(|r| r.pid == f.pid))
+            .expect("fixture has a flow without a table row");
+        h.hits.clear();
+        h.hits.push(Rect::new(0, 0, 20, 1), Target::FlowRow(ghost));
+        h.click(1, 0);
+        assert_eq!(h.app.modal, None);
+        assert!(h.app.toast.is_some());
+        // Stale indices (list shrank between frames) are inert, not a panic.
+        h.hits.clear();
+        h.hits.push(Rect::new(0, 0, 20, 1), Target::FlowRow(9_999));
+        assert!(h.click(1, 0) == Outcome::Continue);
+    }
+
+    #[test]
+    fn details_kill_button_opens_the_picker_for_that_pid() {
+        let mut h = h();
+        let pid = h.app.procs.rows[3].pid;
+        h.app.modal = Some(Modal::Details { pid });
+        h.hits.push(Rect::new(0, 0, 14, 1), Target::KillPid(pid));
+        h.click(1, 0);
+        match h.app.modal.clone() {
+            Some(Modal::Kill {
+                pid: p,
+                name,
+                selected,
+            }) => {
+                assert_eq!((p, selected), (pid, 0));
+                assert_eq!(name, h.app.procs.rows[3].name);
+            }
+            other => panic!("kill modal expected, got {other:?}"),
+        }
+        // A pid that vanished from the table is inert (the button only
+        // renders for rows that exist, but clicks race data refreshes).
+        h.app.modal = Some(Modal::Details { pid: -1 });
+        h.hits.clear();
+        h.hits.push(Rect::new(0, 0, 14, 1), Target::KillPid(-1));
+        h.click(1, 0);
+        assert_eq!(h.app.modal, Some(Modal::Details { pid: -1 }));
     }
 }

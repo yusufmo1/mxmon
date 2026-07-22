@@ -29,7 +29,7 @@ use crate::collect::soc;
 use crate::config::Config;
 use crate::ui::layout::{self, RenderState};
 use crate::ui::theme::{self, Theme};
-use crate::ui::widgets::HitMap;
+use crate::ui::widgets::{HitMap, PanelKind, Target};
 
 /// Build a realistic `App` by running the real sampler for a few seconds and
 /// folding its updates in — identical to the production data flow.
@@ -170,6 +170,22 @@ fn sweep(
         ("details", Some(Modal::Details { pid: i32::MIN })),
     ];
 
+    // Hover states rotate with the combo counter: every glow/affordance
+    // render path (card borders, nav tags, arrow underlines, row tints, the
+    // modal ✕) gets the full size sweep without multiplying the matrix.
+    // Stale indices are deliberate — hover always races data refreshes.
+    const HOVERS: [Option<Target>; 9] = [
+        None,
+        Some(Target::Panel(PanelKind::Cpu)),
+        Some(Target::Panel(PanelKind::HeatMap)),
+        Some(Target::ProcRow(usize::MAX)),
+        Some(Target::FlowRow(usize::MAX)),
+        Some(Target::SettingInc(2)),
+        Some(Target::SettingDec(usize::MAX)),
+        Some(Target::ModalClose),
+        Some(Target::KillPid(i32::MIN)),
+    ];
+
     let mut combos = 0;
     for &view in &views {
         for (mlabel, modal) in &modals {
@@ -188,6 +204,8 @@ fn sweep(
                         } else {
                             String::new()
                         };
+                        let hover = HOVERS[combos % HOVERS.len()];
+                        app.hover = hover;
 
                         let mut hits = HitMap::default();
                         let mut rs = RenderState::default();
@@ -205,7 +223,7 @@ fn sweep(
                                 .take()
                                 .unwrap_or_else(|| "<no panic info>".into());
                             failures.push(format!(
-                                "{loc}    [state={state} view={view:?} modal={mlabel} sel={selected} edit={editing} size={w}x{h}]"
+                                "{loc}    [state={state} view={view:?} modal={mlabel} sel={selected} edit={editing} hover={hover:?} size={w}x{h}]"
                             ));
                         }
                     }
