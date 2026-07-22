@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::collect::soc::SocInfo;
 use crate::ffi::hid::HidTemps;
+use crate::ffi::notify::ThermalPressure;
 use crate::ffi::smc::{KeyInfo, Smc};
 use crate::units::{Celsius, Watts};
 
@@ -91,6 +92,10 @@ pub struct TempSample {
     /// the SoC's display-engine channel at real brightness. Absent on
     /// desktops (no backlight) and machines that drop the key.
     pub backlight_power: Option<Watts>,
+    /// The kernel's own verdict on whether the machine is thermally
+    /// constrained. Degrees alone cannot say this — the throttle point is not
+    /// a fixed temperature.
+    pub pressure: Option<crate::ffi::notify::Pressure>,
 }
 
 /// Classify an IOHID sensor by its product name; `None` = not a display
@@ -465,6 +470,8 @@ pub struct TempCollector {
     /// IOKit IPC wall time vs ~10 ms for all of SMC, so it refreshes at a
     /// slower cadence and is merged from this cache in between.
     hid_cache: Vec<Sensor>,
+    /// Registered once; each read is a ~12 µs token lookup.
+    pressure: Option<ThermalPressure>,
 }
 
 impl TempCollector {
@@ -530,6 +537,7 @@ impl TempCollector {
             pdtr,
             pdbr,
             hid_cache: Vec::new(),
+            pressure: ThermalPressure::new(),
         })
     }
 
@@ -622,6 +630,10 @@ impl TempCollector {
                 .and_then(|info| smc.read_f32("PDBR", info).ok())
                 .map(Watts);
         }
+
+        // Independent of SMC and HID: the kernel's verdict is available even
+        // on a machine where every temperature sensor failed to open.
+        out.pressure = self.pressure.as_ref().and_then(ThermalPressure::read);
 
         // Deduplicate identical labels (e.g. two battery sensors) by averaging.
         dedup_labels(&mut out.sensors);

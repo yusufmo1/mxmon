@@ -12,6 +12,7 @@ pub mod iokit;
 pub mod ioreport;
 pub mod mach;
 pub mod net;
+pub mod notify;
 pub mod ntstat;
 pub mod proc;
 pub mod smc;
