@@ -170,7 +170,7 @@ impl Tui {
 #[test]
 fn tui_boots_walks_views_and_quits_cleanly() {
     let mut tui = boot(40, 120);
-    for key in [b'2', b'3', b'4', b'1'] {
+    for key in *b"2341" {
         tui.writer.write_all(&[key]).expect("send key");
         tui.writer.flush().unwrap();
         std::thread::sleep(Duration::from_millis(300));
