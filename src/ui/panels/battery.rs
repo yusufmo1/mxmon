@@ -71,7 +71,15 @@ pub fn render(buf: &mut Buffer, area: Rect, app: &App, th: &Theme) {
                 Style::default().fg(th.text),
             ),
             Span::styled("  cycles ", dim),
-            Span::styled(b.cycle_count.to_string(), Style::default().fg(th.text)),
+            // Against design life when the pack publishes it: "856/1000" says
+            // something "856" alone cannot.
+            Span::styled(
+                b.design_cycles.map_or_else(
+                    || b.cycle_count.to_string(),
+                    |design| format!("{}/{design}", b.cycle_count),
+                ),
+                Style::default().fg(th.text),
+            ),
             Span::styled("  temp ", dim),
             Span::styled(
                 format!("{:>4}", b.temp),
