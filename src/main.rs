@@ -615,6 +615,8 @@ fn json_snapshot(soc: &collect::soc::SocInfo) -> color_eyre::Result<()> {
             "runnable_threads": (p.kernel.runnable * 100.0).round() / 100.0,
         })),
         "temps": slow.as_ref().and_then(|s| s.temps.as_ref()).map(|t| serde_json::json!({
+            "thermal_pressure": t.pressure.map(ffi::notify::Pressure::label),
+            "throttling": t.pressure.map(crate::ffi::notify::Pressure::throttling),
             "cpu_avg_c": t.cpu_avg.0,
             "cpu_max_c": t.cpu_max.0,
             "gpu_avg_c": t.gpu_avg.0,
