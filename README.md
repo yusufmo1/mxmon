@@ -94,12 +94,14 @@ cargo build --release && ./target/release/mxmon
 | <kbd>s</kbd> / <kbd>F6</kbd> / click header | sort |
 | <kbd>x</kbd> / <kbd>F9</kbd> | kill (signal picker) |
 | <kbd>Enter</kbd> | process details |
-| <kbd>o</kbd> | settings — panes · theme · schematic · contours · glyphs · sampling · graph window · ping |
+| <kbd>o</kbd> | settings card — every option in the app, on one surface |
 | <kbd>t</kbd> | cycle theme |
 | <kbd>p</kbd> · <kbd>+</kbd> <kbd>-</kbd> · <kbd>d</kbd> | pause · sampling speed · debug HUD |
-| <kbd>?</kbd> · <kbd>q</kbd> | help · quit |
+| <kbd>?</kbd> · <kbd>q</kbd> | key reference · quit |
 
-<sub>Full mouse support: every metric card is a button — hover it for a `▸ destination` hint, click to jump where that metric deepens (CPU/MEM/POWER open the process table sorted by it, NET the connections view, GPU/TEMPS/BATTERY the thermal view). Click tabs, column headers, rows, footer chips and the modal `✕`; scroll the process, sensor and connection lists, and the settings values.</sub>
+<sub>Every one of these is remappable — see [Settings](#settings).</sub>
+
+<sub>Full mouse support: every metric card is a button — hover it for a `▸ destination` hint, click to jump where that metric deepens (CPU/MEM/POWER open the process table sorted by it, NET the connections view, GPU/TEMPS/BATTERY the thermal view). Click tabs, column headers, rows, footer chips and the modal `✕`; scroll the process, sensor and connection lists, and everything in the settings card.</sub>
 
 <div align="center">
 
@@ -165,6 +167,33 @@ Modern macOS quantizes and 32-bit-wraps `NET_RT_IFLIST2` byte counters for ad-ho
 
 </details>
 
+## Settings
+
+<kbd>o</kbd> opens the settings card over the running dashboard — deliberately an overlay, not a screen, so the panels behind it keep painting and a theme or chrome change previews on the real thing.
+
+| Page | What's on it |
+|---|---|
+| `appearance` | theme · frames · labels · glyphs |
+| `graphs` | graph window (×1–×8) · motion |
+| `layout` | process panes · schematic · contours |
+| `sampling` | fast-tier interval, with the tiers it drags along |
+| `network` | ping probe on/off · ping host (editable in place) |
+| `keys` | every command and the keys bound to it |
+| `about` | build, machine, file paths, and why any collector is dark |
+
+Everything is both clickable and keyboard-driven: <kbd>↑</kbd><kbd>↓</kbd> rows, <kbd>←</kbd><kbd>→</kbd> change, <kbd>Tab</kbd> pages, <kbd>Enter</kbd> set/edit, <kbd>r</kbd> reset a row, <kbd>R</kbd> reset everything, <kbd>Esc</kbd> close. Values with a fixed set of choices spell them out as chips under the cursor, so picking a theme is one click rather than eighteen steps through a cycle. Changes apply and save immediately.
+
+**Remappable keys.** On the `keys` page, <kbd>Enter</kbd> arms a capture and the next key becomes the binding; <kbd>⌫</kbd> drops one, <kbd>r</kbd> restores the defaults. Taking a key from another command says so instead of stealing it quietly, and the footer chips relabel themselves to whatever you bound. Bindings persist as a `[keys]` table in `config.toml`:
+
+```toml
+[keys]
+quit = ["ctrl+q", "f10"]
+pause = ["space"]
+view_thermal = ["3"]
+```
+
+<kbd>Esc</kbd> and <kbd>Ctrl</kbd>+<kbd>C</kbd> are reserved and always mean cancel and quit — whatever else you rebind, there is a way out.
+
 ## Themes
 
 **18 built-in themes** — cycle live with <kbd>t</kbd>, or launch with `--theme <name>`:
@@ -174,6 +203,15 @@ Modern macOS quantizes and 32-bit-wraps `NET_RT_IFLIST2` byte counters for ad-ho
 …plus three light themes for daylight terminals — `latte` · `solarized-light` · `gruvbox-light`.
 
 On truecolor terminals the thermogram samples the raw thermal ramp; on 256-color terminals (Terminal.app) it walks a hand-curated monotonic path through the xterm color cube — clean isotherm contours instead of quantization noise.
+
+Two roles are overridable on top of whichever theme is active, from the settings card's `appearance` page:
+
+| row | paints |
+| --- | --- |
+| `frames` | panel frames · graph baselines · gauge tracks · schematic ink |
+| `labels` | grey labels, units, hints and axis text |
+
+Both cycle `theme · white · silver · slate · black · accent · cyan · violet · pink · amber`, where `theme` means *no override* (the theme's own color) and `accent` follows the theme. An override is theme-independent — it survives <kbd>t</kbd>. Any `#rrggbb` set by hand in `config.toml` works too.
 
 ## Glyphs
 
@@ -187,7 +225,7 @@ Both share that 2×4 grid, so mxmon always *renders* in braille and remaps the f
 | `octant` | force octants; needs a font or terminal with Symbols for Legacy Computing Supplement coverage |
 | `braille` | force braille; safe everywhere |
 
-Detection is a conservative allowlist, so anything unrecognized stays on braille. Force `octant` where detection can't see through — inside tmux, for instance. Also switchable live in the settings modal (<kbd>o</kbd>).
+Detection is a conservative allowlist, so anything unrecognized stays on braille. Force `octant` where detection can't see through — inside tmux, for instance. Also switchable live on the settings card's `appearance` page (<kbd>o</kbd>).
 
 ## Credits
 
