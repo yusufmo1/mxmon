@@ -163,8 +163,9 @@ impl BatteryCollector {
                 let bd: CFDictionaryRef = p.cast();
                 dict_get(bd, &k.cell_voltage)
             })
+            .and_then(crate::ffi::cf::as_array)
             .map(|arr| {
-                crate::ffi::cf::array_iter(arr.cast())
+                crate::ffi::cf::array_iter(arr)
                     .filter_map(cf_number_i64)
                     .map(|mv| mv.clamp(0, i64::from(u32::MAX)) as u32)
                     .collect()

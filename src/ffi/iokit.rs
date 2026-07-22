@@ -140,8 +140,11 @@ pub fn services(class: &str) -> io::Result<Vec<IoObject>> {
 }
 
 /// Read an i64 out of a borrowed CFNumber pointer.
+///
+/// Type-checked: registry values are external data, and `CFNumberGetValue` on
+/// something that is not a number is undefined behaviour, not a failed read.
 pub fn cf_number_i64(ptr: *const c_void) -> Option<i64> {
-    if ptr.is_null() {
+    if !super::cf::is_number(ptr) {
         return None;
     }
     let mut value: i64 = 0;

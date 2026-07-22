@@ -15,6 +15,46 @@ use core_foundation::string::{
     kCFStringEncodingUTF8,
 };
 
+#[link(name = "CoreFoundation", kind = "framework")]
+unsafe extern "C" {
+    fn CFGetTypeID(cf: CFTypeRef) -> usize;
+    fn CFStringGetTypeID() -> usize;
+    fn CFDictionaryGetTypeID() -> usize;
+    fn CFNumberGetTypeID() -> usize;
+    fn CFArrayGetTypeID() -> usize;
+}
+
+/// Whether a borrowed CF pointer really is the type we are about to treat it
+/// as.
+///
+/// Registry property tables are external data: a key can appear with a type
+/// nobody expected, and calling a `CFString` accessor on a `CFData` is not a
+/// wrong answer but a crash. Every typed accessor below checks first, so a
+/// surprising property degrades to `None`.
+fn is_type(p: *const c_void, want: unsafe extern "C" fn() -> usize) -> bool {
+    !p.is_null() && unsafe { CFGetTypeID(p.cast()) == want() }
+}
+
+/// A borrowed pointer as a `String`, or `None` if it is not a `CFString`.
+pub fn as_string(p: *const c_void) -> Option<String> {
+    is_type(p, CFStringGetTypeID).then(|| string_from_cf(p.cast()))
+}
+
+/// A borrowed pointer as a dictionary, or `None` if it is not one.
+pub fn as_dict(p: *const c_void) -> Option<CFDictionaryRef> {
+    is_type(p, CFDictionaryGetTypeID).then(|| p.cast())
+}
+
+/// A borrowed pointer as an array, or `None` if it is not one.
+pub fn as_array(p: *const c_void) -> Option<CFArrayRef> {
+    is_type(p, CFArrayGetTypeID).then(|| p.cast())
+}
+
+/// Whether a borrowed pointer is a `CFNumber`.
+pub fn is_number(p: *const c_void) -> bool {
+    is_type(p, CFNumberGetTypeID)
+}
+
 /// An owned CoreFoundation object, released on drop.
 pub struct CfOwned(CFTypeRef);
 
