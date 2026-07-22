@@ -7,7 +7,7 @@ use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::Span;
 
-use crate::app::App;
+use crate::app::{Agg, App};
 use crate::ui::theme::Theme;
 use crate::ui::widgets::{LineGraph, Meter, axis_window};
 use crate::units::Celsius;
@@ -126,8 +126,8 @@ pub fn render(buf: &mut Buffer, area: Rect, app: &App, th: &Theme) {
     if inner.height > 2 {
         let graph = Rect::new(inner.x, inner.y + 2, inner.width, inner.height - 2);
         let slots = graph.width as usize * 2;
-        let cpu: Vec<f32> = app.hist.cpu_temp.last_n(slots).collect();
-        let gpu: Vec<f32> = app.hist.gpu_temp.last_n(slots).collect();
+        let cpu = app.hist.cpu_temp.buckets(slots, app.graph_k(), Agg::Mean);
+        let gpu = app.hist.gpu_temp.buckets(slots, app.graph_k(), Agg::Mean);
         // One window across both series so the lines share a scale.
         let both: Vec<f32> = cpu.iter().chain(gpu.iter()).copied().collect();
         let window = axis_window(&both, 5.0, 10.0, (0.0, 110.0));

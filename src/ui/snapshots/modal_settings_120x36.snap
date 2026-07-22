@@ -1,6 +1,5 @@
 ---
 source: src/ui/layout.rs
-assertion_line: 492
 ---
  ◉ mxmon cpu  0.4% │ Apple M3 Max  4E+12P · 40-core GPU · 48G                   load 3.42 2.87 2.51  up 1d 2h  HH:MM:SS
 ╭╸PROCESSES╺ 160 · 10 running · 549 thr ───────────────────────────────────────────────────────────────────────────────╮
@@ -13,20 +12,20 @@ assertion_line: 492
 │    625 root         145.0  725mW    975M       –       –    6 S   17m 25s Terminal                                   ┃
 │    387 _windowse…   143.0  319mW    457M       –       –   15 S    8m 47s bird                                       ┃
 │    829 root         121.0  173mW    1.4G       –       –   18 S   24m 49s cargo                                      ┃
-│    591 _windowse…   119.0  667mW    901M       –       –    4 S   16m 11s Music                                      ┃
-│    353 yusuf        117.0  2╭ settings ───────────────────────────────────────────── ✕ ╮                             ┃
-│    812 yusuf        108.0  1│   process panes  ‹ 1 · widgets get the spare width    ›  │                             ┃
-│    574 root         106.0  6│   theme          ‹ midnight                           ›  │                             ┃
-│    336 _windowse…   104.0  2│   schematic      ‹ on · blueprint under the heat map  ›  │                             ┃
-│    795 _windowse…    95.0  1│   contours       ‹ on · isotherm rings over the deck  ›  │                             ┃
+│    591 _windowse…   119.0  6╭ settings ───────────────────────────────────────────── ✕ ╮                             ┃
+│    353 yusuf        117.0  2│   process panes  ‹ 1 · widgets get the spare width    ›  │                             ┃
+│    812 yusuf        108.0  1│   theme          ‹ midnight                           ›  │                             ┃
+│    574 root         106.0  6│   schematic      ‹ on · blueprint under the heat map  ›  │                             ┃
+│    336 _windowse…   104.0  2│   contours       ‹ on · isotherm rings over the deck  ›  │                             ┃
+│    795 _windowse…    95.0  1│   glyphs         ‹ braille · forced                   ›  │                             ┃
 │    557 yusuf         93.0  6│   sampling       ‹ 250 ms                             ›  │                             ┃
-│    319 root          91.0  2│   ping probe     ‹ on · 1.1.1.1                       ›  │                             ┃
-│    778 root          82.0   │                                                          │                             ┃
-│    540 _windowse…    80.0  5│   also cycles live with t                                │                             ┃
-│    302 yusuf         78.0  1│                                                          │                             ┃
-│    761 yusuf         69.0   │   ↑↓ select · ←→ change · esc close                      │                             ┃
-│    523 root          67.0  5╰──────────────────────────────────────────────────────────╯                             ┃
-│    285 _windowse…    65.0  145mW    235M       –       –    9 S    5m 05s cargo                                      ┃
+│    319 root          91.0  2│   graph window   ‹ ×4 · 1 s per dot                   ›  │                             ┃
+│    778 root          82.0   │   ping probe     ‹ on · 1.1.1.1                       ›  │                             ┃
+│    540 _windowse…    80.0  5│                                                          │                             ┃
+│    302 yusuf         78.0  1│   also cycles live with t                                │                             ┃
+│    761 yusuf         69.0   │                                                          │                             ┃
+│    523 root          67.0  5│   ↑↓ select · ←→ change · esc close                      │                             ┃
+│    285 _windowse…    65.0  1╰──────────────────────────────────────────────────────────╯                             ┃
 │    744 _windowse…    56.0   28mW    1.2G       –       –   13 R   21m 44s mxmon                                      ┃
 │    506 yusuf         54.0  522mW    716M       –       –   22 I   13m 06s kernel_task                                ┃
 │    268 root          52.0  116mW    198M    105K     30K    8 R    4m 28s claude                                     ┃

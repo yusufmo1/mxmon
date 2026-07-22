@@ -49,6 +49,12 @@ pub fn draw(f: &mut Frame<'_>, app: &mut App, th: &Theme, hits: &mut HitMap, rs:
     panels::header::footer(buf, footer, app, th, hits);
     overlays::render(buf, screen, app, th, hits);
 
+    // Upgrade braille graphs to solid octant glyphs where the terminal (or
+    // the user) says they render — chars first, colors second; the passes
+    // are independent, both one buffer scan before ratatui's cell diff.
+    if super::glyphs::active(app.config.glyphs) {
+        super::glyphs::octantize_buffer(buf);
+    }
     // Degrade to the 256-color palette on terminals without 24-bit SGR
     // (Terminal.app) — one pass over the buffer, before ratatui's cell diff.
     if !super::theme::truecolor_supported() {
@@ -134,8 +140,15 @@ fn overview(
     let width = body.width;
     let tall = body.height >= 44;
 
-    // Panel heights adapt to total height.
-    let cpu_h = if tall { 12 } else { 9 };
+    // Panel heights adapt to total height. The top row earns two extra
+    // rows on mid-height terminals: the battery card's Sankey needs the
+    // vertical budget for proportional ribbons (and the CPU core bands
+    // stretch to match).
+    let cpu_h = match body.height {
+        h if h >= 44 => 12,
+        h if h >= 36 => 11,
+        _ => 9,
+    };
     let mid_h = if tall { 9 } else { 7 };
     // The network panel earns roughly double its old height (mirrored
     // graph, connectivity strip, link details) and the whole metric row
@@ -509,6 +522,31 @@ mod tests {
         // The ≥300-column overview takes the single full-height row branch.
         app.view = View::Overview;
         snap("overview_320x60", &mut app, 320, 60);
+    }
+
+    #[test]
+    fn graph_window_extremes_render_stably() {
+        // ×1 locks the exact-passthrough contract (every tick is a dot,
+        // pre-zoom behavior, bit for bit); ×8 locks the deepest aggregation
+        // through full rings — together they bracket the default ×4 the
+        // other snapshots exercise.
+        let mut app = tu::app();
+        app.view = View::Overview;
+        app.config.graph_window = 1;
+        snap("overview_x1_160x45", &mut app, 160, 45);
+        app.config.graph_window = 8;
+        snap("overview_zoom8_160x45", &mut app, 160, 45);
+    }
+
+    #[test]
+    fn octant_pass_renders_stably() {
+        // The full pipeline with the octant upgrade forced: every braille
+        // graph in the frame comes out as solid octant/block glyphs. Locks
+        // the pass end-to-end (env-independent — `Octant` never probes).
+        let mut app = tu::app();
+        app.config.glyphs = crate::config::Glyphs::Octant;
+        app.view = View::Overview;
+        snap("overview_octants_160x45", &mut app, 160, 45);
     }
 
     #[test]

@@ -126,9 +126,44 @@ fn settings(
             "the heat map's temperature rings · numbers stay",
         ),
         (
+            "glyphs",
+            match app.config.glyphs {
+                crate::config::Glyphs::Auto => {
+                    if crate::ui::glyphs::active(app.config.glyphs) {
+                        "auto · octants here".into()
+                    } else {
+                        "auto · braille here".into()
+                    }
+                }
+                crate::config::Glyphs::Octant => "octant · forced".into(),
+                crate::config::Glyphs::Braille => "braille · forced".into(),
+            },
+            "solid sub-cell graphs · octants need a modern terminal",
+        ),
+        (
             "sampling",
             format!("{} ms", app.config.interval_ms),
             "fast-tier interval · also + / -",
+        ),
+        (
+            "graph window",
+            {
+                let k = app.config.graph_window.max(1);
+                if k == 1 {
+                    "×1 · every tick is a dot".into()
+                } else {
+                    let dot_ms = u64::from(k) * app.config.interval_ms;
+                    let per_dot = if dot_ms < 1000 {
+                        format!("{dot_ms} ms")
+                    } else if dot_ms.is_multiple_of(1000) {
+                        format!("{} s", dot_ms / 1000)
+                    } else {
+                        format!("{:.1} s", dot_ms as f64 / 1000.0)
+                    };
+                    format!("×{k} · {per_dot} per dot")
+                }
+            },
+            "ticks per graph dot · peaks kept, head stays live",
         ),
         (
             "ping probe",

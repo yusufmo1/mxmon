@@ -53,6 +53,10 @@ struct Cli {
     #[arg(long)]
     theme: Option<String>,
 
+    /// Sub-cell glyph set for graphs; overrides config.
+    #[arg(long, value_enum)]
+    glyphs: Option<config::Glyphs>,
+
     /// Dump raw per-interface counters and exit (debugging aid).
     #[arg(long, hide = true)]
     net_debug: bool,
@@ -165,6 +169,9 @@ fn main() -> color_eyre::Result<()> {
     }
     if let Some(theme) = cli.theme {
         config.theme = theme;
+    }
+    if let Some(glyphs) = cli.glyphs {
+        config.glyphs = glyphs;
     }
 
     run_tui(soc, config)
@@ -610,11 +617,21 @@ mod cli_tests {
 
     #[test]
     fn cli_parses_the_flag_matrix() {
-        let c = Cli::try_parse_from(["mxmon", "--json", "--interval", "500", "--theme", "neon"])
-            .expect("valid invocation");
+        let c = Cli::try_parse_from([
+            "mxmon",
+            "--json",
+            "--interval",
+            "500",
+            "--theme",
+            "neon",
+            "--glyphs",
+            "octant",
+        ])
+        .expect("valid invocation");
         assert!(c.json);
         assert_eq!(c.interval, Some(500));
         assert_eq!(c.theme.as_deref(), Some("neon"));
+        assert_eq!(c.glyphs, Some(crate::config::Glyphs::Octant));
         // Hidden debug flags stay reachable.
         assert!(
             Cli::try_parse_from(["mxmon", "--smc-debug"])
@@ -634,6 +651,7 @@ mod cli_tests {
         assert!(Cli::try_parse_from(["mxmon", "--bench"]).unwrap().bench);
         // Malformed input is rejected, not defaulted.
         assert!(Cli::try_parse_from(["mxmon", "--interval", "abc"]).is_err());
+        assert!(Cli::try_parse_from(["mxmon", "--glyphs", "sixel"]).is_err());
         assert!(Cli::try_parse_from(["mxmon", "--no-such-flag"]).is_err());
     }
 }

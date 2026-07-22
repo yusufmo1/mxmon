@@ -1,5 +1,6 @@
 //! Rendering: themes, custom widgets, panels, views, overlays.
 
+pub mod glyphs;
 pub mod layout;
 pub mod overlays;
 pub mod panels;

@@ -17,6 +17,10 @@ use crate::config::Config;
 pub struct Ring {
     buf: VecDeque<f32>,
     cap: usize,
+    /// Monotonic count of every push ever made — keeps [`Ring::buckets`]
+    /// phase-anchored to absolute sample indices even after old samples
+    /// fall off the front.
+    total: u64,
 }
 
 impl Ring {
@@ -24,6 +28,7 @@ impl Ring {
         Self {
             buf: VecDeque::with_capacity(cap),
             cap,
+            total: 0,
         }
     }
 
@@ -32,6 +37,7 @@ impl Ring {
             self.buf.pop_front();
         }
         self.buf.push_back(v);
+        self.total += 1;
     }
 
     /// Latest `n` values, oldest first (fewer if not enough history yet).
@@ -48,13 +54,88 @@ impl Ring {
         self.buf.iter().copied().fold(0.0, f32::max)
     }
 
+    /// The last `slots` *buckets* of `k` samples each, oldest-first — the
+    /// render-time zoom behind the `graph_window` setting. Bucket boundaries
+    /// are phase-anchored to the absolute push counter, so a completed
+    /// bucket never re-aggregates as new samples land: the graph body holds
+    /// perfectly still and the frame advances exactly one dot per completed
+    /// bucket. The newest bucket is the live head — `((total-1) % k) + 1`
+    /// samples, growing every push, so the rightmost column keeps moving at
+    /// full tick rate while the body crawls. `k <= 1` is an exact,
+    /// unfiltered passthrough of [`Ring::last_n`].
+    pub fn buckets(&self, slots: usize, k: usize, agg: Agg) -> Vec<f32> {
+        if k <= 1 {
+            return self.last_n(slots).collect();
+        }
+        if slots == 0 || self.buf.is_empty() {
+            return Vec::new();
+        }
+        let head = ((self.total - 1) % k as u64) as usize + 1;
+        let want = head.saturating_add((slots - 1).saturating_mul(k));
+        let window: Vec<f32> = self.last_n(want).collect();
+        // A tiny cap can leave fewer samples than one head bucket; aggregate
+        // whatever survives.
+        let (body, head) = window.split_at(window.len().saturating_sub(head));
+        // Newest-first: the head, then `rchunks` walking the body backwards
+        // stays aligned to the head boundary (the oldest chunk may be short
+        // when the ring is young — aggregate what's there).
+        let mut out: Vec<f32> = std::iter::once(head)
+            .chain(body.rchunks(k))
+            .map(|bucket| agg.fold(bucket))
+            .collect();
+        out.reverse();
+        out
+    }
+
     #[cfg(test)]
     pub fn is_empty(&self) -> bool {
         self.buf.is_empty()
     }
 }
 
-pub const HISTORY: usize = 600;
+/// Per-bucket aggregation for [`Ring::buckets`], curated per metric by the
+/// panels — never configurable, always chosen by what the series means.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Agg {
+    /// Largest finite sample — bursty series (cpu, gpu, power, net, disk)
+    /// where a one-tick spike is the signal and a mean would erase it.
+    Max,
+    /// Mean of the finite samples — smooth series (temps, memory) where
+    /// drift is the signal and peaks are noise.
+    Mean,
+    /// NaN if *any* sample is non-finite, else the max — the ping strip's
+    /// "a probe missed somewhere in this window" contract.
+    Worst,
+}
+
+impl Agg {
+    /// Fold one bucket; NaN when no sample survives the finite filter.
+    fn fold(self, bucket: &[f32]) -> f32 {
+        if self == Self::Worst && bucket.iter().any(|v| !v.is_finite()) {
+            return f32::NAN;
+        }
+        let finite = bucket.iter().copied().filter(|v| v.is_finite());
+        match self {
+            // `f32::max` keeps the non-NaN operand, so the NAN seed
+            // vanishes at the first finite sample.
+            Self::Max | Self::Worst => finite.fold(f32::NAN, f32::max),
+            Self::Mean => {
+                // f64 accumulator: k finite-huge f32s must not sum to inf.
+                let (sum, n) = finite.fold((0f64, 0u32), |(s, n), v| (s + f64::from(v), n + 1));
+                if n == 0 {
+                    f32::NAN
+                } else {
+                    (sum / f64::from(n)) as f32
+                }
+            }
+        }
+    }
+}
+
+/// Ring capacity: enough raw samples that a 300-cell-wide graph still fills
+/// every dot column at the ×8 graph window (600 slots × 8) — about 20 min of
+/// fast-tier history at the default 250 ms tick, ~0.7 MB across all rings.
+pub const HISTORY: usize = 4800;
 
 /// All history rings (each advances with its own tier's cadence).
 pub struct Histories {
@@ -269,6 +350,12 @@ impl App {
         }
     }
 
+    /// Samples aggregated per graph dot column (the `graph_window` setting,
+    /// clamped ≥ 1 so a hand-edited 0 can't wedge the resampler).
+    pub fn graph_k(&self) -> usize {
+        usize::from(self.config.graph_window.max(1))
+    }
+
     /// Fold a sampler update into state + histories.
     pub fn apply(&mut self, update: Update) {
         match update {
@@ -427,7 +514,7 @@ impl App {
 
 #[cfg(test)]
 mod tests {
-    use super::{App, Ring, SortKey};
+    use super::{Agg, App, Ring, SortKey};
     use crate::collect::sampler::{SlowSnapshot, Update};
     use crate::config::Config;
     use crate::testutil as tu;
@@ -454,6 +541,141 @@ mod tests {
             r.push(v);
         }
         assert!((r.max() - 3.0).abs() < f32::EPSILON);
+    }
+
+    fn ring_of(values: impl IntoIterator<Item = f32>) -> Ring {
+        let mut r = Ring::new(super::HISTORY);
+        for v in values {
+            r.push(v);
+        }
+        r
+    }
+
+    #[test]
+    fn buckets_k1_is_exact_passthrough() {
+        // ×1 must be byte-identical to today's rendering: raw values,
+        // NaN gaps included, no aggregation filter.
+        let r = ring_of([1.0, f32::NAN, 3.0, 4.0]);
+        for k in [0, 1] {
+            let out = r.buckets(3, k, Agg::Max);
+            let raw: Vec<f32> = r.last_n(3).collect();
+            assert_eq!(out.len(), raw.len());
+            for (a, b) in out.iter().zip(&raw) {
+                assert_eq!(a.to_bits(), b.to_bits(), "k={k} passthrough");
+            }
+        }
+    }
+
+    #[test]
+    fn buckets_aggregate_and_live_head() {
+        let r = ring_of((1..=10).map(|v| v as f32));
+        // total=10, k=4 → head bucket = [9, 10] (2 live samples), completed
+        // buckets [1..4] and [5..8] behind it.
+        assert_eq!(r.buckets(3, 4, Agg::Max), vec![4.0, 8.0, 10.0]);
+        assert_eq!(r.buckets(3, 4, Agg::Mean), vec![2.5, 6.5, 9.5]);
+        // Fewer slots trims from the old end, never the live head.
+        assert_eq!(r.buckets(2, 4, Agg::Max), vec![8.0, 10.0]);
+        assert_eq!(r.buckets(1, 4, Agg::Max), vec![10.0]);
+    }
+
+    #[test]
+    fn buckets_completed_buckets_never_change() {
+        // The still-body contract: once a bucket completes, its aggregate is
+        // frozen — later pushes only grow the head or append new buckets, so
+        // the graph body never shimmers. Track every completed bucket by its
+        // absolute index and assert a re-render never disagrees.
+        let mut r = Ring::new(super::HISTORY);
+        let mut seen = std::collections::HashMap::<u64, f32>::new();
+        for v in 1..=23u64 {
+            r.push(v as f32);
+            let out = r.buckets(8, 3, Agg::Max);
+            let completed = &out[..out.len() - 1];
+            // Buckets strictly behind the live head after `v` pushes.
+            let behind = (v - 1) / 3;
+            for (j, &val) in completed.iter().rev().enumerate() {
+                let idx = behind - 1 - j as u64;
+                if let Some(&old) = seen.get(&idx) {
+                    // Bit-exact on purpose: frozen means frozen.
+                    assert_eq!(
+                        old.to_bits(),
+                        val.to_bits(),
+                        "push {v}: bucket {idx} re-aggregated"
+                    );
+                }
+                seen.insert(idx, val);
+            }
+        }
+        // 23 pushes at k=3: live head is [22, 23], body caps at 21, 18, 15.
+        assert_eq!(r.buckets(4, 3, Agg::Max), vec![15.0, 18.0, 21.0, 23.0]);
+    }
+
+    #[test]
+    fn buckets_phase_survives_capacity_wrap() {
+        // A wrapped ring keeps absolute bucket boundaries: with cap 4 and 10
+        // pushes, the survivors [7,8,9,10] still split as [7,8 | 9,10] —
+        // anchored by the push counter, not the window edge.
+        let mut r = Ring::new(4);
+        for v in 1..=10 {
+            r.push(v as f32);
+        }
+        assert_eq!(r.buckets(3, 4, Agg::Max), vec![8.0, 10.0]);
+    }
+
+    #[test]
+    fn buckets_aggregators_handle_misses() {
+        // Bucket [1, NaN, 3] then a clean [4, 5, 6].
+        let r = ring_of([1.0, f32::NAN, 3.0, 4.0, 5.0, 6.0]);
+        let worst = r.buckets(2, 3, Agg::Worst);
+        assert!(worst[0].is_nan(), "a miss anywhere poisons Worst");
+        assert_eq!(worst[1].to_bits(), 6.0f32.to_bits());
+        assert_eq!(r.buckets(2, 3, Agg::Max), vec![3.0, 6.0]);
+        assert_eq!(r.buckets(2, 3, Agg::Mean), vec![2.0, 5.0]);
+        // A bucket with no finite sample at all renders as a gap.
+        let dead = ring_of([f32::NAN, f32::INFINITY, f32::NEG_INFINITY]);
+        assert!(dead.buckets(1, 3, Agg::Max)[0].is_nan());
+        assert!(dead.buckets(1, 3, Agg::Mean)[0].is_nan());
+        // Mean survives finite-huge values via the f64 accumulator.
+        let huge = ring_of([f32::MAX, f32::MAX]);
+        assert_eq!(huge.buckets(1, 2, Agg::Mean), vec![f32::MAX]);
+    }
+
+    #[test]
+    fn buckets_degenerate_inputs() {
+        assert!(Ring::new(4).buckets(5, 3, Agg::Max).is_empty());
+        assert!(ring_of([1.0]).buckets(0, 3, Agg::Max).is_empty());
+        assert_eq!(ring_of([1.0]).buckets(4, 8, Agg::Max), vec![1.0]);
+    }
+
+    mod bucket_props {
+        use proptest::prelude::*;
+
+        use super::super::{Agg, Ring};
+
+        proptest! {
+            /// Total for any input: never panics, never exceeds `slots`,
+            /// and k≤1 is bit-exact with `last_n`.
+            #[test]
+            fn buckets_never_panic_and_k1_matches_last_n(
+                values in proptest::collection::vec(proptest::num::f32::ANY, 0..200),
+                cap in 1usize..64,
+                slots in 0usize..64,
+                k in 0usize..16,
+            ) {
+                let mut r = Ring::new(cap);
+                for v in &values {
+                    r.push(*v);
+                }
+                for agg in [Agg::Max, Agg::Mean, Agg::Worst] {
+                    prop_assert!(r.buckets(slots, k, agg).len() <= slots);
+                }
+                let id = r.buckets(slots, 1, Agg::Mean);
+                let raw: Vec<f32> = r.last_n(slots).collect();
+                prop_assert_eq!(id.len(), raw.len());
+                for (a, b) in id.iter().zip(&raw) {
+                    prop_assert_eq!(a.to_bits(), b.to_bits());
+                }
+            }
+        }
     }
 
     fn app() -> App {

@@ -498,9 +498,13 @@ fn cycle_theme(app: &mut App, dir: i64) {
 }
 
 /// Rows of the settings modal, top to bottom (must match the overlay).
-pub const SETTINGS_ROWS: usize = 6;
+pub const SETTINGS_ROWS: usize = 8;
 /// The sampling-interval row — the footer tick chip deep-links to it.
-pub const SETTINGS_SAMPLING_ROW: usize = 4;
+pub const SETTINGS_SAMPLING_ROW: usize = 5;
+/// The graph-window stops the modal cycles through. Any 1–8 value from a
+/// hand-edited config is honored; stepping snaps outward to the nearest stop
+/// in the direction of travel (×7 steps right to ×8, left to ×4).
+const GRAPH_WINDOW_STOPS: [u16; 4] = [1, 2, 4, 8];
 
 /// Step a settings row's value forward (`dir` 1) or back (`-1`); every
 /// change applies live and persists immediately.
@@ -520,8 +524,33 @@ fn settings_step(app: &mut App, control: &Control, row: usize, dir: i64) {
             app.config.contours = !app.config.contours;
             app.config.save();
         }
-        4 => adjust_speed(app, control, dir * 50),
-        5 => {
+        4 => {
+            use crate::config::Glyphs;
+            const CYCLE: [Glyphs; 3] = [Glyphs::Auto, Glyphs::Octant, Glyphs::Braille];
+            let i = CYCLE
+                .iter()
+                .position(|g| *g == app.config.glyphs)
+                .unwrap_or(0) as i64;
+            app.config.glyphs = CYCLE[(i + dir).rem_euclid(3) as usize];
+            app.config.save();
+        }
+        5 => adjust_speed(app, control, dir * 50),
+        6 => {
+            let cur = app.config.graph_window;
+            let stops = GRAPH_WINDOW_STOPS;
+            let i = stops
+                .iter()
+                .position(|s| *s >= cur)
+                .unwrap_or(stops.len() - 1) as i64;
+            let j = if dir > 0 && stops[i as usize] > cur {
+                i // off-stop value: the snap itself is the forward step
+            } else {
+                i + dir
+            };
+            app.config.graph_window = stops[j.rem_euclid(stops.len() as i64) as usize];
+            app.config.save();
+        }
+        7 => {
             app.config.ping = !app.config.ping;
             app.config.save();
             app.toast("ping probe: applies at next launch", false);
@@ -738,13 +767,42 @@ mod tests {
         let contours = h.app.config.contours;
         h.key(K::Right);
         assert_eq!(h.app.config.contours, !contours);
-        // Row 4: speed steps apply live through the shared control.
+        // Row 4: glyph mode cycles auto → octant → braille, and wraps back.
+        use crate::config::Glyphs;
+        h.key(K::Char('j'));
+        h.app.config.glyphs = Glyphs::Auto;
+        h.key(K::Right);
+        assert_eq!(h.app.config.glyphs, Glyphs::Octant);
+        h.key(K::Right);
+        assert_eq!(h.app.config.glyphs, Glyphs::Braille);
+        h.key(K::Left);
+        h.key(K::Left);
+        assert_eq!(h.app.config.glyphs, Glyphs::Auto, "steps back to auto");
+        // Row 5: speed steps apply live through the shared control.
         h.key(K::Char('j'));
         let ms = h.app.config.interval_ms;
         h.key(K::Right);
         assert_eq!(h.app.config.interval_ms, ms + 50);
         assert_eq!(h.control.fast_ms.load(Ordering::Relaxed), ms + 50);
-        // Row 5: ping toggles with a heads-up toast.
+        // Row 6: graph window cycles the ×1/2/4/8 stops and wraps both ways.
+        h.key(K::Char('j'));
+        h.app.config.graph_window = 4;
+        h.key(K::Right);
+        assert_eq!(h.app.config.graph_window, 8);
+        h.key(K::Right);
+        assert_eq!(h.app.config.graph_window, 1, "wraps past ×8");
+        h.key(K::Left);
+        assert_eq!(h.app.config.graph_window, 8, "wraps back under ×1");
+        h.key(K::Left);
+        assert_eq!(h.app.config.graph_window, 4);
+        // A hand-edited off-stop value snaps outward in the travel direction.
+        h.app.config.graph_window = 7;
+        h.key(K::Right);
+        assert_eq!(h.app.config.graph_window, 8, "×7 snaps up to ×8");
+        h.app.config.graph_window = 7;
+        h.key(K::Left);
+        assert_eq!(h.app.config.graph_window, 4, "×7 steps down to ×4");
+        // Row 7: ping toggles with a heads-up toast.
         h.key(K::Char('j'));
         let ping = h.app.config.ping;
         h.key(K::Enter);

@@ -206,6 +206,10 @@ fn sweep(
                         };
                         let hover = HOVERS[combos % HOVERS.len()];
                         app.hover = hover;
+                        // Graph-window zoom rotates with the combo counter
+                        // like hover does; 5 is deliberately off the modal's
+                        // power-of-two stops (a hand-edited config is legal).
+                        app.config.graph_window = [1, 2, 5, 8][combos % 4];
 
                         let mut hits = HitMap::default();
                         let mut rs = RenderState::default();
@@ -275,10 +279,13 @@ fn render_never_panics_across_sizes_views_states() {
     combos += sweep(&mut app, &th, "realistic", &last, &mut failures);
     // State 2 — every history ring overfilled with extreme/non-finite
     // values, with both chassis-map layers toggled off so the quiet-deck
-    // paths (blank contour layer, no silkscreen) get the full size sweep.
+    // paths (blank contour layer, no silkscreen) get the full size sweep —
+    // and the octant pass forced on, so the braille→octant remap eats every
+    // hostile frame too.
     fill_rings_nasty(&mut app);
     app.config.schematic = false;
     app.config.contours = false;
+    app.config.glyphs = crate::config::Glyphs::Octant;
     combos += sweep(&mut app, &th, "nasty-rings", &last, &mut failures);
     // State 3 — nasty rings *and* no live metric sample (a real SourceDown
     // transient): panels must fall back without reading a stale coordinate.

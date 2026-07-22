@@ -56,6 +56,11 @@ fn boot(rows: u16, cols: u16) -> Tui {
     let mut cmd = CommandBuilder::new(env!("CARGO_BIN_EXE_mxmon"));
     cmd.env("MXMON_CONFIG_DIR", tmp.path());
     cmd.env("TERM", "xterm-256color");
+    // The host terminal must not leak through: these flip the auto glyph
+    // probe (braille vs octant frames) and would make the run env-dependent.
+    for var in ["TERM_PROGRAM", "KITTY_WINDOW_ID", "WEZTERM_EXECUTABLE"] {
+        cmd.env_remove(var);
+    }
     let child = KillOnDrop(pair.slave.spawn_command(cmd).expect("spawn TUI"));
     drop(pair.slave);
 
