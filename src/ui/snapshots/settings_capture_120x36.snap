@@ -20,7 +20,7 @@ source: src/ui/layout.rs
 ╰───────────────│   details         ⏎   +                 everything known about the selected process ┃│───────────────╯
 ╭╸NETWORK╺ ↓  22│   select down     j   ↓   +             move the selection down a row               ┃│───────────────╮
 │Σ↓  7.4G  Σ↑  1│   select up       k   ↑   +             move the selection up a row                 ┃│▏    ⚡  charging
-│↑   7.5 Mb/s⣾⣧⣷│   jump to top     g   home   +          select the first row                        ┃│ full  adapter │
+│↑   7.5 Mb/s⣾⣧⣷│   jump to top     g   home   +          select the first row                        ┃│4m to full  ada│
 │⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿│   jump to bottom  G   end   +           select the last row                         ┃│ SoC     6.54W │
 │⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿│   page down       pagedown   +          move the selection a screen down            ┃│ DISP    3.10W │
 │↓  47.5 Mb/s⢸⢸⢸│   page up         pageup   +            move the selection a screen up              ┃│ other   17.0W │

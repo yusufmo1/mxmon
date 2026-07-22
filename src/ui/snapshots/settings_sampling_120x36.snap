@@ -20,7 +20,7 @@ source: src/ui/layout.rs
 ╰───────────────│ ──────────────────────────────────────────────────────────────────────────────────── │───────────────╯
 ╭╸NETWORK╺ ↓  22│ ▸ interval       ‹    250 ms         ›  power/temps 500 ms · procs 2 s               │───────────────╮
 │Σ↓  7.4G  Σ↑  1│ ──────────────────────────────────────────────────────────────────────────────────── │▏    ⚡  charging
-│↑   7.5 Mb/s⣾⣧⣷│   fast-tier period · every other tier is a multiple of it                            │ full  adapter │
+│↑   7.5 Mb/s⣾⣧⣷│   fast-tier period · every other tier is a multiple of it                            │4m to full  ada│
 │⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿│  ↑↓ row · ←→ change · ⏎ set · r reset · R all · ⇥ page · esc close                   │ SoC     6.54W │
 │⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿╰──────────────────────────────────────────────────────────────────────────────────────╯ DISP    3.10W │
 │↓  47.5 Mb/s⢸⢸⢸⢸⢹⢹⢹⢹⢹⢹⢹⢹⢹⢹⢹⢻⢻⢻⢻⢻⢻⢻⢻⢻⢻⢻⢿⢿⢿⢿⢿⢿⢿⢿⢿⢿⢿⣿⡇⡇⡇⡇⡇⡇⡇⡇││BAT +12.4W─┘                            └─▶ other   17.0W │

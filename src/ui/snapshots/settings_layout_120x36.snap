@@ -20,7 +20,7 @@ source: src/ui/layout.rs
 ╰───────────────│ ▸ process panes  ‹    1              ›  widgets get the spare width                  │───────────────╯
 ╭╸NETWORK╺ ↓  22│                   1  2  3  4                                                         │───────────────╮
 │Σ↓  7.4G  Σ↑  1│   schematic      ‹    on             ›  blueprint under the heat map                 │▏    ⚡  charging
-│↑   7.5 Mb/s⣾⣧⣷│   contours       ‹    on             ›  isotherm rings over the deck                 │ full  adapter │
+│↑   7.5 Mb/s⣾⣧⣷│   contours       ‹    on             ›  isotherm rings over the deck                 │4m to full  ada│
 │⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿│ ──────────────────────────────────────────────────────────────────────────────────── │ SoC     6.54W │
 │⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿│   how many table panes wide layouts may split into  ·  config.toml: procs_panes      │ DISP    3.10W │
 │↓  47.5 Mb/s⢸⢸⢸│  ↑↓ row · ←→ change · ⏎ set · r reset · R all · ⇥ page · esc close                   │ other   17.0W │

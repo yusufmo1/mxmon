@@ -20,7 +20,7 @@ source: src/ui/layout.rs
 ╰───────────────│   config dir     no config dir (no HOME)                                             │───────────────╯
 ╭╸NETWORK╺ ↓  22│   files          config.toml · sensors.toml · history.bin · last-panic.log           │───────────────╮
 │Σ↓  7.4G  Σ↑  1│                                                                                      │▏    ⚡  charging
-│↑   7.5 Mb/s⣾⣧⣷│   sources        every collector reporting                                           │ full  adapter │
+│↑   7.5 Mb/s⣾⣧⣷│   sources        every collector reporting                                           │4m to full  ada│
 │⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿│                                                                                      │ SoC     6.54W │
 │⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿│ ▸ ↻ rescan SMC sensors                  re-probes at next launch                     │ DISP    3.10W │
 │↓  47.5 Mb/s⢸⢸⢸│   ↻ reset every setting                 settings and bindings back to stock          │ other   17.0W │
