@@ -19,12 +19,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- *(soc)* start without the pmgr registry entry instead of bailing
 - *(test)* write the view-walk keys as a byte string
 
 ### Other
 
-- Revert "fix(soc): start without the pmgr registry entry instead of bailing"
 - gate the PTY tests on real silicon too, via a shared probe
 - *(cli)* run the --json assertions only on real Apple Silicon
 - *(cli)* report why a spawned run failed, not just that it did
