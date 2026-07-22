@@ -159,3 +159,56 @@ pub fn local_hms(now: u64) -> (i32, i32, i32) {
     unsafe { libc::localtime_r(&raw const t, &raw mut tm) };
     (tm.tm_hour, tm.tm_min, tm.tm_sec)
 }
+
+/// One mounted file system's capacity, from `getfsstat`.
+#[derive(Debug, Clone)]
+pub struct MountUsage {
+    pub mount_point: String,
+    pub fs_type: String,
+    pub total: u64,
+    pub available: u64,
+}
+
+/// Capacity of every mounted file system.
+///
+/// `MNT_NOWAIT` reads the kernel's cached figures instead of asking each file
+/// system to update — the whole sweep costs a few microseconds, which is what
+/// makes it affordable to poll at all.
+pub fn mounts() -> Vec<MountUsage> {
+    const MNT_NOWAIT: i32 = 2;
+    // Ask for the count first, then size the buffer to it; a mount appearing
+    // between the two calls is simply not reported this pass.
+    let count = unsafe { libc::getfsstat(std::ptr::null_mut(), 0, MNT_NOWAIT) };
+    if count <= 0 {
+        return Vec::new();
+    }
+    let mut buf: Vec<libc::statfs> = Vec::with_capacity(count as usize);
+    let bytes = std::mem::size_of::<libc::statfs>() as libc::c_int * count;
+    let got = unsafe { libc::getfsstat(buf.as_mut_ptr(), bytes, MNT_NOWAIT) };
+    if got <= 0 {
+        return Vec::new();
+    }
+    // Never trust the second count to be ≤ the capacity we allocated for.
+    let got = (got as usize).min(count as usize);
+    unsafe { buf.set_len(got) };
+
+    buf.iter()
+        .map(|fs| {
+            let cstr = |p: &[libc::c_char]| {
+                let end = p.iter().position(|&c| c == 0).unwrap_or(p.len());
+                let raw: Vec<u8> = p[..end].iter().map(|&c| c as u8).collect();
+                String::from_utf8_lossy(&raw).into_owned()
+            };
+            let block = u64::from(fs.f_bsize);
+            MountUsage {
+                mount_point: cstr(&fs.f_mntonname),
+                fs_type: cstr(&fs.f_fstypename),
+                total: fs.f_blocks.saturating_mul(block),
+                // `bavail` is what a non-root process may actually use, which
+                // is what a capacity bar should show — `bfree` includes the
+                // reserve only root can touch.
+                available: fs.f_bavail.saturating_mul(block),
+            }
+        })
+        .collect()
+}

@@ -561,6 +561,8 @@ fn json_snapshot(soc: &collect::soc::SocInfo) -> color_eyre::Result<()> {
             "up": p.up,
         })),
         "disk": fast.as_ref().and_then(|f| f.disk.as_ref()).map(|d| serde_json::json!({
+            "capacity_total_bytes": d.root_total.0,
+            "capacity_available_bytes": d.root_available.0,
             "read_mbs": (d.read_per_sec.as_f64() / 1e5).round() / 10.0,
             "write_mbs": (d.write_per_sec.as_f64() / 1e5).round() / 10.0,
             "read_iops": d.read_iops,
@@ -623,6 +625,16 @@ fn json_snapshot(soc: &collect::soc::SocInfo) -> color_eyre::Result<()> {
             "sensor_count": t.sensors.len(),
             "sensors": t.sensors.iter().map(|s| serde_json::json!({"group": s.group.title_with(soc.tier_low, soc.tier_high), "label": s.label, "c": (s.temp.0*10.0).round()/10.0})).collect::<Vec<_>>(),
         })),
+        "volumes": serde_json::json!(ffi::sys::mounts().iter()
+            // Only real, sized file systems — the dozens of synthetic and
+            // nullfs entries would drown the useful ones.
+            .filter(|m| m.total > 0 && matches!(m.fs_type.as_str(), "apfs" | "hfs" | "exfat" | "msdos" | "ntfs"))
+            .map(|m| serde_json::json!({
+                "mount": m.mount_point,
+                "fs": m.fs_type,
+                "total_bytes": m.total,
+                "available_bytes": m.available,
+            })).collect::<Vec<_>>()),
         "battery": battery.as_ref().map(|b| serde_json::json!({
             "charge_pct": b.charge.as_percent(),
             "charging": b.charging,

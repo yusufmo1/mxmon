@@ -96,6 +96,43 @@ pub fn render(buf: &mut Buffer, area: Rect, app: &App, th: &Theme) {
         );
     }
 
+    // Capacity, on the last row so the graph keeps the middle. Throughput
+    // says how hard the disk is working; this says whether there is anywhere
+    // left to put anything. A zero total means getfsstat found no volume —
+    // render nothing rather than a confident "0% free".
+    if inner.height >= 3 && d.root_total.0 > 0 {
+        let used = d.root_total.0.saturating_sub(d.root_available.0);
+        let ratio = used as f32 / d.root_total.0 as f32;
+        let row = inner.height - 1;
+        line(
+            buf,
+            inner,
+            row,
+            vec![
+                Span::styled("free ", dim),
+                Span::styled(
+                    format!("{:>5}", d.root_available),
+                    Style::default().fg(th.severity(ratio)),
+                ),
+            ],
+        );
+        if inner.width >= 30 {
+            line_right(
+                buf,
+                inner,
+                row,
+                vec![
+                    Span::styled(
+                        format!("{:.0}%", ratio * 100.0),
+                        Style::default().fg(th.severity(ratio)),
+                    ),
+                    Span::styled(" of ", dim),
+                    Span::styled(format!("{}", d.root_total), Style::default().fg(th.text)),
+                ],
+            );
+        }
+    }
+
     // Mirrored history: writes grow up (outbound, like network upload),
     // reads hang down, each side autoscaled to its visible window.
     if inner.height > 1 {

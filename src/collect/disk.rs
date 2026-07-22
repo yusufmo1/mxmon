@@ -40,6 +40,11 @@ pub struct DiskSample {
     pub read_session: Bytes,
     pub write_session: Bytes,
     pub devices: usize,
+    /// Capacity of the volume the system booted from. Throughput says how hard
+    /// the disk is working; this says whether there is anywhere left to put
+    /// anything.
+    pub root_total: Bytes,
+    pub root_available: Bytes,
 }
 
 /// Busy-time over an op-count window → average µs per operation.
@@ -136,10 +141,20 @@ impl DiskCollector {
             }
         }
 
+        // The data volume is what fills up in practice; on Apple Silicon "/"
+        // is a sealed read-only snapshot, so its free space is meaningless.
+        // Fall back to "/" only when no data volume is mounted.
+        let mounts = crate::ffi::sys::mounts();
+        let root = mounts
+            .iter()
+            .find(|m| m.mount_point == "/System/Volumes/Data")
+            .or_else(|| mounts.iter().find(|m| m.mount_point == "/"));
         let mut out = DiskSample {
             devices: self.drivers.len(),
             read_session: Bytes(self.session_r),
             write_session: Bytes(self.session_w),
+            root_total: Bytes(root.map_or(0, |m| m.total)),
+            root_available: Bytes(root.map_or(0, |m| m.available)),
             ..Default::default()
         };
         let Some(totals) = self.read_totals() else {
