@@ -95,6 +95,13 @@ pub struct Config {
     pub show_temps: bool,
     pub show_battery: bool,
 
+    /// Where each card sits. Drag one card onto another (or use the arrange
+    /// mode) to swap them; the rects themselves never move, only which panel
+    /// draws into them. Serializes as the panel drawn in each home position,
+    /// in [`crate::arrange::PANELS`] order — a list that is not a permutation
+    /// of those names falls back to the shipped layout.
+    pub arrangement: crate::arrange::Arrangement,
+
     pub keys: crate::keys::Keymap,
 }
 
@@ -111,8 +118,11 @@ impl Config {
             P::Power => self.show_power,
             P::Temps => self.show_temps,
             P::Battery => self.show_battery,
-            // The heat map is a view, not a card in the strip.
-            P::HeatMap => true,
+            // Neither of these is hideable: the heat map is a view rather
+            // than a card in the strip, and the process table is the
+            // dashboard's anchor — switching it off would leave the overview
+            // with nothing to fill its bottom rows. Both still rearrange.
+            P::HeatMap | P::Procs => true,
         }
     }
 }
@@ -142,6 +152,7 @@ impl Default for Config {
             show_power: true,
             show_temps: true,
             show_battery: true,
+            arrangement: crate::arrange::Arrangement::default(),
             keys: crate::keys::Keymap::defaults(),
         }
     }
@@ -332,6 +343,14 @@ mod tests {
             // stops — a hand-tuned value must survive the round trip.
             graph_window: 7,
             motion: false,
+            arrangement: {
+                let mut a = crate::arrange::Arrangement::default();
+                a.swap(
+                    crate::ui::widgets::PanelKind::Cpu,
+                    crate::ui::widgets::PanelKind::Procs,
+                );
+                a
+            },
             keys: {
                 let mut km = crate::keys::Keymap::defaults();
                 km.bind(
@@ -356,6 +375,13 @@ mod tests {
         assert!(!l.contours);
         assert_eq!(l.graph_window, 7);
         assert!(!l.motion);
+        // An array, so it also proves `arrangement` still serializes ahead of
+        // the `[keys]` table — TOML wants every non-table value first.
+        assert_eq!(l.arrangement, c.arrangement);
+        assert_eq!(
+            l.arrangement.at(crate::ui::widgets::PanelKind::Cpu),
+            crate::ui::widgets::PanelKind::Procs
+        );
         // The keymap is a table, so it also proves the field order still
         // serializes: a scalar declared after it would break `save` outright.
         assert_eq!(l.keys, c.keys);

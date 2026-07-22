@@ -524,9 +524,10 @@ pub fn fill_bg(area: Rect, buf: &mut Buffer, bg: Color) {
     }
 }
 
-/// Which metric card a [`Target::Panel`] refers to. Every card is a
+/// Which dashboard card a [`Target::Panel`] refers to. Every card is a
 /// navigation surface: clicking it jumps to the view where that metric
-/// continues (the hover hint names the destination).
+/// continues (the hover hint names the destination), and a drag swaps it
+/// with another (see [`crate::arrange`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PanelKind {
     Cpu,
@@ -539,6 +540,46 @@ pub enum PanelKind {
     Battery,
     /// The inline chassis heat map on the overview.
     HeatMap,
+    /// The process table. Draggable by its title bar — its rows register
+    /// their own targets on top of the card's, so clicking a process still
+    /// selects it.
+    Procs,
+}
+
+impl PanelKind {
+    /// The stable name an arrangement serializes as. Never rename one of
+    /// these without a migration: an old config would silently lose the
+    /// position it recorded.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Cpu => "cpu",
+            Self::Gpu => "gpu",
+            Self::Mem => "mem",
+            Self::Net => "net",
+            Self::Disk => "disk",
+            Self::Power => "power",
+            Self::Temps => "temps",
+            Self::Battery => "battery",
+            Self::HeatMap => "heat",
+            Self::Procs => "procs",
+        }
+    }
+
+    /// The inverse of [`name`](Self::name); `None` for anything else.
+    pub fn parse(name: &str) -> Option<Self> {
+        crate::arrange::PANELS
+            .into_iter()
+            .find(|k| k.name() == name)
+    }
+
+    /// The card's title, for toasts and the arrange-mode chrome.
+    pub fn title(self) -> &'static str {
+        match self {
+            Self::HeatMap => "heat map",
+            Self::Procs => "processes",
+            other => other.name(),
+        }
+    }
 }
 
 /// Everything the mouse can interact with, rebuilt each frame.
@@ -629,6 +670,17 @@ impl HitMap {
             .rev()
             .find(|(r, _)| r.contains(pos))
             .map(|&(_, t)| t)
+    }
+
+    /// Every card the last frame laid out, with its rect — the geometry the
+    /// keyboard arrange mode steps through. Reading it back off the hit map
+    /// means the cursor moves through exactly what the user can see, with no
+    /// second copy of the layout to keep in sync.
+    pub fn panels(&self) -> impl Iterator<Item = (Rect, PanelKind)> + '_ {
+        self.targets.iter().filter_map(|&(r, t)| match t {
+            Target::Panel(kind) => Some((r, kind)),
+            _ => None,
+        })
     }
 }
 
@@ -984,6 +1036,29 @@ mod tests {
         assert_eq!(hits.hit(50, 50), None);
         hits.clear();
         assert_eq!(hits.hit(3, 2), None);
+    }
+
+    #[test]
+    fn hitmap_reports_the_cards_it_laid_out() {
+        use super::PanelKind;
+        let mut hits = HitMap::default();
+        // A card, then the targets that sit on top of it — exactly the order
+        // the process table registers, whose rows must not read as cards.
+        hits.push(Rect::new(0, 0, 10, 10), Target::Panel(PanelKind::Procs));
+        hits.push(Rect::new(0, 2, 10, 1), Target::ProcRow(3));
+        hits.push(Rect::new(20, 0, 10, 10), Target::Panel(PanelKind::Cpu));
+        assert_eq!(
+            hits.panels().collect::<Vec<_>>(),
+            [
+                (Rect::new(0, 0, 10, 10), PanelKind::Procs),
+                (Rect::new(20, 0, 10, 10), PanelKind::Cpu),
+            ],
+            "cards only, in layout order"
+        );
+        // A row still wins the click that lands on it.
+        assert_eq!(hits.hit(3, 2), Some(Target::ProcRow(3)));
+        hits.clear();
+        assert_eq!(hits.panels().count(), 0);
     }
 
     #[test]

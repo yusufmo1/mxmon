@@ -1,6 +1,7 @@
 //! mxmon — a beautiful, lightning-fast terminal monitor for Apple Silicon.
 
 mod app;
+mod arrange;
 mod collect;
 mod config;
 mod event;
