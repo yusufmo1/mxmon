@@ -566,6 +566,8 @@ pub enum Target {
     KillSignal(usize),
     /// Sort-menu row.
     SortOption(usize),
+    /// A tab in the inspector's strip.
+    InspectTab(usize),
     /// Footer button opening the settings card.
     Settings,
     /// Settings-card page tab (index into `settings::SECTIONS`).

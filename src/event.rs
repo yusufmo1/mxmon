@@ -5,7 +5,7 @@ use ratatui::crossterm::event::{
     Event, KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
 };
 
-use crate::app::{App, Edit, KILL_SIGNALS, Modal, SORT_KEYS, SortKey, View};
+use crate::app::{App, Edit, INSPECT_TABS, KILL_SIGNALS, Modal, SORT_KEYS, SortKey, View};
 use crate::collect::procs;
 use crate::collect::sampler::Control;
 use crate::keys::{Action, Chord};
@@ -91,6 +91,20 @@ fn handle_key(key: KeyEvent, app: &mut App, control: &Control, rs: &mut RenderSt
                 K::Enter => {
                     apply_sort(app, SORT_KEYS[selected]);
                     app.modal = None;
+                }
+                _ => {}
+            },
+            Modal::Inspect { tab } => match key.code {
+                K::Esc | K::Char('q') => app.modal = None,
+                K::Left | K::Char('h') => {
+                    app.modal = Some(Modal::Inspect {
+                        tab: tab.saturating_sub(1),
+                    });
+                }
+                K::Right | K::Char('l') | K::Tab => {
+                    app.modal = Some(Modal::Inspect {
+                        tab: (tab + 1).min(INSPECT_TABS.len() - 1),
+                    });
                 }
                 _ => {}
             },
@@ -191,6 +205,13 @@ fn handle_key(key: KeyEvent, app: &mut App, control: &Control, rs: &mut RenderSt
             {
                 app.modal = Some(Modal::Details { pid: row.pid });
             }
+        }
+        Action::Inspect => {
+            // Toggles: pressing it again closes, like every other modal key.
+            app.modal = match app.modal {
+                Some(Modal::Inspect { .. }) => None,
+                _ => Some(Modal::Inspect { tab: 0 }),
+            };
         }
         Action::ThemeCycle => cycle_theme(app, 1),
         Action::Pause => {
@@ -336,6 +357,9 @@ fn handle_mouse(
                         send_signal(app, pid, i);
                     }
                 }
+                Some(Target::InspectTab(i)) => {
+                    app.modal = Some(Modal::Inspect { tab: i });
+                }
                 Some(Target::SortOption(i)) => {
                     apply_sort(app, SORT_KEYS[i]);
                     app.modal = None;
@@ -377,6 +401,7 @@ fn modal_target(t: Target) -> bool {
             | Target::ModalClose
             | Target::KillSignal(_)
             | Target::SortOption(_)
+            | Target::InspectTab(_)
             | Target::SettingSection(_)
             | Target::SettingRow(_)
             | Target::SettingDec(_)
@@ -428,6 +453,7 @@ fn scroll(
             Target::ModalBody
             | Target::KillSignal(_)
             | Target::SortOption(_)
+            | Target::InspectTab(_)
             | Target::SettingSection(_)
             | Target::SettingRow(_)
             | Target::SettingDec(_)

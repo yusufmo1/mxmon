@@ -245,6 +245,7 @@ pub enum Action {
     PageUp,
     // App
     Settings,
+    Inspect,
     Help,
     ThemeCycle,
     Pause,
@@ -273,7 +274,7 @@ impl Group {
 }
 
 /// Every action, in display order.
-pub const ACTIONS: [Action; 23] = [
+pub const ACTIONS: [Action; 24] = [
     Action::ViewOverview,
     Action::ViewProcesses,
     Action::ViewThermal,
@@ -290,6 +291,7 @@ pub const ACTIONS: [Action; 23] = [
     Action::PageDown,
     Action::PageUp,
     Action::Settings,
+    Action::Inspect,
     Action::Help,
     Action::ThemeCycle,
     Action::Pause,
@@ -320,6 +322,7 @@ impl Action {
             Self::PageDown => "page_down",
             Self::PageUp => "page_up",
             Self::Settings => "settings",
+            Self::Inspect => "inspect",
             Self::Help => "help",
             Self::ThemeCycle => "theme_cycle",
             Self::Pause => "pause",
@@ -353,6 +356,7 @@ impl Action {
             Self::PageDown => "page down",
             Self::PageUp => "page up",
             Self::Settings => "settings",
+            Self::Inspect => "inspect",
             Self::Help => "help",
             Self::ThemeCycle => "cycle theme",
             Self::Pause => "pause",
@@ -383,6 +387,7 @@ impl Action {
             Self::PageDown => "move the selection a screen down",
             Self::PageUp => "move the selection a screen up",
             Self::Settings => "this card — every setting in one place",
+            Self::Inspect => "storage health, kernel activity, battery depth",
             Self::Help => "the key reference (this section)",
             Self::ThemeCycle => "next theme, applied and saved live",
             Self::Pause => "freeze sampling; the app keeps drawing",
@@ -418,7 +423,7 @@ impl Action {
 /// The stock bindings — exactly what mxmon shipped before the keymap existed,
 /// function-key aliases included. A config without a `[keys]` table behaves
 /// identically to one that never had the feature.
-const DEFAULTS: [(Action, &[&str]); 23] = [
+const DEFAULTS: [(Action, &[&str]); 24] = [
     (Action::ViewOverview, &["1"]),
     (Action::ViewProcesses, &["2"]),
     (Action::ViewThermal, &["3"]),
@@ -435,6 +440,7 @@ const DEFAULTS: [(Action, &[&str]); 23] = [
     (Action::PageDown, &["pagedown"]),
     (Action::PageUp, &["pageup"]),
     (Action::Settings, &["o"]),
+    (Action::Inspect, &["i"]),
     (Action::Help, &["?", "f1"]),
     (Action::ThemeCycle, &["t"]),
     (Action::Pause, &["p"]),

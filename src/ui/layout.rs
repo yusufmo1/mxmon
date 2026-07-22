@@ -614,6 +614,81 @@ mod tests {
         }
     }
 
+    /// The inspector, tab by tab — the home of every slow-tier fact that has
+    /// no room on a card, so each page is worth a golden frame.
+    #[test]
+    fn inspector_renders_stably() {
+        let mut app = tu::app();
+        app.view = View::Overview;
+        for (i, tab) in crate::app::INSPECT_TABS.into_iter().enumerate() {
+            app.modal = Some(Modal::Inspect { tab: i });
+            snap(
+                &format!("inspect_{}_120x36", tab.title()),
+                &mut app,
+                120,
+                36,
+            );
+        }
+        // A tab index past the end is hostile input, not a panic.
+        app.modal = Some(Modal::Inspect { tab: 99 });
+        snap("inspect_clamped_120x36", &mut app, 120, 36);
+    }
+
+    /// Hiding cards must reshape the dashboard without leaving a hole — and
+    /// hiding all of them is a legal configuration, not a crash.
+    #[test]
+    fn hidden_panels_render_stably() {
+        let mut app = tu::app();
+        app.view = View::Overview;
+        app.config.show_gpu = false;
+        app.config.show_temps = false;
+        app.config.show_battery = false;
+        snap("overview_hidden_panels_160x45", &mut app, 160, 45);
+        for f in [
+            &mut app.config.show_cpu,
+            &mut app.config.show_mem,
+            &mut app.config.show_net,
+            &mut app.config.show_disk,
+            &mut app.config.show_power,
+        ] {
+            *f = false;
+        }
+        snap("overview_no_panels_160x45", &mut app, 160, 45);
+    }
+
+    /// The inspector before the slow tier has reported, and on a machine with
+    /// no battery: every page must say so rather than render confident zeros.
+    #[test]
+    fn inspector_reports_absence_rather_than_zeros() {
+        let mut app = tu::app();
+        app.storage = None;
+        app.kernel = None;
+        app.battery = None;
+        for tab in 0..crate::app::INSPECT_TABS.len() {
+            app.modal = Some(Modal::Inspect { tab });
+            let rendered = frame(&mut app, 120, 36);
+            assert!(
+                rendered.contains("sampling…") || rendered.contains("no battery"),
+                "tab {tab} must admit it has nothing yet"
+            );
+        }
+    }
+
+    /// A failing drive has to be legible as failing.
+    #[test]
+    fn a_failing_drive_reads_as_failing() {
+        let mut app = tu::app();
+        if let Some(s) = app.storage.as_mut()
+            && let Some(m) = s.smart.as_mut()
+        {
+            m.critical_warning = 0x01;
+            m.media_errors = 7;
+            m.available_spare_pct = 3;
+        }
+        app.modal = Some(Modal::Inspect { tab: 0 });
+        assert!(frame(&mut app, 120, 36).contains("FAILING"));
+    }
+
     /// The settings card, page by page: the surface that replaced both the
     /// old settings modal and the help overlay, so every page — including the
     /// two capture modes — is worth a golden frame.

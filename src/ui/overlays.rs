@@ -7,7 +7,7 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::Span;
 use ratatui::widgets::{Block, BorderType, Borders, Clear, Widget};
 
-use crate::app::{App, KILL_SIGNALS, Modal, SORT_KEYS};
+use crate::app::{App, INSPECT_TABS, InspectTab, KILL_SIGNALS, Modal, SORT_KEYS};
 use crate::ui::theme::Theme;
 use crate::ui::widgets::{HitMap, Target};
 
@@ -83,6 +83,7 @@ pub fn render(buf: &mut Buffer, screen: Rect, app: &App, th: &Theme, hits: &mut 
         // The settings card is big enough to own a module; the key reference
         // lives there too (its KEYS page), which is why there is no help
         // overlay any more.
+        Some(Modal::Inspect { tab }) => inspect(buf, screen, app, *tab, th, hits),
         Some(Modal::Settings) => super::settings::render(buf, screen, app, th, hits),
         None => {}
     }
@@ -375,4 +376,247 @@ fn start_time(epoch_sec: i64) -> String {
         .as_secs() as i64;
     let ago = (now - epoch_sec).max(0) as u64;
     format!("{} ago", format_duration(ago))
+}
+
+/// The inspector: slow-tier facts with no room on a card. Tabbed rather than
+/// three modals, so one key reaches all of it.
+fn inspect(buf: &mut Buffer, screen: Rect, app: &App, tab: usize, th: &Theme, hits: &mut HitMap) {
+    let inner = modal_box(buf, screen, (78, 22), "inspect", th, hits, app.hover);
+    let label = Style::default().fg(th.dim);
+    let value = Style::default().fg(th.text);
+
+    // Tab strip, mirroring the settings card so the two read as one family.
+    let mut x = 0u16;
+    let mut strip = Vec::new();
+    for (i, t) in INSPECT_TABS.iter().enumerate() {
+        let active = i == tab.min(INSPECT_TABS.len() - 1);
+        let style = if active {
+            Style::default()
+                .fg(th.bg)
+                .bg(th.accent)
+                .add_modifier(Modifier::BOLD)
+        } else if app.hover == Some(Target::InspectTab(i)) {
+            Style::default().fg(th.accent).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(th.dim)
+        };
+        let text = format!(" {} ", t.title());
+        let w = text.chars().count() as u16;
+        hits.push(
+            Rect::new(inner.x + 1 + x, inner.y, w, 1),
+            Target::InspectTab(i),
+        );
+        x += w + 1;
+        strip.push(Span::styled(text, style));
+        strip.push(Span::styled(" ", label));
+    }
+    put(buf, inner, 0, strip);
+
+    let rows: Vec<(String, String)> = match InspectTab::at(tab) {
+        InspectTab::Storage => storage_rows(app),
+        InspectTab::Kernel => kernel_rows(app),
+        InspectTab::Battery => battery_rows(app),
+    };
+    for (i, (k, v)) in rows.iter().enumerate() {
+        put(
+            buf,
+            inner,
+            i as u16 + 2,
+            vec![
+                Span::styled(format!("{k:>16}  "), label),
+                Span::styled(v.clone(), value),
+            ],
+        );
+    }
+    put(
+        buf,
+        inner,
+        inner.height.saturating_sub(1),
+        vec![Span::styled("← → tabs · esc close", label)],
+    );
+}
+
+/// A pending slow tier reads as "sampling…", never as zeros.
+fn pending(what: &str) -> Vec<(String, String)> {
+    vec![(what.into(), "sampling…".into())]
+}
+
+fn storage_rows(app: &App) -> Vec<(String, String)> {
+    let Some(s) = &app.storage else {
+        return pending("storage");
+    };
+    let mut rows = Vec::new();
+    if let Some(m) = &s.smart {
+        rows.push((
+            "health".into(),
+            if m.unhealthy() {
+                "FAILING — see warnings".into()
+            } else {
+                "ok".into()
+            },
+        ));
+        rows.push((
+            "wear".into(),
+            format!("{}% of rated endurance used", m.percentage_used),
+        ));
+        rows.push((
+            "spare".into(),
+            format!(
+                "{}% (fails below {}%)",
+                m.available_spare_pct, m.available_spare_threshold_pct
+            ),
+        ));
+        if let Some(c) = m.temperature_c {
+            rows.push(("drive temp".into(), format!("{c}°C")));
+        }
+        // Terabytes explicitly: `Bytes` tops out at G, and a drive's
+        // lifetime total is the one place that is not enough.
+        let tb = |v: u128| v as f64 / 1e12;
+        rows.push((
+            "lifetime".into(),
+            format!(
+                "{:.1} TB written · {:.1} TB read",
+                tb(m.bytes_written),
+                tb(m.bytes_read)
+            ),
+        ));
+        rows.push((
+            "power".into(),
+            format!("{} hours · {} cycles", m.power_on_hours, m.power_cycles),
+        ));
+        rows.push((
+            "unclean stops".into(),
+            format!("{} · {} media errors", m.unsafe_shutdowns, m.media_errors),
+        ));
+    }
+    rows.push((
+        "throttled".into(),
+        s.controller.throttled.map_or("–".into(), |r| {
+            format!("{:.1}% of window", r.as_percent())
+        }),
+    ));
+    // Busiest volumes first: an idle one says nothing.
+    let mut vols: Vec<_> = s
+        .volumes
+        .iter()
+        .filter(|v| v.cache_hit().is_some())
+        .collect();
+    vols.sort_by_key(|v| std::cmp::Reverse(v.user_read.0));
+    for v in vols.iter().take(4) {
+        rows.push((
+            v.name.clone(),
+            format!(
+                "cache hit {} · write amp {}",
+                v.cache_hit()
+                    .map_or("–".into(), |r| format!("{:.1}%", r.as_percent())),
+                v.write_amplification()
+                    .map_or("–".into(), |a| format!("{a:.2}x")),
+            ),
+        ));
+    }
+    rows
+}
+
+fn kernel_rows(app: &App) -> Vec<(String, String)> {
+    let Some(k) = &app.kernel else {
+        return pending("kernel");
+    };
+    let mut rows = vec![(
+        "interrupts".into(),
+        format!("{:.0}/s across all devices", k.total_per_sec),
+    )];
+    for src in &k.top_sources {
+        rows.push((
+            src.device.clone(),
+            format!(
+                "{:>8.0}/s · handler {:.2}% cpu",
+                src.per_sec,
+                src.cpu_share * 100.0
+            ),
+        ));
+    }
+    let procs = &app.procs.kernel;
+    rows.push((
+        "context switches".into(),
+        format!("{:.0}/s", procs.context_switches),
+    ));
+    rows.push(("syscalls".into(), format!("{:.0}/s", procs.syscalls)));
+    rows.push(("mach ipc".into(), format!("{:.0}/s", procs.mach_messages)));
+    rows.push((
+        "waiting for cpu".into(),
+        format!("{:.2} threads runnable but not running", procs.runnable),
+    ));
+
+    let blockers = k.sleep_blockers();
+    rows.push((
+        "keeping awake".into(),
+        if blockers.is_empty() {
+            "nothing — the Mac may idle to sleep".into()
+        } else {
+            format!("{} assertions held", blockers.len())
+        },
+    ));
+    for a in blockers.iter().take(4) {
+        let owner = app
+            .procs
+            .rows
+            .iter()
+            .find(|r| r.pid == a.pid)
+            .map_or_else(|| format!("pid {}", a.pid), |r| r.name.clone());
+        rows.push((owner, a.name.clone().unwrap_or_else(|| a.kind.clone())));
+    }
+    rows
+}
+
+fn battery_rows(app: &App) -> Vec<(String, String)> {
+    let Some(b) = &app.battery else {
+        return vec![("battery".into(), "no battery on this machine".into())];
+    };
+    let mut rows = vec![
+        (
+            "cycles".into(),
+            b.design_cycles.map_or_else(
+                || b.cycle_count.to_string(),
+                |d| format!("{} of {d} rated", b.cycle_count),
+            ),
+        ),
+        (
+            "health".into(),
+            format!("{:.0}% of design capacity", b.health.as_percent()),
+        ),
+    ];
+    if let (Some(now), Some(max)) = (b.raw_capacity_mah, b.raw_max_capacity_mah) {
+        rows.push(("charge".into(), format!("{now} of {max} mAh")));
+    }
+    if let Some((lo, hi)) = b.daily_soc {
+        rows.push((
+            "recent band".into(),
+            format!("{lo}%–{hi}% (optimized charging)"),
+        ));
+    }
+    if !b.cell_voltages.is_empty() {
+        let cells: Vec<String> = b.cell_voltages.iter().map(|mv| format!("{mv}mV")).collect();
+        rows.push(("cells".into(), cells.join(" · ")));
+        if let Some(spread) = crate::collect::battery::cell_imbalance_mv(&b.cell_voltages) {
+            rows.push((
+                "imbalance".into(),
+                // A healthy pack holds its cells within a few mV.
+                format!(
+                    "{spread}mV spread{}",
+                    if spread > 50 { " — high" } else { "" }
+                ),
+            ));
+        }
+    }
+    rows.push(("temp".into(), format!("{}", b.temp)));
+    if let Some(t) = b.lifetime_max_temp {
+        rows.push(("lifetime peak".into(), format!("{t}")));
+    }
+    if let Some(reason) = b.not_charging_reason.filter(|&r| r != 0) {
+        rows.push(("not charging".into(), format!("reason bits {reason:#x}")));
+    }
+    if let Some(secs) = b.thermally_limited_secs.filter(|&s| s > 0) {
+        rows.push(("thermally limited".into(), format_duration(secs)));
+    }
+    rows
 }

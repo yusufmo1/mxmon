@@ -293,6 +293,38 @@ pub enum Modal {
     /// The settings card. Its cursor lives in [`App::settings`] rather than
     /// here, so closing and reopening returns to the page you were on.
     Settings,
+    /// The inspector: the slow-tier facts that have no room on a card.
+    /// Tabbed rather than three separate modals, reusing the settings card's
+    /// tab-strip idiom instead of inventing a second one.
+    Inspect {
+        tab: usize,
+    },
+}
+
+/// Pages of the inspector, in tab order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InspectTab {
+    Storage,
+    Kernel,
+    Battery,
+}
+
+pub const INSPECT_TABS: [InspectTab; 3] =
+    [InspectTab::Storage, InspectTab::Kernel, InspectTab::Battery];
+
+impl InspectTab {
+    pub fn title(self) -> &'static str {
+        match self {
+            Self::Storage => "storage",
+            Self::Kernel => "kernel",
+            Self::Battery => "battery",
+        }
+    }
+
+    /// Cursors are hostile input; clamp rather than index.
+    pub fn at(index: usize) -> Self {
+        INSPECT_TABS[index.min(INSPECT_TABS.len() - 1)]
+    }
 }
 
 /// Cursor and edit state for the settings card. Every field is treated as
