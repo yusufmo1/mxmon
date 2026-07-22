@@ -14,6 +14,9 @@ use std::time::{Duration, Instant};
 
 use portable_pty::{CommandBuilder, PtySize, native_pty_system};
 
+mod common;
+use common::skip_without_hardware;
+
 /// Kill the TUI on any panic/assert so a failed test never strands a live
 /// fullscreen mxmon on the host.
 struct KillOnDrop(Box<dyn portable_pty::Child + Send + Sync>);
@@ -169,6 +172,9 @@ impl Tui {
 
 #[test]
 fn tui_boots_walks_views_and_quits_cleanly() {
+    if skip_without_hardware("the TUI smoke test") {
+        return;
+    }
     let mut tui = boot(40, 120);
     for key in *b"2341" {
         tui.writer.write_all(&[key]).expect("send key");
@@ -186,6 +192,9 @@ fn tui_mouse_drives_cards_tabs_wheel_and_hover() {
     // view's "CONNECTIONS" share their leading "C" cell, so that word
     // arrives over the wire decapitated). Column headers and nav tags paint
     // over differently-styled cells, so they always hit the stream whole.
+    if skip_without_hardware("the TUI mouse walk") {
+        return;
+    }
     let mut tui = boot(40, 120);
 
     // Hover: sweeping the pointer onto the CPU card (top-left at 120×40)
