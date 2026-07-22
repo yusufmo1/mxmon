@@ -28,10 +28,10 @@ source: src/ui/layout.rs
 ╭╸PROCESSES╺ 160│   app ╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌                                 ┃│───────────────╮
 │    PID USER   │   settings        o   +                 this card — every setting in one place      ┃│               │
 │    659 yusuf  │   inspect         i   +                 storage health, kernel activity, battery dep┃│               ┃
-│    421 root   │   help            ?   F1   +            the key reference (this section)            ┃│               ┃
-│    642 _window│   cycle theme     t   +                 next theme, applied and saved live          ┃│               │
-│    404 yusuf  │   pause           p   +                 freeze sampling; the app keeps drawing       │               │
-│    863 yusuf  │   debug hud       d   +                 frame time, fps and tick in the footer       │               │
+│    421 root   │   arrange cards   a   +                 move cards with the arrows; drag them with t┃│               ┃
+│    642 _window│   help            ?   F1   +            the key reference (this section)             │               │
+│    404 yusuf  │   cycle theme     t   +                 next theme, applied and saved live           │               │
+│    863 yusuf  │   pause           p   +                 freeze sampling; the app keeps drawing       │               │
 │    625 root   │ ──────────────────────────────────────────────────────────────────────────────────── │               │
 │    387 _window│   the dashboard: every metric card at once  ·  config.toml: keys                     │               │
 │    829 root   │  ↑↓ row · ⏎ bind · ⌫ unbind · r reset · ⇥ page · esc close                           │               │

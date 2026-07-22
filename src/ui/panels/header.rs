@@ -224,6 +224,24 @@ pub fn footer(buf: &mut Buffer, area: Rect, app: &App, th: &Theme, hits: &mut Hi
         rx += w;
     }
 
+    // While cards are being rearranged the footer teaches that mode instead
+    // of the usual buttons: those commands still work, but none of them is
+    // what the user needs to know right now.
+    if let Some(arranging) = app.arrange {
+        let hint = if arranging.held().is_some() {
+            " ←↑↓→ choose a card  ⏎ drop here  esc cancel"
+        } else {
+            " ←↑↓→ move  ⏎ pick up  esc done"
+        };
+        buf.set_span(
+            x + 1,
+            area.y,
+            &Span::styled(hint, Style::default().fg(th.accent)),
+            area.width.saturating_sub(x + 1),
+        );
+        return;
+    }
+
     // Key glyphs come from the live keymap, so a rebinding done in the
     // settings card shows up here immediately — the footer can never
     // advertise a key that no longer works.

@@ -5,7 +5,10 @@ use ratatui::crossterm::event::{
     Event, KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
 };
 
-use crate::app::{App, Edit, INSPECT_TABS, KILL_SIGNALS, Modal, SORT_KEYS, SortKey, View};
+use crate::app::{
+    App, Arranging, Edit, INSPECT_TABS, KILL_SIGNALS, Modal, SORT_KEYS, SortKey, View,
+};
+use crate::arrange::{self, Dir};
 use crate::collect::procs;
 use crate::collect::sampler::Control;
 use crate::keys::{Action, Chord};
@@ -32,7 +35,7 @@ pub fn handle(
     rs: &mut RenderState,
 ) -> Outcome {
     match event {
-        Event::Key(key) => handle_key(*key, app, control, rs),
+        Event::Key(key) => handle_key(*key, app, control, hits, rs),
         Event::Mouse(mouse) => handle_mouse(*mouse, app, control, hits, rs),
         // A resize must repaint; focus/paste events change nothing.
         Event::Resize(..) => Outcome::Continue,
@@ -40,12 +43,25 @@ pub fn handle(
     }
 }
 
-fn handle_key(key: KeyEvent, app: &mut App, control: &Control, rs: &mut RenderState) -> Outcome {
+fn handle_key(
+    key: KeyEvent,
+    app: &mut App,
+    control: &Control,
+    hits: &HitMap,
+    rs: &mut RenderState,
+) -> Outcome {
     use KeyCode as K;
 
     // Ctrl-C always quits.
     if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == K::Char('c') {
         return Outcome::Quit;
+    }
+
+    // A modal owns the screen, so nothing can be rearranged under it.
+    if app.modal.is_some() {
+        app.arrange = None;
+    } else if let Some(outcome) = arrange_key(key, app, hits) {
+        return outcome;
     }
 
     // Modal capture.
@@ -213,6 +229,7 @@ fn handle_key(key: KeyEvent, app: &mut App, control: &Control, rs: &mut RenderSt
                 _ => Some(Modal::Inspect { tab: 0 }),
             };
         }
+        Action::Arrange => toggle_arrange(app, hits),
         Action::ThemeCycle => cycle_theme(app, 1),
         Action::Pause => {
             app.paused = !app.paused;
@@ -271,6 +288,20 @@ fn handle_mouse(
                 app.modal = None;
                 return Outcome::Continue;
             }
+            // Pressing a card arms a drag instead of navigating: whether it
+            // was a click or a drag isn't known until the button comes back
+            // up. Navigating here would switch the view out from under the
+            // pointer before it had a chance to move.
+            if let Some(Target::Panel(from)) = target {
+                app.arrange = Some(Arranging::Drag {
+                    from,
+                    over: Some(from),
+                    moved: false,
+                });
+                return Outcome::Continue;
+            }
+            // A press anywhere else abandons whatever was in flight.
+            app.arrange = None;
             match target {
                 Some(Target::Tab(view)) => app.view = view,
                 Some(Target::ProcHeader(key)) => apply_sort(app, key),
@@ -386,10 +417,121 @@ fn handle_mouse(
             }
             app.hover = hover;
         }
-        // Drags and button releases mutate nothing above — no redraw.
+        MouseEventKind::Drag(MouseButton::Left) => {
+            let Some(Arranging::Drag { from, over, moved }) = app.arrange else {
+                return Outcome::Idle;
+            };
+            let now = match hits.hit(mouse.column, mouse.row) {
+                Some(Target::Panel(kind)) => Some(kind),
+                _ => None,
+            };
+            // The first motion event is what promotes a press into a drag;
+            // after that, only crossing into a different card is worth a
+            // repaint, so holding the button still costs nothing per event.
+            if moved && now == over {
+                return Outcome::Idle;
+            }
+            app.arrange = Some(Arranging::Drag {
+                from,
+                over: now,
+                moved: true,
+            });
+        }
+        MouseEventKind::Up(MouseButton::Left) => {
+            let Some(Arranging::Drag { from, over, moved }) = app.arrange.take() else {
+                return Outcome::Idle;
+            };
+            if !moved {
+                // Pressed and released without moving — an ordinary click,
+                // which is how a card has always opened its deep dive.
+                open_panel(app, from);
+            } else if let Some(onto) = over {
+                swap_cards(app, from, onto);
+            }
+        }
+        // Other buttons and their releases mutate nothing — no redraw.
         _ => return Outcome::Idle,
     }
     Outcome::Continue
+}
+
+/// Trade two cards' positions and persist it. Dropping a card on itself is a
+/// no-op, so a drag that wanders and comes home costs nothing.
+fn swap_cards(app: &mut App, from: PanelKind, onto: PanelKind) {
+    if from == onto {
+        return;
+    }
+    app.config.arrangement.swap(from, onto);
+    app.config.save();
+    app.toast(format!("{} ⇄ {}", from.title(), onto.title()), false);
+}
+
+/// Enter or leave the keyboard arrange mode. The cursor starts on whatever
+/// the pointer is resting on, else the first card the last frame laid out —
+/// a view with no cards (thermal, connections) says so instead of entering a
+/// mode with nothing to move.
+fn toggle_arrange(app: &mut App, hits: &HitMap) {
+    if app.arrange.is_some() {
+        app.arrange = None;
+        return;
+    }
+    let hovered = match app.hover {
+        Some(Target::Panel(kind)) => Some(kind),
+        _ => None,
+    };
+    match hovered.or_else(|| hits.panels().next().map(|(_, k)| k)) {
+        Some(cursor) => app.arrange = Some(Arranging::Mode { cursor, held: None }),
+        None => app.toast("no cards to arrange in this view", false),
+    }
+}
+
+/// The keys the arrange mode owns while it runs: the cursor arrows, pick-up /
+/// drop, and the way out. Everything else falls through to normal dispatch,
+/// so `2` still switches view and `q` still quits. `None` means "not mine".
+fn arrange_key(key: KeyEvent, app: &mut App, hits: &HitMap) -> Option<Outcome> {
+    use KeyCode as K;
+    let arranging = app.arrange?;
+    // Esc abandons any rearrangement, an in-flight mouse drag included.
+    if key.code == K::Esc {
+        app.arrange = None;
+        return Some(Outcome::Continue);
+    }
+    let Arranging::Mode { cursor, held } = arranging else {
+        return None;
+    };
+    let dir = match key.code {
+        K::Left => Dir::Left,
+        K::Right => Dir::Right,
+        K::Up => Dir::Up,
+        K::Down => Dir::Down,
+        K::Enter => {
+            app.arrange = Some(match held {
+                // Drop. The cursor stays on this *position*, which now shows
+                // the card that was being carried.
+                Some(held) => {
+                    swap_cards(app, held, cursor);
+                    Arranging::Mode {
+                        cursor: held,
+                        held: None,
+                    }
+                }
+                None => Arranging::Mode {
+                    cursor,
+                    held: Some(cursor),
+                },
+            });
+            return Some(Outcome::Continue);
+        }
+        _ => return None,
+    };
+    let cards: Vec<_> = hits.panels().collect();
+    match arrange::step(&cards, cursor, dir) {
+        Some(next) => app.arrange = Some(Arranging::Mode { cursor: next, held }),
+        // Nothing that way: the cursor stops at the edge rather than wrapping,
+        // and nothing changed, so the frame doesn't need repainting.
+        None => return Some(Outcome::Idle),
+    }
+    Some(Outcome::Continue)
 }
 
 /// Targets that belong to the modal layer: clicking them while a modal is
@@ -526,7 +668,7 @@ fn open_panel(app: &mut App, kind: PanelKind) {
         PanelKind::Cpu => jump_sorted(app, SortKey::Cpu),
         PanelKind::Mem => jump_sorted(app, SortKey::Memory),
         PanelKind::Power => jump_sorted(app, SortKey::Power),
-        PanelKind::Disk => app.view = View::Processes,
+        PanelKind::Disk | PanelKind::Procs => app.view = View::Processes,
         PanelKind::Net => app.view = View::Connections,
         PanelKind::Gpu | PanelKind::Temps | PanelKind::Battery | PanelKind::HeatMap => {
             app.view = View::Thermal;
@@ -832,7 +974,7 @@ mod tests {
     use ratatui::layout::Rect;
 
     use super::{Outcome, handle};
-    use crate::app::{App, Edit, KILL_SIGNALS, Modal, SORT_KEYS, SortKey, View};
+    use crate::app::{App, Arranging, Edit, KILL_SIGNALS, Modal, SORT_KEYS, SortKey, View};
     use crate::collect::sampler::{Control, FAST_MS_MAX, FAST_MS_MIN, Update};
     use crate::config;
     use crate::keys::{Action, Chord};
@@ -875,6 +1017,20 @@ mod tests {
         }
         fn click(&mut self, x: u16, y: u16) -> Outcome {
             self.ev(&tu::click(x, y))
+        }
+
+        /// A whole click: press and release without moving. Cards act on the
+        /// release, since a press that moves is a drag instead.
+        fn tap(&mut self, x: u16, y: u16) -> Outcome {
+            self.ev(&tu::click(x, y));
+            self.ev(&tu::release(x, y))
+        }
+
+        /// Press on one point, move to another, release there.
+        fn drag(&mut self, from: (u16, u16), to: (u16, u16)) -> Outcome {
+            self.ev(&tu::click(from.0, from.1));
+            self.ev(&tu::drag(to.0, to.1));
+            self.ev(&tu::release(to.0, to.1))
         }
     }
 
@@ -1579,7 +1735,7 @@ mod tests {
             h.hits.clear();
             h.hits.push(card, Target::Panel(kind));
             h.app.view = View::Overview;
-            h.click(1, 1);
+            h.tap(1, 1);
             assert_eq!(h.app.view, view, "{kind:?}");
         }
         // The disk card jumps to the table but respects the active sort.
@@ -1588,7 +1744,7 @@ mod tests {
         h.app.view = View::Overview;
         h.app.sort = SortKey::Name;
         h.app.sort_desc = false;
-        h.click(1, 1);
+        h.tap(1, 1);
         assert_eq!(h.app.view, View::Processes);
         assert_eq!((h.app.sort, h.app.sort_desc), (SortKey::Name, false));
         // Value cards land sorted by their own column — absolute, so a
@@ -1601,12 +1757,167 @@ mod tests {
             h.hits.clear();
             h.hits.push(card, Target::Panel(kind));
             h.app.view = View::Overview;
-            h.click(1, 1);
+            h.tap(1, 1);
             assert_eq!((h.app.view, h.app.sort), (View::Processes, key));
             assert!(h.app.sort_desc);
-            h.click(1, 1);
+            h.tap(1, 1);
             assert!(h.app.sort_desc, "re-click must not flip direction");
         }
+    }
+
+    /// Two cards side by side, as a frame would lay them out.
+    fn two_cards(h: &mut H, a: PanelKind, b: PanelKind) {
+        h.hits.clear();
+        h.hits.push(Rect::new(0, 0, 10, 5), Target::Panel(a));
+        h.hits.push(Rect::new(10, 0, 10, 5), Target::Panel(b));
+    }
+
+    #[test]
+    fn dragging_one_card_onto_another_swaps_them() {
+        let mut h = h();
+        two_cards(&mut h, PanelKind::Cpu, PanelKind::Gpu);
+        h.drag((1, 1), (15, 1));
+        assert_eq!(h.app.config.arrangement.at(PanelKind::Cpu), PanelKind::Gpu);
+        assert_eq!(h.app.config.arrangement.at(PanelKind::Gpu), PanelKind::Cpu);
+        assert!(h.app.arrange.is_none(), "the drag ends on release");
+        assert_eq!(h.app.view, View::Overview, "a drag never navigates");
+        assert!(h.app.toast.is_some(), "the swap says so");
+
+        // Swaps compose: grabbing "the GPU card" grabs the slot CPU owned.
+        two_cards(&mut h, PanelKind::Gpu, PanelKind::Mem);
+        h.drag((1, 1), (15, 1));
+        assert_eq!(h.app.config.arrangement.at(PanelKind::Cpu), PanelKind::Mem);
+        assert_eq!(h.app.config.arrangement.at(PanelKind::Mem), PanelKind::Gpu);
+    }
+
+    #[test]
+    fn drags_that_go_nowhere_change_nothing() {
+        let mut h = h();
+        two_cards(&mut h, PanelKind::Cpu, PanelKind::Gpu);
+        // Dropped on itself.
+        h.drag((1, 1), (5, 3));
+        assert!(h.app.config.arrangement.is_default());
+        // Dropped on dead space — no card there to trade with.
+        h.drag((1, 1), (50, 50));
+        assert!(h.app.config.arrangement.is_default());
+        assert!(h.app.arrange.is_none());
+        // A release with nothing armed is inert rather than a phantom click.
+        h.app.view = View::Overview;
+        assert!(h.ev(&tu::release(1, 1)) == Outcome::Idle);
+        assert_eq!(h.app.view, View::Overview);
+    }
+
+    #[test]
+    fn a_press_that_never_moves_is_still_a_click() {
+        let mut h = h();
+        two_cards(&mut h, PanelKind::Net, PanelKind::Gpu);
+        h.ev(&tu::click(1, 1));
+        assert!(h.app.arrange.is_some(), "the press arms a possible drag");
+        assert_eq!(h.app.view, View::Overview, "but does not navigate yet");
+        h.ev(&tu::release(1, 1));
+        assert_eq!(h.app.view, View::Connections, "the release navigates");
+        assert!(h.app.config.arrangement.is_default());
+    }
+
+    #[test]
+    fn holding_the_button_still_costs_nothing_per_event() {
+        let mut h = h();
+        two_cards(&mut h, PanelKind::Cpu, PanelKind::Gpu);
+        h.ev(&tu::click(1, 1));
+        // The first motion promotes the press to a drag and must repaint…
+        assert!(h.ev(&tu::drag(3, 2)) == Outcome::Continue);
+        // …but moving around inside the same card has nothing new to show.
+        assert!(h.ev(&tu::drag(4, 2)) == Outcome::Idle);
+        assert!(h.ev(&tu::drag(5, 3)) == Outcome::Idle);
+        // Crossing into the other card does.
+        assert!(h.ev(&tu::drag(15, 2)) == Outcome::Continue);
+        assert!(h.ev(&tu::drag(16, 2)) == Outcome::Idle);
+        // A drag with nothing armed is inert.
+        h.app.arrange = None;
+        assert!(h.ev(&tu::drag(15, 2)) == Outcome::Idle);
+    }
+
+    #[test]
+    fn a_modal_blocks_dragging_and_dismisses_the_mode() {
+        let mut h = h();
+        two_cards(&mut h, PanelKind::Cpu, PanelKind::Gpu);
+        h.app.modal = Some(Modal::Settings);
+        h.drag((1, 1), (15, 1));
+        assert!(
+            h.app.config.arrangement.is_default(),
+            "the click closed the modal instead"
+        );
+        // And a mode left running is dropped the moment a modal owns the keys.
+        h.app.arrange = Some(Arranging::Mode {
+            cursor: PanelKind::Cpu,
+            held: None,
+        });
+        h.app.modal = Some(Modal::Settings);
+        h.key(K::Char('j'));
+        assert!(h.app.arrange.is_none());
+    }
+
+    #[test]
+    fn arrange_mode_walks_the_cards_and_swaps_them() {
+        let mut h = h();
+        two_cards(&mut h, PanelKind::Cpu, PanelKind::Gpu);
+        h.key(K::Char('a'));
+        assert_eq!(
+            h.app.arrange,
+            Some(Arranging::Mode {
+                cursor: PanelKind::Cpu,
+                held: None
+            }),
+            "the cursor starts on the first card laid out"
+        );
+        // Right steps to the neighbour; left comes back; the edges hold.
+        h.key(K::Right);
+        assert_eq!(h.app.arrange.unwrap().target(), Some(PanelKind::Gpu));
+        assert!(h.key(K::Right) == Outcome::Idle, "nothing further right");
+        h.key(K::Left);
+        assert_eq!(h.app.arrange.unwrap().target(), Some(PanelKind::Cpu));
+
+        // Pick up, walk, drop.
+        h.key(K::Enter);
+        assert_eq!(h.app.arrange.unwrap().held(), Some(PanelKind::Cpu));
+        h.key(K::Right);
+        h.key(K::Enter);
+        assert_eq!(h.app.config.arrangement.at(PanelKind::Cpu), PanelKind::Gpu);
+        assert_eq!(h.app.config.arrangement.at(PanelKind::Gpu), PanelKind::Cpu);
+        // Still arranging, cursor on the position the carried card landed in.
+        assert_eq!(
+            h.app.arrange,
+            Some(Arranging::Mode {
+                cursor: PanelKind::Cpu,
+                held: None
+            })
+        );
+        // `a` again leaves, and so does esc.
+        h.key(K::Char('a'));
+        assert!(h.app.arrange.is_none());
+        h.key(K::Char('a'));
+        h.key(K::Esc);
+        assert!(h.app.arrange.is_none());
+    }
+
+    #[test]
+    fn arrange_mode_passes_other_keys_through() {
+        let mut h = h();
+        two_cards(&mut h, PanelKind::Cpu, PanelKind::Gpu);
+        h.key(K::Char('a'));
+        // A view key still switches view, and the mode rides along.
+        h.key(K::Char('3'));
+        assert_eq!(h.app.view, View::Thermal);
+        assert!(h.app.arrange.is_some());
+    }
+
+    #[test]
+    fn arrange_mode_needs_cards_to_arrange() {
+        let mut h = h();
+        h.hits.clear();
+        h.key(K::Char('a'));
+        assert!(h.app.arrange.is_none(), "no cards, no mode");
+        assert!(h.app.toast.is_some(), "and it says why");
     }
 
     #[test]

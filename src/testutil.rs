@@ -625,6 +625,27 @@ pub fn moved(column: u16, row: u16) -> Event {
     })
 }
 
+/// The button coming back up. A card acts on release, not on press — the
+/// press only arms a possible drag — so a click is [`click`] then this.
+pub fn release(column: u16, row: u16) -> Event {
+    Event::Mouse(MouseEvent {
+        kind: MouseEventKind::Up(MouseButton::Left),
+        column,
+        row,
+        modifiers: KeyModifiers::NONE,
+    })
+}
+
+/// Pointer motion with the left button held — what turns a press into a drag.
+pub fn drag(column: u16, row: u16) -> Event {
+    Event::Mouse(MouseEvent {
+        kind: MouseEventKind::Drag(MouseButton::Left),
+        column,
+        row,
+        modifiers: KeyModifiers::NONE,
+    })
+}
+
 pub fn scroll(column: u16, row: u16, down: bool) -> Event {
     Event::Mouse(MouseEvent {
         kind: if down {
