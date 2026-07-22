@@ -20,7 +20,7 @@ source: src/ui/layout.rs
 ╰───────────────│                  ▪catppuccin ▪solarized ▪rosepine ▪everforest ▪kanagawa              │───────────────╯
 ╭╸NETWORK╺ ↓  22│                  ▪onedark ▪synthwave ▪monokai ▪cyberpunk ▪solarized-light            │───────────────╮
 │Σ↓  7.4G  Σ↑  1│                  ▪latte ▪gruvbox-light                                               │▏    ⚡  charging
-│↑   7.5 Mb/s⣾⣧⣷│   frames         ‹ ██ theme          ›  from midnight                                │ full  adapter │
+│↑   7.5 Mb/s⣾⣧⣷│   frames         ‹ ██ theme          ›  from midnight                                │4m to full  ada│
 │⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿│   labels         ‹ ██ theme          ›  from midnight                                │ SoC     6.54W │
 │⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿│   glyphs         ‹    braille        ›  forced                                    ↺  │ DISP    3.10W │
 │↓  47.5 Mb/s⢸⢸⢸│ ──────────────────────────────────────────────────────────────────────────────────── │ other   17.0W │
