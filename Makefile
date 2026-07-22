@@ -52,4 +52,4 @@ cov:
 
 cov-gate:
 	$(LLVM_TOOLS) cargo llvm-cov nextest --ignore-filename-regex 'src/ffi/' \
-		--fail-under-lines $$(grep -oE 'COVERAGE_FLOOR: "?[0-9]+' .github/workflows/ci.yml | grep -oE '[0-9]+')
+		--fail-under-lines $$(grep -oE 'COVERAGE_FLOOR_ONDEVICE: "?[0-9]+' .github/workflows/ci.yml | grep -oE '[0-9]+')
