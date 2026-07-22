@@ -82,6 +82,7 @@ cargo build --release && ./target/release/mxmon
 | `--json` | print one JSON snapshot of every metric and exit (scripting / tests) |
 | `--interval <MS>` | fast-tier sampling interval, `100`–`2000` ms |
 | `--theme <NAME>` | launch with any of the 18 built-in [themes](#themes) |
+| `--glyphs <MODE>` | graph fill: `auto` (default), `octant`, or `braille` — see [glyphs](#glyphs) |
 
 ## Keys
 
@@ -93,12 +94,12 @@ cargo build --release && ./target/release/mxmon
 | <kbd>s</kbd> / <kbd>F6</kbd> / click header | sort |
 | <kbd>x</kbd> / <kbd>F9</kbd> | kill (signal picker) |
 | <kbd>Enter</kbd> | process details |
-| <kbd>o</kbd> | settings — process panes · theme · sampling · graph window · ping |
+| <kbd>o</kbd> | settings — panes · theme · schematic · contours · glyphs · sampling · graph window · ping |
 | <kbd>t</kbd> | cycle theme |
 | <kbd>p</kbd> · <kbd>+</kbd> <kbd>-</kbd> · <kbd>d</kbd> | pause · sampling speed · debug HUD |
 | <kbd>?</kbd> · <kbd>q</kbd> | help · quit |
 
-<sub>Full mouse support: click tabs, column headers, rows and footer buttons; scroll the process, sensor, and connection lists.</sub>
+<sub>Full mouse support: every metric card is a button — hover it for a `▸ destination` hint, click to jump where that metric deepens (CPU/MEM/POWER open the process table sorted by it, NET the connections view, GPU/TEMPS/BATTERY the thermal view). Click tabs, column headers, rows, footer chips and the modal `✕`; scroll the process, sensor and connection lists, and the settings values.</sub>
 
 <div align="center">
 
@@ -173,6 +174,20 @@ Modern macOS quantizes and 32-bit-wraps `NET_RT_IFLIST2` byte counters for ad-ho
 …plus three light themes for daylight terminals — `latte` · `solarized-light` · `gruvbox-light`.
 
 On truecolor terminals the thermogram samples the raw thermal ramp; on 256-color terminals (Terminal.app) it walks a hand-curated monotonic path through the xterm color cube — clean isotherm contours instead of quantization noise.
+
+## Glyphs
+
+Graphs are drawn with sub-cell resolution — 2×4 dots per character cell. Braille (`⣠⣴⣿`) works in every terminal but leaves visible gaps between dots; Unicode 16 **octants** fill the same grid solidly, so a graph reads as one continuous shape.
+
+Both share that 2×4 grid, so mxmon always *renders* in braille and remaps the finished frame to octants when it can — lossless, one pass, no second code path.
+
+| `--glyphs` | Behavior |
+|---|---|
+| `auto` (default) | octants on terminals known to draw them — Ghostty, Kitty, WezTerm, foot — braille everywhere else |
+| `octant` | force octants; needs a font or terminal with Symbols for Legacy Computing Supplement coverage |
+| `braille` | force braille; safe everywhere |
+
+Detection is a conservative allowlist, so anything unrecognized stays on braille. Force `octant` where detection can't see through — inside tmux, for instance. Also switchable live in the settings modal (<kbd>o</kbd>).
 
 ## Credits
 
