@@ -48,7 +48,9 @@ fn sampled_app() -> App {
     let control = Control::new();
     control.fast_ms.store(100, Ordering::Relaxed); // 100ms fast → procs (×8) in <1s
     let (tx, rx) = mpsc::channel::<Update>();
-    sampler::spawn(soc, Arc::clone(&control), tx, None); // ping_host None: stay hermetic
+    // ping_host None: stay hermetic. Both slow-tier probes on, so the sweep
+    // covers the storage/kernel readings the inspector renders.
+    sampler::spawn(soc, Arc::clone(&control), tx, None, true, true);
 
     // Drain long enough for every tier (procs ×8, slow ×4) to report at least once.
     let deadline = Instant::now() + Duration::from_secs(3);

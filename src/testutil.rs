@@ -484,6 +484,87 @@ pub fn flows() -> FlowSample {
 /// Glyphs are pinned to braille so frames never depend on the host
 /// terminal's env (`Glyphs::Auto` probes `TERM_PROGRAM` et al.); tests that
 /// exercise the octant pass opt in explicitly.
+/// A storage-health pass with a realistic drive and a few volumes.
+pub fn storage() -> crate::collect::storage::StorageSample {
+    use crate::collect::storage::{ControllerStats, StorageSample, VolumeStats};
+    let vol = |name: &str, ur: u64, dr: u64, uw: u64, dw: u64| VolumeStats {
+        name: name.into(),
+        user_read: Bytes(ur),
+        device_read: Bytes(dr),
+        user_write: Bytes(uw),
+        device_write: Bytes(dw),
+    };
+    StorageSample {
+        smart: Some(crate::ffi::nvme::Smart {
+            critical_warning: 0,
+            temperature_c: Some(34),
+            available_spare_pct: 100,
+            available_spare_threshold_pct: 99,
+            percentage_used: 6,
+            bytes_read: 296_873_853_440_000,
+            bytes_written: 717_732_623_872_000,
+            host_read_commands: 18_302_504_183,
+            host_write_commands: 24_497_644_723,
+            power_cycles: 441,
+            power_on_hours: 4383,
+            unsafe_shutdowns: 62,
+            media_errors: 0,
+            error_log_entries: 0,
+        }),
+        volumes: vec![
+            vol(
+                "Macintosh HD - Data",
+                1_001_565_691,
+                14_807_040,
+                583_133,
+                1_179_648,
+            ),
+            vol("Macintosh HD", 4_194_304, 4_194_304, 0, 0),
+            vol("Preboot", 1_048_576, 943_718, 4096, 8192),
+        ],
+        controller: ControllerStats {
+            throttled: Some(Ratio(0.0)),
+            nand_written: Bytes(2_290_000_000),
+        },
+    }
+}
+
+/// A kernel pass: a few busy interrupt sources and a couple of wake locks.
+pub fn kernel() -> crate::collect::kernel::KernelSnapshot {
+    use crate::collect::kernel::{InterruptSource, KernelSnapshot};
+    use crate::ffi::iopm::Assertion;
+    let src = |device: &str, per_sec: f64, cpu_share: f64| InterruptSource {
+        device: device.into(),
+        per_sec,
+        cpu_share,
+    };
+    KernelSnapshot {
+        top_sources: vec![
+            src("ans 4", 11781.0, 0.0896),
+            src("sgx 4", 2599.0, 0.0841),
+            src("gfx-asc 2", 3002.0, 0.0076),
+        ],
+        total_per_sec: 19815.0,
+        assertions: vec![
+            Assertion {
+                pid: 812,
+                kind: "PreventUserIdleSystemSleep".into(),
+                name: Some("caffeinate command-line tool".into()),
+            },
+            Assertion {
+                pid: 474,
+                kind: "PreventUserIdleSystemSleep".into(),
+                name: Some("AppleUSBAudioEngine: headset in use".into()),
+            },
+            Assertion {
+                pid: 1,
+                kind: "UserIsActive".into(),
+                name: None,
+            },
+        ],
+    }
+}
+
 pub fn app() -> App {
     let mut config = Config::default();
     config.glyphs = crate::config::Glyphs::Braille;
@@ -511,6 +592,8 @@ pub fn app() -> App {
     }
     app.apply(Update::Flows(Box::new(flows())));
     app.apply(Update::Procs(Box::new(procs(40))));
+    app.apply(Update::Health(Box::new(storage())));
+    app.apply(Update::Kernel(Box::new(kernel())));
     app
 }
 
