@@ -28,6 +28,15 @@ pub struct Config {
     /// Theme name (any `ui::theme::THEMES` entry, e.g. "midnight", "neon",
     /// "gruvbox"); unknown names fall back to "midnight".
     pub theme: String,
+    /// Panel frames, graph baselines, gauge tracks, schematic ink — the
+    /// theme's `border` role. `"theme"` (default) defers to whichever theme
+    /// is active; otherwise a `ui::theme::INKS` name or a `#rrggbb` literal.
+    /// Set once, it holds across theme cycling. Unresolvable values fall
+    /// back to the theme's own color.
+    pub frames: String,
+    /// Grey label / unit / hint / axis text — the theme's `dim` role. Same
+    /// value grammar as [`Config::frames`].
+    pub labels: String,
     /// Fast-tier sampling interval (ms); other tiers scale from it.
     pub interval_ms: u64,
     /// Sub-cell glyph set for graphs: `auto` (octants on terminals that draw
@@ -60,6 +69,8 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             theme: "midnight".into(),
+            frames: "theme".into(),
+            labels: "theme".into(),
             interval_ms: FAST_MS_DEFAULT,
             glyphs: Glyphs::Auto,
             ping: true,
@@ -175,6 +186,11 @@ mod tests {
         assert_eq!(c.theme, "neon");
         assert!(c.ping, "absent keys keep their defaults");
         assert_eq!(c.glyphs, Glyphs::Auto, "absent glyphs key stays auto");
+        assert_eq!(
+            (c.frames.as_str(), c.labels.as_str()),
+            ("theme", "theme"),
+            "no chrome override until the user sets one"
+        );
         assert_eq!(c.graph_window, 4, "absent graph_window keeps the default");
         std::fs::write(tmp.path().join("config.toml"), "graph_window = 99\n").unwrap();
         assert_eq!(Config::load().graph_window, 8, "clamped down to ×8");
@@ -197,6 +213,10 @@ mod tests {
         let _guard = test_dir(tmp.path().to_path_buf());
         let c = Config {
             theme: "gruvbox".into(),
+            frames: "white".into(),
+            // Off the modal's cycle on purpose: the hex escape hatch must
+            // survive a round trip untouched.
+            labels: "#ff8800".into(),
             interval_ms: 750,
             glyphs: Glyphs::Octant,
             ping: false,
@@ -211,6 +231,8 @@ mod tests {
         c.save();
         let l = Config::load();
         assert_eq!(l.theme, "gruvbox");
+        assert_eq!(l.frames, "white");
+        assert_eq!(l.labels, "#ff8800");
         assert_eq!(l.interval_ms, 750);
         assert_eq!(l.glyphs, Glyphs::Octant);
         assert!(!l.ping);

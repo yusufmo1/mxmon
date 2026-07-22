@@ -200,18 +200,20 @@ pub const NEON: Theme = Theme {
 };
 
 /// NEON on a true-black canvas: the same electric palette, but the base drops
-/// to pure `#000000` (OLED midnight) with panels only a whisper above it. The
-/// default theme. Everything below is identical to [`NEON`] except `bg` and
-/// `panel_bg` — keep them in sync if the neon accents ever change.
+/// to pure `#000000` (OLED midnight) and the chrome goes the other way — frames
+/// and label text both solid white, so the whole deck reads as a wireframe
+/// drawn on black. The default theme. Everything below is identical to [`NEON`]
+/// except `bg`, `panel_bg`, `border`, and `dim` — keep the rest in sync if the
+/// neon accents ever change.
 pub const MIDNIGHT: Theme = Theme {
     name: "midnight",
     bg: Color::Rgb(0, 0, 0),
     panel_bg: Color::Rgb(10, 10, 17),
     text: Color::Rgb(230, 230, 240),
-    dim: Color::Rgb(105, 105, 130),
+    dim: Color::Rgb(255, 255, 255),
     title: Color::Rgb(255, 45, 149),
     accent: Color::Rgb(0, 229, 255),
-    border: Color::Rgb(50, 50, 72),
+    border: Color::Rgb(255, 255, 255),
     ok: Color::Rgb(0, 230, 118),
     warn: Color::Rgb(255, 179, 0),
     crit: Color::Rgb(255, 82, 82),
@@ -1005,6 +1007,65 @@ pub fn by_name(name: &str) -> Theme {
         .unwrap_or(MIDNIGHT)
 }
 
+/// The chrome colors the settings modal cycles through, in order. `"theme"`
+/// means *no override* (the active theme's own color wins) and `"accent"` is
+/// theme-relative, so it keeps following `t`. The rest are literals. Shared
+/// by the modal and `event::settings_step` so the two can never drift.
+pub const INKS: [&str; 10] = [
+    "theme", "white", "silver", "slate", "black", "accent", "cyan", "violet", "pink", "amber",
+];
+
+/// Resolve a chrome-color name against `base`, falling back to `fallback`
+/// (the role's own theme color) for `"theme"` and for anything unrecognized.
+/// Total by construction — the config is hand-editable, so any string at all
+/// must produce a paintable color.
+pub fn ink(name: &str, base: &Theme, fallback: Color) -> Color {
+    match name {
+        "white" => Color::Rgb(255, 255, 255),
+        "silver" => Color::Rgb(200, 200, 210),
+        "slate" => Color::Rgb(90, 90, 114),
+        "black" => Color::Rgb(0, 0, 0),
+        "accent" => base.accent,
+        "cyan" => Color::Rgb(0, 229, 255),
+        "violet" => Color::Rgb(124, 77, 255),
+        "pink" => Color::Rgb(255, 45, 149),
+        "amber" => Color::Rgb(255, 179, 0),
+        // The hand-edit escape hatch: anything the modal can't reach.
+        hex if hex.starts_with('#') => parse_hex(hex).unwrap_or(fallback),
+        _ => fallback,
+    }
+}
+
+/// `#rgb` / `#rrggbb` → RGB. `None` on any other shape.
+fn parse_hex(s: &str) -> Option<Color> {
+    let d = s.strip_prefix('#')?;
+    if !d.chars().all(|c| c.is_ascii_hexdigit()) {
+        return None;
+    }
+    let pair = |i: usize| u8::from_str_radix(&d[i..i + 2], 16).ok();
+    match d.len() {
+        // Short form: each digit doubles (#f0a → #ff00aa).
+        3 => {
+            let nib = |i: usize| u8::from_str_radix(&d[i..=i], 16).ok().map(|v| v * 17);
+            Some(Color::Rgb(nib(0)?, nib(1)?, nib(2)?))
+        }
+        6 => Some(Color::Rgb(pair(0)?, pair(2)?, pair(4)?)),
+        _ => None,
+    }
+}
+
+/// The theme the UI actually paints with: the named theme, then the user's
+/// chrome overrides folded in. Both resolve against the *base* theme, so
+/// `"accent"` reads the real accent rather than a half-patched struct.
+pub fn resolve(config: &crate::config::Config) -> Theme {
+    let base = by_name(&config.theme);
+    Theme {
+        border: ink(&config.frames, &base, base.border),
+        dim: ink(&config.labels, &base, base.dim),
+        ..base
+    }
+}
+
 /// Absolute temperature → thermal-ramp position: 25 °C ambient → 110 °C
 /// throttle ceiling. The single mapping every thermal color shares (the
 /// isotherm map's rings and fills, temperature text everywhere), so a
@@ -1034,7 +1095,9 @@ impl Theme {
 
 #[cfg(test)]
 mod tests {
-    use super::{Gradient, THEMES, by_name, to_indexed};
+    use super::{
+        DRACULA, GRUVBOX, Gradient, INKS, NORD, THEMES, by_name, ink, resolve, to_indexed,
+    };
     use ratatui::style::Color;
 
     #[test]
@@ -1071,6 +1134,74 @@ mod tests {
             "midnight",
             "unknown names fall back to midnight"
         );
+    }
+
+    #[test]
+    fn ink_resolves_names_hex_and_falls_back() {
+        let base = by_name("nord");
+        let fallback = Color::Rgb(1, 2, 3);
+        assert_eq!(ink("white", &base, fallback), Color::Rgb(255, 255, 255));
+        assert_eq!(ink("amber", &base, fallback), Color::Rgb(255, 179, 0));
+        // Theme-relative: `accent` tracks whichever theme is active.
+        assert_eq!(ink("accent", &base, fallback), base.accent);
+        assert_eq!(ink("accent", &by_name("gruvbox"), fallback), GRUVBOX.accent);
+        // "theme" and every unrecognized string defer to the role's color.
+        assert_eq!(ink("theme", &base, fallback), fallback);
+        assert_eq!(ink("chartreuse", &base, fallback), fallback);
+        assert_eq!(ink("", &base, fallback), fallback);
+        // Hex escape hatch, long and short form; malformed falls back.
+        assert_eq!(ink("#ff8800", &base, fallback), Color::Rgb(255, 136, 0));
+        assert_eq!(ink("#f0a", &base, fallback), Color::Rgb(255, 0, 170));
+        for bad in ["#", "#12", "#12345", "#gggggg", "#1234567"] {
+            assert_eq!(ink(bad, &base, fallback), fallback, "{bad} must fall back");
+        }
+        // Every cycle entry resolves without hitting the fallback by accident.
+        for name in INKS.iter().filter(|n| **n != "theme") {
+            assert_ne!(ink(name, &base, fallback), fallback, "{name} is a no-op");
+        }
+    }
+
+    #[test]
+    fn resolve_overrides_only_the_chrome_roles() {
+        let mut cfg = crate::config::Config {
+            theme: "nord".into(),
+            ..Default::default()
+        };
+        // No override: the theme's own colors, untouched.
+        let plain = resolve(&cfg);
+        assert_eq!(plain.border, NORD.border);
+        assert_eq!(plain.dim, NORD.dim);
+
+        // The two rows are independent.
+        cfg.frames = "white".into();
+        let th = resolve(&cfg);
+        assert_eq!(th.border, Color::Rgb(255, 255, 255));
+        assert_eq!(th.dim, NORD.dim, "labels untouched by the frames override");
+        cfg.labels = "#123456".into();
+        let th = resolve(&cfg);
+        assert_eq!(th.dim, Color::Rgb(0x12, 0x34, 0x56));
+        // Nothing else moves.
+        assert_eq!(
+            (th.name, th.bg, th.text, th.accent, th.title),
+            (NORD.name, NORD.bg, NORD.text, NORD.accent, NORD.title)
+        );
+
+        // An override outlives theme cycling; `accent` follows it instead.
+        cfg.frames = "accent".into();
+        assert_eq!(resolve(&cfg).border, NORD.accent);
+        cfg.theme = "dracula".into();
+        assert_eq!(resolve(&cfg).border, DRACULA.accent);
+        assert_eq!(resolve(&cfg).dim, Color::Rgb(0x12, 0x34, 0x56));
+    }
+
+    #[test]
+    fn midnight_is_a_white_wireframe() {
+        let th = by_name("midnight");
+        assert_eq!(th.border, Color::Rgb(255, 255, 255));
+        assert_eq!(th.dim, Color::Rgb(255, 255, 255));
+        // Default config = no override, so that's what the UI paints.
+        let painted = resolve(&crate::config::Config::default());
+        assert_eq!((painted.border, painted.dim), (th.border, th.dim));
     }
 
     #[test]
@@ -1131,11 +1262,21 @@ mod tests {
     }
 
     mod prop {
-        use super::super::{Gradient, temp_ratio, to_indexed};
+        use super::super::{Gradient, by_name, ink, temp_ratio, to_indexed};
         use proptest::prelude::*;
         use ratatui::style::Color;
 
         proptest! {
+            /// `config.toml` is hand-editable, so any string at all must
+            /// yield a paintable color rather than a panic.
+            #[test]
+            fn ink_total_for_any_string(s in ".*") {
+                let base = by_name("midnight");
+                let fallback = Color::Rgb(7, 7, 7);
+                let _ = ink(&s, &base, fallback);
+                let _ = ink(&format!("#{s}"), &base, fallback);
+            }
+
             #[test]
             fn to_indexed_always_lands_in_palette(r in any::<u8>(), g in any::<u8>(), b in any::<u8>()) {
                 let Color::Indexed(i) = to_indexed(Color::Rgb(r, g, b)) else {

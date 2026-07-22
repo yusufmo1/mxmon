@@ -374,7 +374,7 @@ fn draw(
     rs: &mut RenderState,
 ) -> color_eyre::Result<()> {
     let started = std::time::Instant::now();
-    let theme = ui::theme::by_name(&app.config.theme);
+    let theme = ui::theme::resolve(&app.config);
     terminal.draw(|f| ui::layout::draw(f, app, &theme, hits, rs))?;
     app.last_frame_us = started.elapsed().as_micros() as u64;
     app.frames += 1;
