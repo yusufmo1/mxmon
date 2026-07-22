@@ -36,17 +36,25 @@ jobs:
         run: cargo clippy --all-targets -- -D warnings
       - name: tests (nextest, instrumented)
         run: cargo llvm-cov nextest --no-report
-      - name: coverage gate
+      # Report first, gate second. Under `bash -e` a failing gate aborts the
+      # step, so folding both into one command meant a breach printed no
+      # number at all — the one thing you need to act on it.
+      - name: coverage report
         run: |
           cargo llvm-cov report \
             --ignore-filename-regex 'src/ffi/' \
-            --fail-under-lines "$COVERAGE_FLOOR" \
             --lcov --output-path lcov.info
           cargo llvm-cov report --ignore-filename-regex 'src/ffi/' | tail -3
       - uses: actions/upload-artifact@v4
+        if: always() # a breach is exactly when the lcov is worth reading
         with:
           name: coverage-lcov
           path: lcov.info
           if-no-files-found: error
+      - name: coverage gate
+        run: |
+          cargo llvm-cov report \
+            --ignore-filename-regex 'src/ffi/' \
+            --fail-under-lines "$COVERAGE_FLOOR"
       - name: build (release)
         run: cargo build --release
