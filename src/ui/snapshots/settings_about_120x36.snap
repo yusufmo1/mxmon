@@ -13,7 +13,7 @@ source: src/ui/layout.rs
 ╰───────────────│   appearance   graphs   layout   panels   sampling   network   keys   about          │───────────────╯
 ╭╸GPU╺  39.9% ──│   this machine, this build, and where its files live                                 │───────────────╮
 │@ 1.30GHz  2.82│ ──────────────────────────────────────────────────────────────────────────────────── │  pressure  OK │
-│               │   version        mxmon 0.1.1                                                         │▏▏▏▏▏▏▏▏▏▏▏▏▏▏▏│
+│               │   version        mxmon X.Y.Z                                                         │▏▏▏▏▏▏▏▏▏▏▏▏▏▏▏│
 │⣠⣤  ⣠⣄ ⢀⣤⡄ ⢀⣤⡀ │   chip           Apple M3 Max · 4E+12P · 40-core GPU · 48G                           │G              │
 │⣿⣿⣷⣾⣿⣿⣷⣾⣿⣿⣶⣿⣿⣿⣶│   macos          26.5                                                                │               │
 │rend █████▊▏▏▏▏│                                                                                      │⠴⠒⠲⣤⠤⠤⠤⠖⠒⢦⡤⠤⠤⠴⠒│
