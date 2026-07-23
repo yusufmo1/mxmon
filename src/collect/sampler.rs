@@ -79,9 +79,9 @@ pub const FAST_MS_MAX: u64 = 2000;
 pub(crate) const POWER_EVERY: u64 = 2; // × fast
 pub(crate) const TEMPS_EVERY: u64 = 2; // × fast — SMC sweep (cores, clusters, fans, power)
 const SLOW_EVERY: u64 = 4; // × fast — HID die-sensor refresh + battery registry
-const PROCS_EVERY: u64 = 8;
+pub(crate) const PROCS_EVERY: u64 = 8;
 pub(crate) const PING_EVERY: u64 = 4; // × fast — one 64-byte ICMP echo (1 s at defaults)
-const FLOWS_EVERY: u64 = 4; // × fast — one ntstat poll (1 s at defaults)
+pub(crate) const FLOWS_EVERY: u64 = 4; // × fast — one ntstat poll (1 s at defaults)
 /// × fast — SMART + APFS + controller counters (10 s at defaults). None of it
 /// moves faster than that, and the SMART call is the priciest thing the app
 /// makes, so it earns the slowest tier.
