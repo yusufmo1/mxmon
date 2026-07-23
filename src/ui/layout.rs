@@ -869,13 +869,18 @@ mod tests {
 
     fn snap(name: &str, app: &mut App, w: u16, h: u16) {
         insta::with_settings!({
-            // The header clock is the only wall-clock artifact left in a
-            // frame. The details modal's "started … ago" used to need a
-            // filter too, but redacting it only normalized the text — the
-            // padding after it still tracked the real width. The fixture
-            // pins a fixed age instead (`testutil::procs`), so the string
-            // is constant and the frame can be asserted verbatim.
-            filters => vec![(r"\d{2}:\d{2}:\d{2}", "HH:MM:SS")],
+            // Two build/wall-clock artifacts get normalized so the frames stay
+            // stable across runs and releases: the header clock, and the about
+            // page's crate version (`mxmon X.Y.Z`), which changes every release.
+            // The details modal's "started … ago" used to need a filter too, but
+            // redacting it only normalized the text; the padding after it still
+            // tracked the real width. The fixture pins a fixed age instead
+            // (`testutil::procs`), so the string is constant and the frame can
+            // be asserted verbatim.
+            filters => vec![
+                (r"\d{2}:\d{2}:\d{2}", "HH:MM:SS"),
+                (r"mxmon \d+\.\d+\.\d+", "mxmon X.Y.Z"),
+            ],
             omit_expression => true,
             prepend_module_to_snapshot => false,
         }, {
