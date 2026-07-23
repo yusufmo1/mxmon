@@ -1,43 +1,44 @@
-<!-- last-reviewed: 2026-07-21 by docs-update -->
+<!-- last-reviewed: 2026-07-23 by docs-update -->
 <div align="center">
 
 # ◉ mxmon
 
-The **Mx** **mon**itor — a blazing-fast, **sudoless** system monitor for Apple Silicon, living in your terminal.
+The **Mx** **mon**itor: a blazing-fast, **sudoless** system monitor for Apple Silicon, living in your terminal.
 
 ![Apple Silicon](https://img.shields.io/badge/Apple%20Silicon-0b0f17?style=for-the-badge&logo=apple&logoColor=white)
 ![Rust](https://img.shields.io/badge/Rust%202024-f74c00?style=for-the-badge&logo=rust&logoColor=white)
 [![ratatui](https://img.shields.io/badge/UI-ratatui-22d3ee?style=for-the-badge&labelColor=0b0f17)](https://ratatui.rs)
 ![no sudo](https://img.shields.io/badge/sudo-not%20required-22c55e?style=for-the-badge&labelColor=0b0f17)
+[![website](https://img.shields.io/badge/mxmon.com-online-22d3ee?style=for-the-badge&labelColor=0b0f17)](https://mxmon.com)
 [![MIT](https://img.shields.io/badge/license-MIT-a855f7?style=for-the-badge&labelColor=0b0f17)](LICENSE)
 
-<img src="https://raw.githubusercontent.com/yusufmo1/mxmon/main/docs/overview-neon.png" width="880" alt="mxmon overview — CPU, power, GPU, memory, network, battery and thermal panels in a neon terminal UI">
+<img src="https://raw.githubusercontent.com/yusufmo1/mxmon/main/docs/overview-neon.png" width="880" alt="mxmon overview: CPU, power, GPU, memory, network, battery and thermal panels in a neon terminal UI">
 
-[Features](#features) · [Install](#install) · [Keys](#keys) · [How it works](#how-it-works) · [Themes](#themes)
+[Website](https://mxmon.com) · [Features](#features) · [Install](#install) · [Keys](#keys) · [How it works](#how-it-works) · [Themes](#themes)
 
 </div>
 
 ---
 
-`mxmon` fuses htop's process management with Mx-Power-Gadget-class SoC telemetry, a live network panel, an AlDente-style battery power-flow, and a real-time **thermal map of your MacBook's chassis** — all in a neon terminal UI that redraws only when data changes, so it sips CPU when idle. Everything is read straight from macOS frameworks: **no `sudo`, no kexts, no daemons.**
+`mxmon` fuses htop's process management with Mx-Power-Gadget-class SoC telemetry, a live network panel, an AlDente-style battery power-flow, and a real-time **thermal map of your MacBook's chassis**, all in a neon terminal UI that redraws only when data changes, so it sips CPU when idle. Everything is read straight from macOS frameworks: **no `sudo`, no kexts, no daemons.**
 
 ## Features
 
 |  |  |
 |---|---|
-| **CPU** — per-cluster E/P meters, live DVFS frequencies from IOReport residencies, utilization history, core temps | **Power** — PKG / CPU / GPU / ANE / RAM / display rails in watts, with history, peaks, and total system power from the SMC |
-| **GPU** — Activity-Monitor-matching utilization, frequency, render/tiler meters, VRAM, temperature | **Memory** — Activity Monitor's exact formula (app + wired + compressed), cached files, swap, kernel pressure |
-| **Network** — live ↓/↑ rates, stacked graphs, session totals, primary interface, link speed, local IP | **Battery flow** — charge, health, cycles, temp + adapter → system → SoC / display power-flow diagram |
-| **Chassis heat map** — a live thermogram from 50+ die & board sensors over a blueprint of the machine itself: the SoC package with die and LPDDR, spinning fans, battery cells filling with charge | **Processes** — sortable / filterable table, real `phys_footprint` memory, CPU %, a real **watts** column, threads, kill w/ signal picker |
-| **Disk** — R/W throughput graphs, IOPS, and true per-op device latency from the block-storage drivers | **Connections** — every process's live TCP/UDP flows with rates, RTT and retransmit % — `nettop`-class data, plus per-process ↓/↑ columns |
+| **CPU**: per-cluster E/P meters, live DVFS frequencies from IOReport residencies, utilization history, core temps | **Power**: PKG / CPU / GPU / ANE / RAM / display rails in watts, with history, peaks, and total system power from the SMC |
+| **GPU**: Activity-Monitor-matching utilization, frequency, render/tiler meters, VRAM, temperature | **Memory**: Activity Monitor's exact formula (app + wired + compressed), cached files, swap, kernel pressure |
+| **Network**: live ↓/↑ rates, stacked graphs, session totals, primary interface, link speed, local IP | **Battery flow**: charge, health, cycles, temp + adapter → system → SoC / display power-flow diagram |
+| **Chassis heat map**: a live thermogram from 50+ die & board sensors over a blueprint of the machine itself: the SoC package with die and LPDDR, spinning fans, battery cells filling with charge | **Processes**: sortable / filterable table, real `phys_footprint` memory, CPU %, a real **watts** column, threads, kill w/ signal picker |
+| **Disk**: R/W throughput graphs, IOPS, volume capacity, and true per-op device latency from the block-storage drivers | **Connections**: every process's live TCP/UDP flows with rates, RTT and retransmit %, `nettop`-class data, plus per-process ↓/↑ columns |
 
-<sub>The <b>PWR</b> column is real physics, not a score: per-process energy counters (nanojoules, split by P/E cluster) that macOS otherwise only surfaces through <code>sudo powermetrics</code>. Sort by it to see what's actually eating the battery — a renderer at 46% CPU on E-cores can cost 76 mW while a 30% P-core process burns a full watt. <kbd>Enter</kbd> shows IPC, core mix, and disk/net IO per process.</sub>
+<sub>The <b>PWR</b> column is real physics, not a score: per-process energy counters (nanojoules, split by P/E cluster) that macOS otherwise only surfaces through <code>sudo powermetrics</code>. Sort by it to see what's actually eating the battery: a renderer at 46% CPU on E-cores can cost 76 mW while a 30% P-core process burns a full watt. <kbd>Enter</kbd> shows IPC, core mix, and disk/net IO per process.</sub>
 
 <div align="center">
 
 <img src="https://raw.githubusercontent.com/yusufmo1/mxmon/main/docs/thermal-view.png" width="880" alt="Full-screen chassis thermogram with named sensor list">
 
-<sub>Press <kbd>3</kbd> for the full-screen <b>thermogram</b> — 50+ sensors interpolated across a teardown blueprint of the chassis: isotherm rings bloom over the SoC die (E/P clusters, GPU, on-package LPDDR, part line etched on the package), fan blades spin with live RPM, battery cells fill with charge, and every reading is eased between samples. A TG-Pro-style named sensor list sits alongside; the blueprint adapts to the machine (no fans on Air, no battery on desktops) and can be toggled off in settings.</sub>
+<sub>Press <kbd>3</kbd> for the full-screen <b>thermogram</b>: 50+ sensors interpolated across a teardown blueprint of the chassis. Isotherm rings bloom over the SoC die (E/P clusters, GPU, on-package LPDDR, part line etched on the package), fan blades spin with live RPM, battery cells fill with charge, and every reading is eased between samples. A TG-Pro-style named sensor list sits alongside; the blueprint adapts to the machine (no fans on Air, no battery on desktops) and can be toggled off in settings.</sub>
 
 </div>
 
@@ -57,7 +58,7 @@ brew install yusufmo1/tap/mxmon
 cargo install mxmon
 ```
 
-**Prebuilt binary** — download the latest `mxmon-aarch64-apple-darwin.tar.gz` from [Releases](https://github.com/yusufmo1/mxmon/releases):
+**Prebuilt binary**: download the latest `mxmon-aarch64-apple-darwin.tar.gz` from [Releases](https://github.com/yusufmo1/mxmon/releases):
 
 ```sh
 tar -xzf mxmon-aarch64-apple-darwin.tar.gz && ./mxmon
@@ -70,10 +71,10 @@ git clone https://github.com/yusufmo1/mxmon && cd mxmon
 cargo build --release && ./target/release/mxmon
 ```
 
-<sub>The crate, binary, Homebrew formula, and GitHub repo are all named <code>mxmon</code>. Unsigned prebuilt binaries are Gatekeeper-quarantined on first launch — clear it with <code>xattr -d com.apple.quarantine ./mxmon</code>, or use Homebrew / <code>cargo install</code>, which aren't affected.</sub>
+<sub>The crate, binary, Homebrew formula, and GitHub repo are all named <code>mxmon</code>. Unsigned prebuilt binaries are Gatekeeper-quarantined on first launch; clear it with <code>xattr -d com.apple.quarantine ./mxmon</code>, or use Homebrew / <code>cargo install</code>, which aren't affected.</sub>
 
 > [!TIP]
-> Like htop, mxmon shows CPU / memory for **your** processes without privileges. `sudo mxmon` unlocks those columns for every process — but all hardware telemetry works sudoless either way.
+> Like htop, mxmon shows CPU / memory for **your** processes without privileges. `sudo mxmon` unlocks those columns for every process, but all hardware telemetry works sudoless either way.
 
 ### Flags
 
@@ -82,7 +83,7 @@ cargo build --release && ./target/release/mxmon
 | `--json` | print one JSON snapshot of every metric and exit (scripting / tests) |
 | `--interval <MS>` | fast-tier sampling interval, `100`–`2000` ms |
 | `--theme <NAME>` | launch with any of the 18 built-in [themes](#themes) |
-| `--glyphs <MODE>` | graph fill: `auto` (default), `octant`, or `braille` — see [glyphs](#glyphs) |
+| `--glyphs <MODE>` | graph fill: `auto` (default), `octant`, or `braille` (see [glyphs](#glyphs)) |
 
 ## Keys
 
@@ -94,17 +95,18 @@ cargo build --release && ./target/release/mxmon
 | <kbd>s</kbd> / <kbd>F6</kbd> / click header | sort |
 | <kbd>x</kbd> / <kbd>F9</kbd> | kill (signal picker) |
 | <kbd>Enter</kbd> | process details |
-| <kbd>o</kbd> | settings card — every option in the app, on one surface |
-| <kbd>a</kbd> | arrange cards — arrows move, <kbd>Enter</kbd> picks up and drops |
+| <kbd>o</kbd> | settings card: every option in the app, on one surface |
+| <kbd>i</kbd> | inspector: storage health, kernel activity, battery depth |
+| <kbd>a</kbd> | arrange cards: arrows move, <kbd>Enter</kbd> picks up and drops |
 | <kbd>t</kbd> | cycle theme |
 | <kbd>p</kbd> · <kbd>+</kbd> <kbd>-</kbd> · <kbd>d</kbd> | pause · sampling speed · debug HUD |
 | <kbd>?</kbd> · <kbd>q</kbd> | key reference · quit |
 
-<sub>Every one of these is remappable — see [Settings](#settings).</sub>
+<sub>Every one of these is remappable (see [Settings](#settings)).</sub>
 
-<sub>Full mouse support: every metric card is a button — hover it for a `▸ destination` hint, click to jump where that metric deepens (CPU/MEM/POWER open the process table sorted by it, NET the connections view, GPU/TEMPS/BATTERY the thermal view). Click tabs, column headers, rows, footer chips and the modal `✕`; scroll the process, sensor and connection lists, and everything in the settings card.</sub>
+<sub>Full mouse support: every metric card is a button. Hover it for a `▸ destination` hint, click to jump where that metric deepens (CPU/MEM/POWER open the process table sorted by it, NET the connections view, GPU/TEMPS/BATTERY the thermal view). Click tabs, column headers, rows, footer chips and the modal `✕`; scroll the process, sensor and connection lists, and everything in the settings card.</sub>
 
-<sub>Drag any card onto another to swap the two — the rects never move, only which panel draws into them, so every layout stays exactly as tuned at every terminal width. The process table drags by its title bar (its rows keep selecting processes). Rearrangements persist, survive resizing across every breakpoint, and reset from `panels › arrangement` in the settings card.</sub>
+<sub>Drag any card onto another to swap the two: the rects never move, only which panel draws into them, so every layout stays exactly as tuned at every terminal width. The process table drags by its title bar (its rows keep selecting processes). Rearrangements persist, survive resizing across every breakpoint, and reset from `panels › arrangement` in the settings card.</sub>
 
 <div align="center">
 
@@ -116,10 +118,10 @@ cargo build --release && ./target/release/mxmon
 
 ## How it works
 
-Every reading comes straight from a macOS framework — no helper process, no elevated privileges.
+Every reading comes straight from a macOS framework: no helper process, no elevated privileges.
 
 <details>
-<summary><b>Data sources</b> — all sudoless</summary>
+<summary><b>Data sources</b> (all sudoless)</summary>
 
 <br>
 
@@ -157,7 +159,9 @@ Sampling is **tiered** so expensive reads don't run more often than they need to
 
 All tiers scale together with <kbd>+</kbd> / <kbd>-</kbd>. The heat surface is cached and eased on the fast tier, and the UI **only redraws on new data or input**, so idle cost stays near zero. Config persists at `~/.config/mxmon/config.toml`.
 
-Numbers update every tick, but the history graphs don't have to scroll that fast: the **graph window** setting (×1/×2/×4/×8, default ×4) folds that many ticks into each graph column — peaks are kept, temperatures are averaged — so a card shows minutes of history instead of seconds. The rightmost column is a live partial bucket, so the graph's leading edge still moves at full tick rate while the body crawls.
+Numbers update every tick, but the history graphs don't have to scroll that fast: the **graph window** setting (×1/×2/×4/×8, default ×4) folds that many ticks into each graph column (peaks are kept, temperatures are averaged), so a card shows minutes of history instead of seconds. The rightmost column is a live partial bucket, so the graph's leading edge still moves at full tick rate while the body crawls.
+
+Graphs also survive a restart: mxmon replays its own saved history on launch, so you open onto populated graphs with a clean break where the app wasn't watching, not an empty grid.
 
 </details>
 
@@ -166,13 +170,13 @@ Numbers update every tick, but the history graphs don't have to scroll that fast
 
 <br>
 
-Modern macOS quantizes and 32-bit-wraps `NET_RT_IFLIST2` byte counters for ad-hoc-signed binaries (found empirically — Apple-signed tools see the real 64-bit values). mxmon therefore computes rates via **wrap-aware deltas** and reports **session** totals, which stay exact regardless of code signature.
+Modern macOS quantizes and 32-bit-wraps `NET_RT_IFLIST2` byte counters for ad-hoc-signed binaries (found empirically; Apple-signed tools see the real 64-bit values). mxmon therefore computes rates via **wrap-aware deltas** and reports **session** totals, which stay exact regardless of code signature.
 
 </details>
 
 ## Settings
 
-<kbd>o</kbd> opens the settings card over the running dashboard — deliberately an overlay, not a screen, so the panels behind it keep painting and a theme or chrome change previews on the real thing.
+<kbd>o</kbd> opens the settings card over the running dashboard, deliberately an overlay rather than a screen, so the panels behind it keep painting and a theme or chrome change previews on the real thing.
 
 | Page | What's on it |
 |---|---|
@@ -196,40 +200,40 @@ pause = ["space"]
 view_thermal = ["3"]
 ```
 
-<kbd>Esc</kbd> and <kbd>Ctrl</kbd>+<kbd>C</kbd> are reserved and always mean cancel and quit — whatever else you rebind, there is a way out.
+<kbd>Esc</kbd> and <kbd>Ctrl</kbd>+<kbd>C</kbd> are reserved and always mean cancel and quit; whatever else you rebind, there is a way out.
 
 ## Themes
 
-**18 built-in themes** — cycle live with <kbd>t</kbd>, or launch with `--theme <name>`:
+**18 built-in themes**, cycle live with <kbd>t</kbd>, or launch with `--theme <name>`:
 
 `midnight` (default) · `neon` · `synthwave` · `cyberpunk` · `dracula` · `tokyonight` · `catppuccin` · `nord` · `gruvbox` · `everforest` · `kanagawa` · `onedark` · `monokai` · `rosepine` · `solarized`
 
-…plus three light themes for daylight terminals — `latte` · `solarized-light` · `gruvbox-light`.
+…plus three light themes for daylight terminals: `latte` · `solarized-light` · `gruvbox-light`.
 
-On truecolor terminals the thermogram samples the raw thermal ramp; on 256-color terminals (Terminal.app) it walks a hand-curated monotonic path through the xterm color cube — clean isotherm contours instead of quantization noise.
+On truecolor terminals the thermogram samples the raw thermal ramp; on 256-color terminals (Terminal.app) it walks a hand-curated monotonic path through the xterm color cube, for clean isotherm contours instead of quantization noise.
 
 Two roles are overridable on top of whichever theme is active, from the settings card's `appearance` page:
 
-| row | paints |
+| role | paints |
 | --- | --- |
 | `frames` | panel frames · graph baselines · gauge tracks · schematic ink |
 | `labels` | grey labels, units, hints and axis text |
 
-Both cycle `theme · white · silver · slate · black · accent · cyan · violet · pink · amber`, where `theme` means *no override* (the theme's own color) and `accent` follows the theme. An override is theme-independent — it survives <kbd>t</kbd>. Any `#rrggbb` set by hand in `config.toml` works too.
+Both cycle `theme · white · silver · slate · black · accent · cyan · violet · pink · amber`, where `theme` means *no override* (the theme's own color) and `accent` follows the theme. An override is theme-independent: it survives <kbd>t</kbd>. Any `#rrggbb` set by hand in `config.toml` works too.
 
 ## Glyphs
 
-Graphs are drawn with sub-cell resolution — 2×4 dots per character cell. Braille (`⣠⣴⣿`) works in every terminal but leaves visible gaps between dots; Unicode 16 **octants** fill the same grid solidly, so a graph reads as one continuous shape.
+Graphs are drawn with sub-cell resolution: 2×4 dots per character cell. Braille (`⣠⣴⣿`) works in every terminal but leaves visible gaps between dots; Unicode 16 **octants** fill the same grid solidly, so a graph reads as one continuous shape.
 
-Both share that 2×4 grid, so mxmon always *renders* in braille and remaps the finished frame to octants when it can — lossless, one pass, no second code path.
+Both share that 2×4 grid, so mxmon always *renders* in braille and remaps the finished frame to octants when it can: lossless, one pass, no second code path.
 
 | `--glyphs` | Behavior |
 |---|---|
-| `auto` (default) | octants on terminals known to draw them — Ghostty, Kitty, WezTerm, foot — braille everywhere else |
+| `auto` (default) | octants on terminals known to draw them (Ghostty, Kitty, WezTerm, foot), braille everywhere else |
 | `octant` | force octants; needs a font or terminal with Symbols for Legacy Computing Supplement coverage |
 | `braille` | force braille; safe everywhere |
 
-Detection is a conservative allowlist, so anything unrecognized stays on braille. Force `octant` where detection can't see through — inside tmux, for instance. Also switchable live on the settings card's `appearance` page (<kbd>o</kbd>).
+Detection is a conservative allowlist, so anything unrecognized stays on braille. Force `octant` where detection can't see through, inside tmux for instance. Also switchable live on the settings card's `appearance` page (<kbd>o</kbd>).
 
 ## Credits
 
@@ -237,5 +241,5 @@ The sudoless IOReport / SMC approach follows the excellent MIT-licensed [vladken
 
 <div align="center">
 <br>
-<sub><b>MIT</b> © 2026 Yusuf · built for Apple Silicon</sub>
+<sub><b>MIT</b> © 2026 Yusuf · [mxmon.com](https://mxmon.com) · built for Apple Silicon</sub>
 </div>
