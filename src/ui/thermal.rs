@@ -60,6 +60,23 @@ pub struct HeatSurface {
     last_spin: std::time::Instant,
 }
 
+/// Cached chassis layout: the `Geometry`, the `Floorplan` grid (already
+/// sensor-claimed), the placed sensors, and the resolved `Detail`. All are
+/// pure functions of `(map, temps sample, schematic, battery-presence)`, and
+/// the sample is fixed between `temps_seq` bumps — so this whole layout is
+/// byte-identical every frame within a seq. Rebuilt only when [`GeomCache::key`]
+/// moves; the same idea as [`HeatSurface`] (which caches the drawn contour
+/// cells on the same seq), lifted off the per-frame path so a 30 fps heat-map
+/// redraw doesn't re-allocate the floorplan every frame.
+pub struct GeomCache {
+    /// `(map, temps_seq, schematic, has_battery)` — rebuild trigger.
+    key: (Rect, u64, bool, bool),
+    geom: Geometry,
+    plan: Option<schematic::Floorplan>,
+    placed: Vec<Placed>,
+    detail: schematic::Detail,
+}
+
 /// Per-row occupancy so on-map labels never overwrite each other; a label
 /// that cannot fit near its anchor (±1 row) is dropped, not misplaced.
 /// Also tracks contour-glyph occupancy so labels prefer the candidate row
@@ -260,21 +277,46 @@ fn render_map(
         h,
     );
 
-    // The floorplan grid is the whole point of Full detail: when it fits
-    // the die, every core/cluster/region reading gets its own drawn cell
-    // and Full engages; when it doesn't, the view degrades to Mid.
-    let geom = Geometry::new(&app.soc, t, app.battery.is_some());
-    let eligible = schematic::detail(map, app.config.schematic);
-    let mut plan = (eligible != schematic::Detail::Off)
-        .then(|| schematic::Floorplan::layout(&geom, map, t))
-        .flatten();
-    let detail = match (&plan, eligible) {
-        (Some(_), _) => schematic::Detail::Full,
-        (None, schematic::Detail::Full) => schematic::Detail::Mid,
-        (None, other) => other,
-    };
-
-    let placed = place_sensors(t, &geom, plan.as_mut());
+    // Chassis layout — geometry, the floorplan grid, and sensor placement.
+    // The floorplan grid is the whole point of Full detail: when it fits the
+    // die, every core/cluster/region reading gets its own drawn cell and Full
+    // engages; when it doesn't, the view degrades to Mid. All of this is a
+    // pure function of (map, sample, schematic, battery-presence), and the
+    // sample is fixed between `temps_seq` bumps — identical every frame within
+    // a seq. Cache it and rebuild only when the key moves (mirrors the
+    // contour-cell cache below, keyed on the same seq), so a 30 fps heat-map
+    // redraw doesn't re-allocate the whole floorplan every frame.
+    let gkey = (
+        map,
+        app.temps_seq,
+        app.config.schematic,
+        app.battery.is_some(),
+    );
+    if rs.geom.as_ref().is_none_or(|g| g.key != gkey) {
+        let geom = Geometry::new(&app.soc, t, app.battery.is_some());
+        let eligible = schematic::detail(map, app.config.schematic);
+        let mut plan = (eligible != schematic::Detail::Off)
+            .then(|| schematic::Floorplan::layout(&geom, map, t))
+            .flatten();
+        let detail = match (&plan, eligible) {
+            (Some(_), _) => schematic::Detail::Full,
+            (None, schematic::Detail::Full) => schematic::Detail::Mid,
+            (None, other) => other,
+        };
+        let placed = place_sensors(t, &geom, plan.as_mut());
+        rs.geom = Some(GeomCache {
+            key: gkey,
+            geom,
+            plan,
+            placed,
+            detail,
+        });
+    }
+    let gc = rs.geom.as_ref().expect("geom cache populated above");
+    let geom = &gc.geom;
+    let plan = &gc.plan;
+    let placed = &gc.placed;
+    let detail = gc.detail;
     if placed.is_empty() {
         return;
     }
@@ -282,7 +324,7 @@ fn render_map(
     // The silkscreen strokes go down first so the isotherm layer always
     // wins contested cells; the reading-grid walls and etched lettering
     // land after the blit.
-    schematic::render_silkscreen(buf, map, &geom, detail, th);
+    schematic::render_silkscreen(buf, map, geom, detail, th);
 
     // Cache + easing: recompute only while the field is actually moving
     // (new sample arriving, resize, theme switch, or the contour toggle
@@ -296,7 +338,7 @@ fn render_map(
             || hs.disp.len() != targets.len()
     });
     if rebuild {
-        let (cells, ring_labels) = contour_layer(contours, map, &placed, &targets, th);
+        let (cells, ring_labels) = contour_layer(contours, map, placed, &targets, th);
         rs.heat = Some(HeatSurface {
             map,
             theme: th.name,
@@ -334,7 +376,7 @@ fn render_map(
                 hs.disp.copy_from_slice(&targets);
                 hs.settled = true;
             }
-            (hs.cells, hs.ring_labels) = contour_layer(hs.contours, map, &placed, &hs.disp, th);
+            (hs.cells, hs.ring_labels) = contour_layer(hs.contours, map, placed, &hs.disp, th);
         }
     }
     if let Some(hs) = rs.heat.as_mut() {
@@ -359,7 +401,7 @@ fn render_map(
     // The reading-grid boxes are data containers, so they stay whole over
     // the rings — an isotherm crossing a zone table enters and exits around
     // it instead of shredding its borders into glyph soup.
-    if let Some(plan) = &plan {
+    if let Some(plan) = plan {
         plan.render_walls(buf, th);
     }
     for (x, y, text, ink) in &surface.ring_labels {
@@ -374,14 +416,14 @@ fn render_map(
     // Etched lettering, grid readings, and living accents (fan blades,
     // charge waterline) over the rings but under the sensor labels; the
     // accents skip contour cells so an isotherm is never severed.
-    let mut etched = schematic::render_etches(buf, map, &geom, detail, th);
-    if let Some(plan) = &plan {
+    let mut etched = schematic::render_etches(buf, map, geom, detail, th);
+    if let Some(plan) = plan {
         etched.extend(plan.render_readings(buf, th));
     }
     schematic::render_dynamic(
         buf,
         map,
-        &geom,
+        geom,
         detail,
         th,
         t,
@@ -396,9 +438,9 @@ fn render_map(
         t,
         app,
         th,
-        &placed,
+        placed,
         surface,
-        &geom,
+        geom,
         &etched,
         plan.is_some(),
     );
@@ -1032,6 +1074,37 @@ mod tests {
                 .iter()
                 .all(|p| (0.0..=1.0).contains(&p.x) && (0.0..=1.0).contains(&p.y))
         );
+    }
+
+    // The geometry cache is only sound if a cache HIT draws the same frame a
+    // cache MISS would — the pixel-parity contract for the render optimization.
+    // The sample is fixed between `temps_seq` bumps, so the cached layout must
+    // reproduce a fresh layout bit-for-bit.
+    #[test]
+    fn geometry_cache_reuse_is_byte_identical() {
+        let mut app = crate::testutil::app();
+        // Neutralize the one genuinely time-varying accent (fan-blade spin) so
+        // the frame is a pure function of state — isolating the geometry cache.
+        if let Some(t) = app.temps.as_mut() {
+            for f in &mut t.fans {
+                f.rpm = 0.0;
+            }
+        }
+        let th = crate::ui::theme::resolve(&app.config);
+        let area = Rect::new(0, 0, 90, 32);
+        let render = |rs: &mut RenderState| {
+            let mut buf = Buffer::empty(area);
+            map_panel(&mut buf, area, &app, &th, rs);
+            buf
+        };
+
+        let mut rs = RenderState::default();
+        let miss = render(&mut rs); // cache miss populates rs.geom
+        assert!(rs.geom.is_some(), "map_panel must populate the geom cache");
+        let hit = render(&mut rs); // cache hit reuses rs.geom
+        assert_eq!(miss, hit, "geom cache hit must match the cache-miss frame");
+        let fresh = render(&mut RenderState::default());
+        assert_eq!(miss, fresh, "cached render must equal a fresh render");
     }
 
     #[test]

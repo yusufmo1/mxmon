@@ -572,6 +572,26 @@ impl PanelKind {
             .find(|k| k.name() == name)
     }
 
+    /// True iff this card's body changes between two motion frames with no new
+    /// sample — it draws a fluid-motion waveform (via [`crate::app::App::series`])
+    /// or the live heat map (fan spin + contour ease). The frame-level partial
+    /// repaint (`ui::layout::draw`) re-renders exactly these cards on a pure
+    /// motion frame and restores every other card from the previous frame; a
+    /// wrong answer here is caught by the `partial == full` parity test.
+    pub fn animates(self) -> bool {
+        matches!(
+            self,
+            Self::Cpu
+                | Self::Gpu
+                | Self::Mem
+                | Self::Net
+                | Self::Disk
+                | Self::Power
+                | Self::Temps
+                | Self::HeatMap
+        )
+    }
+
     /// The card's title, for toasts and the arrange-mode chrome.
     pub fn title(self) -> &'static str {
         match self {

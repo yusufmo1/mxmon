@@ -367,7 +367,7 @@ fn ui_loop(
     rs: &mut RenderState,
 ) -> color_eyre::Result<()> {
     // First paint before any data arrives.
-    draw(terminal, app, hits, rs)?;
+    draw(terminal, app, hits, rs, false)?;
     trace::mark("first frame drawn");
     loop {
         // Block for the next message, then drain the queue so a burst of
@@ -385,6 +385,9 @@ fn ui_loop(
         } else {
             Some(rx.recv()?)
         };
+        // A pure motion frame is a timeout with nothing applied — eligible for
+        // the partial repaint. Any data or input message forces a full frame.
+        let motion_frame = first.is_none();
         let mut outcome = Outcome::Continue;
         if let Some(first) = first {
             outcome = apply_msg(first, app, control, hits, rs);
@@ -399,7 +402,9 @@ fn ui_loop(
         if outcome == Outcome::Quit {
             return Ok(());
         }
-        // Expire stale toasts.
+        // Expire stale toasts. A toast vanishing changes the frame, so force a
+        // full repaint (the restored last frame still shows the toast).
+        let mut toast_expired = false;
         if app
             .toast
             .as_ref()
@@ -407,12 +412,13 @@ fn ui_loop(
         {
             app.toast = None;
             outcome = Outcome::Continue;
+            toast_expired = true;
         }
         // An all-idle batch (e.g. pointer motion under any-motion mouse
         // tracking) changed no state — repainting would emit an identical
         // frame, so skip it.
         if outcome == Outcome::Continue {
-            draw(terminal, app, hits, rs)?;
+            draw(terminal, app, hits, rs, motion_frame && !toast_expired)?;
         }
     }
 }
@@ -438,13 +444,14 @@ fn draw(
     app: &mut App,
     hits: &mut HitMap,
     rs: &mut RenderState,
+    motion_frame: bool,
 ) -> color_eyre::Result<()> {
     let started = std::time::Instant::now();
     // One shared "now" per frame: every graph interpolates against the same
     // instant, and tests can pin it directly.
     app.frame_now = started;
     let theme = ui::theme::resolve(&app.config);
-    terminal.draw(|f| ui::layout::draw(f, app, &theme, hits, rs))?;
+    terminal.draw(|f| ui::layout::draw(f, app, &theme, hits, rs, motion_frame))?;
     app.last_frame_us = started.elapsed().as_micros() as u64;
     app.frames += 1;
     Ok(())

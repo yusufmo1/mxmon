@@ -24,9 +24,141 @@ pub struct RenderState {
     pub flows_scroll: usize,
     /// Cached thermal-map surface; recomputed only when temps/size/theme change.
     pub heat: Option<thermal::HeatSurface>,
+    /// Cached chassis layout (geometry / floorplan / sensor placement); rebuilt
+    /// only when the map size, `temps_seq`, or schematic / battery presence
+    /// changes, so a 30 fps heat-map redraw doesn't re-lay-out every frame.
+    pub geom: Option<thermal::GeomCache>,
+    /// The last fully-composed frame. On a pure motion frame we restore this
+    /// and re-render only the animating cards + header/footer, so every static
+    /// cell stays byte-identical (see [`draw`]). `last_view` guards against
+    /// reusing it across a view switch.
+    pub last_frame: Option<ratatui::buffer::Buffer>,
+    pub last_view: Option<View>,
 }
 
-pub fn draw(f: &mut Frame<'_>, app: &mut App, th: &Theme, hits: &mut HitMap, rs: &mut RenderState) {
+/// Frame entry point. On a pure motion frame (`motion_frame` — a `recv`
+/// timeout in the UI loop, so no new data or input) the animation only moved
+/// the graph waveforms and the heat map; restore the previous frame and
+/// re-render just those cards. Otherwise compose the whole frame. Both paths
+/// leave an identical buffer — the `partial_repaint_matches_full` parity test
+/// enforces it — and both refresh `last_frame` for the next motion frame.
+pub fn draw(
+    f: &mut Frame<'_>,
+    app: &mut App,
+    th: &Theme,
+    hits: &mut HitMap,
+    rs: &mut RenderState,
+    motion_frame: bool,
+) {
+    if motion_frame && can_partial(app, rs, f.area()) {
+        draw_partial(f, app, th, hits, rs);
+    } else {
+        draw_full(f, app, th, hits, rs);
+    }
+    // Keep the finished frame so the next motion frame can restore it. This is
+    // the load-bearing invariant: ratatui's diff compares against exactly the
+    // buffer we drew last, so a partial repaint over this snapshot emits only
+    // the cells the animation changed. Only a motion-on session ever takes the
+    // partial path, so skip the per-frame clone entirely when motion is off —
+    // and the input that toggles motion on is itself a full frame that primes
+    // this snapshot before the first motion frame can use it.
+    if app.config.motion {
+        rs.last_frame = Some(f.buffer_mut().clone());
+        rs.last_view = Some(app.view);
+    }
+}
+
+/// A motion frame may reuse the last frame only when the layout is unchanged
+/// and nothing overlays or dims it. Any of these take the full path instead
+/// (which refreshes `last_frame`): motion off / paused, a modal or drag /
+/// arrange overlay, a live toast, the Thermal view (its animating map is the
+/// view body, not a `hits.panels()` card), a view switch, or a resize / first
+/// frame.
+fn can_partial(app: &App, rs: &RenderState, area: Rect) -> bool {
+    app.config.motion
+        && !app.paused
+        && app.modal.is_none()
+        && app.arrange.is_none()
+        && app.toast.is_none()
+        && app.view != View::Thermal
+        && rs.last_view == Some(app.view)
+        && rs.last_frame.as_ref().is_some_and(|b| b.area == area)
+}
+
+/// Restore the previous frame, then re-render only the animating cards plus the
+/// header/footer (which carry the clock and the HUD frame counter — the only
+/// wall-clock cells). Every other cell is a byte copy of the last full frame.
+fn draw_partial(
+    f: &mut Frame<'_>,
+    app: &mut App,
+    th: &Theme,
+    hits: &mut HitMap,
+    rs: &mut RenderState,
+) {
+    let screen = f.area();
+    let [header, _body, footer] = Layout::vertical([
+        Constraint::Length(1),
+        Constraint::Min(0),
+        Constraint::Length(1),
+    ])
+    .areas(screen);
+
+    // Snapshot the animating cards from the prior (still-valid) hit map before
+    // borrowing the buffer; the layout is unchanged so those rects still hold.
+    let regions: Vec<(Rect, PanelKind)> = hits.panels().filter(|(_, k)| k.animates()).collect();
+
+    let buf = f.buffer_mut();
+    buf.content.clone_from(
+        &rs.last_frame
+            .as_ref()
+            .expect("can_partial checked last_frame")
+            .content,
+    );
+
+    // Header + footer redraw every frame (clock, HUD counter). A scratch hit
+    // map absorbs their target pushes so the real one — still correct for this
+    // unchanged layout — is left intact for mouse hit-testing.
+    let mut scratch = HitMap::default();
+    panels::header::header(buf, header, app, th, &mut scratch);
+    panels::header::footer(buf, footer, app, th, &mut scratch);
+
+    // Each animating card, from the exact per-rect initial condition a full
+    // frame leaves (a reset buffer under the whole-screen bg fill), then the
+    // same panel + nav paint `card_capped` would run.
+    for (rect, kind) in regions {
+        reset_rect(buf, rect);
+        fill_bg(rect, buf, th.bg);
+        paint_panel(buf, rect, app, th, &mut scratch, rs, kind, 4);
+    }
+
+    // Idempotent on the restored (already-presented) cells, so a whole-buffer
+    // scan reproduces a full frame's output over the re-rendered rects too.
+    if super::glyphs::active(app.config.glyphs) {
+        super::glyphs::octantize_buffer(buf);
+    }
+    if !super::theme::truecolor_supported() {
+        super::theme::quantize_buffer(buf);
+    }
+}
+
+/// Blank a rect to the state a fresh (post-swap) ratatui buffer starts in, so a
+/// partial re-render begins from the same initial condition as a full frame.
+fn reset_rect(buf: &mut ratatui::buffer::Buffer, rect: Rect) {
+    let clip = rect.intersection(buf.area);
+    for y in clip.top()..clip.bottom() {
+        for x in clip.left()..clip.right() {
+            buf[(x, y)].reset();
+        }
+    }
+}
+
+fn draw_full(
+    f: &mut Frame<'_>,
+    app: &mut App,
+    th: &Theme,
+    hits: &mut HitMap,
+    rs: &mut RenderState,
+) {
     hits.clear();
     let screen = f.area();
     let buf = f.buffer_mut();
@@ -465,6 +597,24 @@ fn card_capped(
     // sit on. Registering the backdrop first is what lets the table drag by
     // its title bar while a click on a row still selects that process.
     hits.push(area, Target::Panel(kind));
+    paint_panel(buf, area, app, th, hits, rs, kind, cap);
+}
+
+/// Render one card's body + nav affordance for the given DISPLAYED `kind`.
+/// Shared by [`card_capped`] (full frame, after it registers the hit target)
+/// and [`draw_partial`] (motion frame), so an animating card repaints
+/// identically on either path.
+#[allow(clippy::too_many_arguments)]
+fn paint_panel(
+    buf: &mut ratatui::buffer::Buffer,
+    area: Rect,
+    app: &mut App,
+    th: &Theme,
+    hits: &mut HitMap,
+    rs: &mut RenderState,
+    kind: PanelKind,
+    cap: u16,
+) {
     let render: PanelFn = match kind {
         PanelKind::Cpu => panels::cpu::render,
         PanelKind::Gpu => panels::gpu::render,
@@ -536,11 +686,166 @@ mod tests {
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
 
-    use super::{RenderState, draw};
+    use super::{RenderState, can_partial, draw};
     use crate::app::{App, Modal, View};
     use crate::testutil as tu;
     use crate::ui::theme;
     use crate::ui::widgets::HitMap;
+
+    /// The pixel-parity contract for the motion optimization: a partial repaint
+    /// (restore the previous frame, re-render only the animating cards) must
+    /// produce the same body a full compose would at the same instant. The one
+    /// wall-clock-driven accent (heat-map fan spin) is neutralized so the frame
+    /// is a pure function of the pinned `frame_now`; header/footer carry the
+    /// live clock, so the body — everything between them — is what must match.
+    #[test]
+    fn partial_repaint_matches_full() {
+        use std::time::{Duration, Instant};
+        let make = || {
+            let mut app = tu::app();
+            app.config.motion = true;
+            app.paused = false;
+            app.modal = None;
+            app.arrange = None;
+            app.toast = None;
+            if let Some(t) = app.temps.as_mut() {
+                for f in &mut t.fans {
+                    f.rpm = 0.0;
+                }
+            }
+            app
+        };
+        // Fixed relative timeline: tiers stamped at `base`, frames near the
+        // start and end of the tick so the conveyor has genuinely advanced.
+        let base = Instant::now();
+        let t0 = base + Duration::from_millis(25);
+        let t1 = base + Duration::from_millis(215);
+        let arm = |app: &mut App, view: View, fnow: Instant| {
+            app.view = view;
+            app.motion_clock.fast = Some(base);
+            app.motion_clock.power = Some(base);
+            app.motion_clock.temps = Some(base);
+            app.frame_now = fnow;
+        };
+        let th = theme::resolve(&make().config);
+
+        for view in [View::Overview, View::Processes, View::Connections] {
+            for (w, h) in [(80u16, 24u16), (120, 36), (160, 45), (200, 50)] {
+                let area = ratatui::layout::Rect::new(0, 0, w, h);
+
+                // Partial path: a full frame at t0 primes `last_frame`, then a
+                // motion frame at t1 on the SAME RenderState.
+                let mut app_p = make();
+                let mut term_p = Terminal::new(TestBackend::new(w, h)).expect("backend");
+                let mut hits_p = HitMap::default();
+                let mut rs_p = RenderState::default();
+                arm(&mut app_p, view, t0);
+                term_p
+                    .draw(|f| draw(f, &mut app_p, &th, &mut hits_p, &mut rs_p, false))
+                    .expect("draw");
+                arm(&mut app_p, view, t1);
+                assert!(
+                    can_partial(&app_p, &rs_p, area),
+                    "partial branch must be taken ({view:?} {w}x{h}) or the test is vacuous"
+                );
+                term_p
+                    .draw(|f| draw(f, &mut app_p, &th, &mut hits_p, &mut rs_p, true))
+                    .expect("draw");
+                let partial = term_p.backend().buffer().clone();
+
+                // Full path: a fresh render straight at t1.
+                let mut app_f = make();
+                let mut term_f = Terminal::new(TestBackend::new(w, h)).expect("backend");
+                let mut hits_f = HitMap::default();
+                let mut rs_f = RenderState::default();
+                arm(&mut app_f, view, t1);
+                term_f
+                    .draw(|f| draw(f, &mut app_f, &th, &mut hits_f, &mut rs_f, false))
+                    .expect("draw");
+                let full = term_f.backend().buffer().clone();
+
+                // The body (between header row 0 and footer row h-1) must be
+                // byte-identical — symbol AND style — to a full compose.
+                for y in 1..h.saturating_sub(1) {
+                    for x in 0..w {
+                        assert_eq!(
+                            partial[(x, y)],
+                            full[(x, y)],
+                            "cell ({x},{y}) differs partial vs full ({view:?} {w}x{h})"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    /// Per-frame render cost, full compose vs partial motion repaint. Not an
+    /// assertion — run with `cargo test bench_partial_vs_full -- --ignored
+    /// --nocapture` to quantify the motion-frame speedup on this machine.
+    #[test]
+    #[ignore = "timing measurement; run with --ignored --nocapture"]
+    fn bench_partial_vs_full() {
+        use std::time::{Duration, Instant};
+        let mut app = tu::app();
+        app.config.motion = true;
+        app.paused = false;
+        app.modal = None;
+        app.arrange = None;
+        app.toast = None;
+        let th = theme::resolve(&app.config);
+        let (w, h) = (200u16, 55u16);
+        let base = Instant::now();
+        app.motion_clock.fast = Some(base);
+        app.motion_clock.power = Some(base);
+        app.motion_clock.temps = Some(base);
+        let n = 4000u32;
+        let phase = |i: u32| base + Duration::from_millis(10 + u64::from(i % 240));
+
+        println!("\nrender @{w}x{h}, full compose vs partial motion repaint:");
+        for view in [View::Overview, View::Processes, View::Connections] {
+            app.view = view;
+            let mut term = Terminal::new(TestBackend::new(w, h)).expect("backend");
+            let mut hits = HitMap::default();
+            let mut rs = RenderState::default();
+
+            // Prime last_frame, then time full composes.
+            app.frame_now = phase(0);
+            term.draw(|f| draw(f, &mut app, &th, &mut hits, &mut rs, false))
+                .expect("draw");
+            let t = Instant::now();
+            for i in 0..n {
+                app.frame_now = phase(i);
+                term.draw(|f| draw(f, &mut app, &th, &mut hits, &mut rs, false))
+                    .expect("draw");
+            }
+            let full_us = t.elapsed().as_secs_f64() * 1e6 / f64::from(n);
+
+            // Re-prime, then time partial motion repaints.
+            term.draw(|f| draw(f, &mut app, &th, &mut hits, &mut rs, false))
+                .expect("draw");
+            assert!(can_partial(
+                &app,
+                &rs,
+                ratatui::layout::Rect::new(0, 0, w, h)
+            ));
+            let t = Instant::now();
+            for i in 0..n {
+                app.frame_now = phase(i);
+                term.draw(|f| draw(f, &mut app, &th, &mut hits, &mut rs, true))
+                    .expect("draw");
+            }
+            let partial_us = t.elapsed().as_secs_f64() * 1e6 / f64::from(n);
+
+            let name = format!("{view:?}");
+            println!(
+                "  {name:12}: full={full_us:6.1}µs  partial={partial_us:6.1}µs  \
+                 {:.2}x  saved={:.1}µs",
+                full_us / partial_us,
+                full_us - partial_us,
+            );
+        }
+        println!();
+    }
 
     /// One frame at `w`×`h`, right-trimmed, one line per row.
     fn frame(app: &mut App, w: u16, h: u16) -> String {
@@ -548,7 +853,7 @@ mod tests {
         let mut term = Terminal::new(TestBackend::new(w, h)).expect("backend");
         let mut hits = HitMap::default();
         let mut rs = RenderState::default();
-        term.draw(|f| draw(f, app, &th, &mut hits, &mut rs))
+        term.draw(|f| draw(f, app, &th, &mut hits, &mut rs, false))
             .expect("draw");
         let buf = term.backend().buffer().clone();
         let mut out = String::new();
@@ -654,7 +959,7 @@ mod tests {
         let mut term = Terminal::new(TestBackend::new(160, 45)).expect("backend");
         let mut hits = HitMap::default();
         let mut rs = RenderState::default();
-        term.draw(|f| draw(f, &mut app, &th, &mut hits, &mut rs))
+        term.draw(|f| draw(f, &mut app, &th, &mut hits, &mut rs, false))
             .expect("draw");
 
         let (table, _) = hits

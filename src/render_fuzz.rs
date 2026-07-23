@@ -291,7 +291,15 @@ fn sweep(
                         let res = panic::catch_unwind(AssertUnwindSafe(|| {
                             let mut term =
                                 Terminal::new(TestBackend::new(w, h)).expect("test backend");
-                            term.draw(|f| layout::draw(f, &mut *app, th, &mut hits, &mut rs))
+                            // A full frame primes `last_frame`; a follow-up
+                            // motion frame drives the partial-repaint path with
+                            // the same hostile inputs (it falls back to full
+                            // wherever `can_partial` says no).
+                            term.draw(|f| {
+                                layout::draw(f, &mut *app, th, &mut hits, &mut rs, false);
+                            })
+                            .expect("draw");
+                            term.draw(|f| layout::draw(f, &mut *app, th, &mut hits, &mut rs, true))
                                 .expect("draw");
                         }));
                         if res.is_err() {
