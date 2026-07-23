@@ -15,7 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - *(ui)* drag cards, and a keyboard arrange mode
 - *(ui)* draw every card through its slot
 - *(arrange)* a bijection for where each card sits
-- *(ui)* the inspector — slow-tier facts with no room on a card
+- *(ui)* the inspector: slow-tier facts with no room on a card
 - *(collect)* a slow health tier for storage and kernel activity
 - *(ui)* per-card visibility and the PANELS settings page
 - *(json)* report the thermal-pressure verdict
@@ -24,7 +24,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - *(procs)* per-process and kernel-wide rate counters
 - *(temps)* the kernel's thermal-pressure verdict
 - settings card and remappable keys
-- *(ui)* fluid graphs — a constant-velocity conveyor for bucketed history
+- *(ui)* fluid graphs: a constant-velocity conveyor for bucketed history
 - restore graph history across runs
 - *(ui)* backlight rail and earned sink rails in the battery flow
 - *(ui)* chrome ink overrides for frames and labels
@@ -53,7 +53,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - render-time graph zoom, octant glyphs, and scaled-up core bands
 - mouse-driven navigation, headline stats, and M5 silicon support
-- *(ui)* die floorplan grid — every sensor reading in its own cell
+- *(ui)* die floorplan grid: every sensor reading in its own cell
 - *(ui)* chassis blueprint under the thermal contours
 - *(ui)* midnight default theme + single-line card layout for wide short strips
 
