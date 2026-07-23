@@ -36,10 +36,13 @@ items_after_statements = "allow"
 
 [dependencies]
 clap = { version = "4", features = ["derive"] }
+clap_complete = "4" # `mxmon completions <shell>`
+clap_mangen = "0.2" # `mxmon man`
 color-eyre = "0.6"
 core-foundation = "0.10"
 libc = "0.2"
 ratatui = "0.30"
+schemars = "1" # derives the agent-facing JSON Schema from the report DTOs
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 toml = "0.9"
