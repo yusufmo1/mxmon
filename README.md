@@ -116,6 +116,32 @@ cargo build --release && ./target/release/mxmon
 
 </div>
 
+## Scripting & agents
+
+Bare `mxmon` is the TUI. Every metric is also available headless, as a clean,
+versioned contract that scripts and AI agents can rely on. See
+[AGENTS.md](AGENTS.md) for the agent-oriented guide.
+
+| Command | What it does |
+|---|---|
+| `mxmon snapshot` | one settled snapshot of every metric (a human summary on a terminal, JSON when piped) |
+| `mxmon get <path>` | pull values by dot-path, e.g. `mxmon get power.package_w thermal.throttling` |
+| `mxmon watch <path> --for 10s` | a bounded NDJSON stream, one object per sample |
+| `mxmon top cpu\|power\|mem\|disk` | rank the top consumers |
+| `mxmon check '<expr>'` | assert a condition; exit `0` true, `1` false (`mxmon check 'thermal.throttling == false' && cargo build`) |
+| `mxmon health` | a composite verdict over thermal, SMART, battery, memory, and sleep blockers |
+| `mxmon explain <topic>` | a plain-language diagnosis: thermal, power, slow, battery, network, disk |
+| `mxmon schema` | the JSON Schema of the report contract, self-describing (needs no hardware) |
+| `mxmon kill\|signal\|renice <pid>` | act on processes (confirm by default; `--yes` to skip, `--dry-run` to preview) |
+
+Every read command takes `--format json\|ndjson\|table\|compact`, `--only <groups>`,
+and `--timeout <dur>`. Units are consistent throughout: byte counts as integers,
+ratios in `0..1`, watts and Celsius as floats, frequency in MHz. A source that is
+down or disabled serializes as `null` with its reason in `source_errors` or
+`meta.features`, never a missing key, and the contract is versioned
+(`meta.schema_version`). The legacy `mxmon --json` still works and now emits the
+same v1 document as `mxmon snapshot`.
+
 ## How it works
 
 Every reading comes straight from a macOS framework: no helper process, no elevated privileges.
