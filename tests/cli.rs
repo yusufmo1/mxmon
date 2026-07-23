@@ -92,44 +92,54 @@ fn glyphs_flag_validates_its_value() {
 }
 
 #[test]
-fn json_snapshot_honors_the_source_contract() {
+fn json_snapshot_honors_the_v1_contract() {
     if skip_without_hardware("--json") {
         return;
     }
     let tmp = tempfile::tempdir().unwrap();
-    // Fully passive run: the ping prober is the only thing that ever emits
-    // network traffic, and this also proves the config override reaches the
-    // spawned binary.
+    // Fully passive run: ping is the only network egress, and disabling it also
+    // proves the config override reaches the spawned binary and drives the null
+    // taxonomy checked below.
     std::fs::write(tmp.path().join("config.toml"), "ping = false\n").unwrap();
 
     let out = mxmon(&tmp).arg("--json").output().unwrap();
     assert!(out.status.success(), "{}", diagnose("--json", &out, &tmp));
+    let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
     let v: serde_json::Value =
         serde_json::from_slice(&out.stdout).expect("stdout is one JSON document");
     let obj = v.as_object().expect("top level is an object");
 
-    // Every metric key is always present; a degraded source is null plus an
-    // entry in source_errors — never a missing key (the SourceDown contract).
+    // Every domain key is always present; a degraded source is null plus an
+    // entry in source_errors, never a missing key (the SourceDown contract).
     for key in [
-        "soc",
-        "cpu_per_core_pct",
-        "load",
-        "uptime_secs",
-        "gpu",
-        "memory",
-        "network",
-        "ping",
-        "disk",
-        "flows",
-        "power",
-        "temps",
-        "battery",
-        "processes",
-        "source_errors",
+        "meta", "soc", "cpu", "gpu", "memory", "power", "thermal", "network", "disk", "storage",
+        "battery", "processes", "flows", "kernel", "ping", "source_errors",
     ] {
         assert!(obj.contains_key(key), "missing top-level key {key}");
     }
     assert!(obj["source_errors"].is_array());
+
+    // The v1 migration is complete: the old inconsistent shape is gone.
+    for gone in [
+        "cpu_per_core_pct",
+        "load",
+        "uptime_secs",
+        "temps",
+        "volumes",
+        "kernel_activity",
+    ] {
+        assert!(!obj.contains_key(gone), "legacy top-level key {gone} still present");
+    }
+    for legacy in ["\"total_gb\"", "\"power_mw\"", "\"used_gb\"", "\"usage_pct\"", "\"cpu_pct\""] {
+        assert!(!stdout.contains(legacy), "legacy unit key {legacy} still emitted");
+    }
+
+    // Meta carries the contract version and the feature flags that disambiguate
+    // why a domain is null.
+    assert_eq!(obj["meta"]["schema_version"].as_u64(), Some(1));
+    assert_eq!(obj["meta"]["features"]["ping"].as_bool(), Some(false));
+
+    // Machine facts always resolve.
     assert!(
         !obj["soc"]["chip"].as_str().unwrap_or_default().is_empty(),
         "chip identity must always resolve"
@@ -137,26 +147,33 @@ fn json_snapshot_honors_the_source_contract() {
     // Tier letters are machine facts too: single uppercase letters (E/P on
     // two-tier chips, P/S on M5 Pro/Max).
     for tier in ["tier_low", "tier_high"] {
-        let v = obj["soc"][tier].as_str().unwrap_or_default();
+        let t = obj["soc"][tier].as_str().unwrap_or_default();
         assert!(
-            v.len() == 1 && v.chars().all(|c| c.is_ascii_uppercase()),
-            "{tier} must be one uppercase letter, got {v:?}"
+            t.len() == 1 && t.chars().all(|c| c.is_ascii_uppercase()),
+            "{tier} must be one uppercase letter, got {t:?}"
         );
     }
-    assert!(obj["uptime_secs"].as_u64().unwrap_or(0) > 0);
-    // Ping was disabled — it must be absent-as-null, not fabricated.
-    assert!(obj["ping"].is_null());
-    // Numeric sanity wherever a source is up (nulls allowed when down).
+
+    // Null taxonomy: ping was disabled, so it is null (and features.ping is
+    // false, asserted above) rather than fabricated or a missing key.
+    assert!(obj["ping"].is_null(), "disabled ping must be null");
+
+    // Numeric sanity and consistent units wherever a source is up.
+    if let Some(cpu) = obj["cpu"].as_object() {
+        assert!(cpu["uptime_secs"].as_u64().unwrap_or(0) > 0);
+        assert_eq!(cpu["load_avg"].as_array().map(Vec::len), Some(3));
+    }
     if let Some(mem) = obj["memory"].as_object() {
-        assert!(mem["total_gb"].as_f64().unwrap_or(0.0) > 0.0);
-        assert!(mem["used_gb"].as_f64().unwrap_or(-1.0) >= 0.0);
+        assert!(mem["total_bytes"].as_u64().unwrap_or(0) > 0, "bytes are integers");
+        assert!((0.0..=1.001).contains(&mem["used_ratio"].as_f64().unwrap_or(-1.0)));
     }
     if let Some(procs) = obj["processes"].as_object() {
         assert!(procs["total"].as_u64().unwrap_or(0) > 10);
-        assert!(!procs["top_by_cpu"].as_array().unwrap().is_empty());
+        assert!(!procs["top"].as_array().unwrap().is_empty());
     }
-    // The hermetic sandbox held: nothing else may appear in the tempdir
-    // beyond what this test wrote and mxmon's own config-dir files.
+
+    // The hermetic sandbox held: nothing else may appear in the tempdir beyond
+    // what this test wrote and mxmon's own config-dir files.
     for entry in std::fs::read_dir(tmp.path()).unwrap() {
         let name = entry.unwrap().file_name();
         let name = name.to_string_lossy().into_owned();
@@ -165,4 +182,84 @@ fn json_snapshot_honors_the_source_contract() {
             "unexpected file in sandbox: {name}"
         );
     }
+}
+
+#[test]
+fn schema_runs_without_hardware() {
+    // The one telemetry-free e2e: `schema` never samples, so it runs on the CI
+    // VM and guards a code path the hardware suites cannot reach there.
+    let tmp = tempfile::tempdir().unwrap();
+    let out = mxmon(&tmp).arg("schema").output().unwrap();
+    assert!(out.status.success(), "{}", diagnose("schema", &out, &tmp));
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).expect("schema is JSON");
+    assert_eq!(v["title"], "Report");
+    assert!(v["$defs"]["Meta"].is_object(), "schema defines Meta");
+}
+
+#[test]
+fn kill_fails_closed_off_a_terminal() {
+    // Control needs no telemetry, so this runs anywhere. Piped output is not a
+    // tty, so without --yes the command must refuse (exit 4) and touch nothing.
+    let tmp = tempfile::tempdir().unwrap();
+    let refused = mxmon(&tmp).args(["kill", "2147483640"]).output().unwrap();
+    assert_eq!(refused.status.code(), Some(4), "must fail closed without --yes off a tty");
+
+    // --dry-run resolves and prints a plan without signaling anything.
+    let dry = mxmon(&tmp).args(["kill", "--dry-run", "2147483640"]).output().unwrap();
+    assert!(dry.status.success());
+    assert!(String::from_utf8_lossy(&dry.stdout).contains("dry run"));
+
+    // --yes on an impossible pid reaches the ESRCH branch (already exited).
+    let yes = mxmon(&tmp).args(["kill", "--yes", "2147483640"]).output().unwrap();
+    assert_eq!(yes.status.code(), Some(4));
+}
+
+#[test]
+fn subcommands_over_the_v1_contract() {
+    if skip_without_hardware("subcommands") {
+        return;
+    }
+    let tmp = tempfile::tempdir().unwrap();
+    std::fs::write(tmp.path().join("config.toml"), "ping = false\n").unwrap();
+
+    // snapshot --format json is the v1 report.
+    let snap = mxmon(&tmp).args(["snapshot", "--format", "json"]).output().unwrap();
+    assert!(snap.status.success(), "{}", diagnose("snapshot", &snap, &tmp));
+    let v: serde_json::Value = serde_json::from_slice(&snap.stdout).unwrap();
+    assert_eq!(v["meta"]["schema_version"], 1);
+
+    // get extracts a scalar leaf; an unknown path exits nonzero.
+    let chip = mxmon(&tmp).args(["get", "soc.chip"]).output().unwrap();
+    assert!(chip.status.success());
+    assert!(String::from_utf8_lossy(&chip.stdout).contains("Apple"));
+    assert!(!mxmon(&tmp).args(["get", "power.nope"]).output().unwrap().status.success());
+
+    // check exit codes: true=0, false=1, unknown (null source)=2.
+    assert_eq!(
+        mxmon(&tmp).args(["check", "meta.schema_version == 1"]).output().unwrap().status.code(),
+        Some(0)
+    );
+    assert_eq!(
+        mxmon(&tmp).args(["check", "meta.schema_version == 2"]).output().unwrap().status.code(),
+        Some(1)
+    );
+    // ping is disabled, so ping.up is null and the comparison is undecidable.
+    assert_eq!(
+        mxmon(&tmp).args(["check", "ping.up == true"]).output().unwrap().status.code(),
+        Some(2)
+    );
+
+    // health emits a status string.
+    let h = mxmon(&tmp).args(["health", "--format", "json"]).output().unwrap();
+    let hv: serde_json::Value = serde_json::from_slice(&h.stdout).unwrap();
+    assert!(hv["status"].is_string());
+
+    // watch is bounded: --count 2 emits exactly two NDJSON frames, then exits.
+    let w = mxmon(&tmp)
+        .args(["watch", "--count", "2", "--interval", "200ms"])
+        .output()
+        .unwrap();
+    assert!(w.status.success());
+    let frames = String::from_utf8_lossy(&w.stdout).lines().filter(|l| !l.is_empty()).count();
+    assert_eq!(frames, 2, "watch --count 2 emits exactly two frames");
 }

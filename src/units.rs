@@ -42,10 +42,6 @@ impl Bytes {
     pub const KIB: u64 = 1 << 10;
     pub const MIB: u64 = 1 << 20;
     pub const GIB: u64 = 1 << 30;
-
-    pub fn as_f64(self) -> f64 {
-        self.0 as f64
-    }
 }
 
 // Every impl routes through `Formatter::pad` so callers can request a fixed
