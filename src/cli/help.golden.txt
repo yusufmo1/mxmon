@@ -1,0 +1,897 @@
+===== mxmon =====
+mxmon reads live Apple Silicon telemetry (power, frequency, temperature, GPU, memory, network, per-process energy, SMART, thermal pressure) from macOS frameworks with no sudo, no kexts, and no daemons.
+
+Bare `mxmon` opens the interactive TUI. Every subcommand is headless and prints a versioned, self-describing contract that scripts and AI agents can rely on.
+
+Usage: mxmon [OPTIONS] [COMMAND]
+
+Commands:
+  snapshot     Print one settled snapshot of every metric
+  get          Extract values by dot-path, e.g. `power.package_w`
+  watch        Watch metrics as a bounded stream, then exit
+  top          Rank the top consumers of a resource
+  check        Evaluate a boolean assertion over the report; exit 0 true, 1 false
+  health       Print a composite health verdict; exit 1 when degraded
+  explain      Explain a topic (thermal, power, slow, battery, network, disk)
+  schema       Print the report contract: JSON Schema, or a flat path listing
+  completions  Print a shell completion script (bash, zsh, fish, and more)
+  man          Print a roff man page covering mxmon and every subcommand
+  kill         Send a signal to processes (default SIGTERM)
+  signal       Send a named or numbered signal to processes
+  renice       Change the scheduling niceness of processes
+  help         Print this message or the help of the given subcommand(s)
+
+Options:
+  -h, --help
+          Print help (see a summary with '-h')
+
+  -V, --version
+          Print version
+
+TUI options (bare `mxmon` only):
+      --json
+          Print one JSON snapshot of every metric and exit (alias for `snapshot`)
+
+      --interval <MS>
+          Fast-tier sampling interval in milliseconds (100-2000); overrides config
+
+      --theme <NAME>
+          Theme name (midnight, neon, gruvbox, and more); overrides config
+
+      --glyphs <GLYPHS>
+          Sub-cell glyph set for graphs; overrides config
+
+          Possible values:
+          - auto:    Octants where the terminal is known to draw them (Ghostty, Kitty, WezTerm, foot), braille everywhere else
+          - octant:  Force octants (needs a terminal or font with Symbols for Legacy Computing Supplement coverage)
+          - braille: Force braille — safe in every terminal
+
+Output options:
+      --format <FORMAT>
+          Output shape. `auto` prints a human summary on a terminal and machine output when piped; `compact` is flat `path=value` lines
+
+          Possible values:
+          - auto:    Human summary on a terminal, machine output when piped
+          - json:    Pretty-printed JSON
+          - ndjson:  One JSON object per line
+          - compact: Flat `dotted.path=value` lines, one leaf per line
+          - table:   Aligned columns for a terminal
+          
+          [default: auto]
+
+      --timeout <DUR>
+          Deadline for the settle a read verb waits on, e.g. `8s`, `500ms`, `2m` (read verbs only; the control verbs do not sample)
+
+      --no-color
+          Never emit ANSI color, even on a terminal (also honors $NO_COLOR)
+
+  -q, --quiet
+          Drop headers, badges, and prose; print only data and errors
+
+Bare `mxmon` opens the TUI. Every verb below is headless: it settles one sample,
+prints, and exits, with machine output whenever stdout is not a terminal.
+
+Examples:
+  mxmon                                    open the TUI
+  mxmon snapshot                           one settled report (JSON when piped)
+  mxmon get power.package_w                pull a single value
+  mxmon check 'thermal.throttling == false' && cargo build
+  mxmon watch cpu.self_ratio --for 10s     bounded NDJSON stream
+  mxmon top power                          rank processes by a resource
+  mxmon health                             composite verdict, exit 1 if degraded
+  mxmon schema --format compact            every queryable path and its type
+
+Exit codes:
+  0  success; check true; health ok
+  1  check false; health warn or crit
+  2  usage error: bad flag, unknown path, unknown group, malformed expression
+  3  no usable data: every source down
+  4  a control action was refused or failed
+  5  check undecidable: a referenced source was null
+
+Start with `mxmon schema --format compact` to learn the contract, then query
+leaves by name. Full guide: AGENTS.md
+
+===== mxmon snapshot =====
+Print one settled snapshot of every metric
+
+Usage: snapshot [OPTIONS]
+
+Options:
+      --only <GROUPS>
+          Restrict to these top-level groups, comma-separated (e.g. `power,thermal`)
+
+  -h, --help
+          Print help (see a summary with '-h')
+
+Output options:
+      --format <FORMAT>
+          Output shape. `auto` prints a human summary on a terminal and machine output when piped; `compact` is flat `path=value` lines
+
+          Possible values:
+          - auto:    Human summary on a terminal, machine output when piped
+          - json:    Pretty-printed JSON
+          - ndjson:  One JSON object per line
+          - compact: Flat `dotted.path=value` lines, one leaf per line
+          - table:   Aligned columns for a terminal
+          
+          [default: auto]
+
+      --timeout <DUR>
+          Deadline for the settle a read verb waits on, e.g. `8s`, `500ms`, `2m` (read verbs only; the control verbs do not sample)
+
+      --no-color
+          Never emit ANSI color, even on a terminal (also honors $NO_COLOR)
+
+  -q, --quiet
+          Drop headers, badges, and prose; print only data and errors
+
+Examples:
+  mxmon snapshot                        human summary on a terminal, JSON when piped
+  mxmon snapshot --only power,thermal   just those groups (meta is always kept)
+  mxmon snapshot --format compact       one greppable line per leaf
+
+Keys are never omitted. A domain that is null is either down (see
+source_errors), disabled (see meta.features), or unsettled (see meta.settled).
+
+===== mxmon get =====
+Extract values by dot-path, e.g. `power.package_w`
+
+Usage: get [OPTIONS] <PATHS>...
+
+Arguments:
+  <PATHS>...
+          One or more dot-paths, e.g. `power.package_w processes.top[0].pid`
+
+Options:
+      --raw
+          Print string values unquoted, for shell interpolation
+
+  -h, --help
+          Print help (see a summary with '-h')
+
+Output options:
+      --format <FORMAT>
+          Output shape. `auto` prints a human summary on a terminal and machine output when piped; `compact` is flat `path=value` lines
+
+          Possible values:
+          - auto:    Human summary on a terminal, machine output when piped
+          - json:    Pretty-printed JSON
+          - ndjson:  One JSON object per line
+          - compact: Flat `dotted.path=value` lines, one leaf per line
+          - table:   Aligned columns for a terminal
+          
+          [default: auto]
+
+      --timeout <DUR>
+          Deadline for the settle a read verb waits on, e.g. `8s`, `500ms`, `2m` (read verbs only; the control verbs do not sample)
+
+      --no-color
+          Never emit ANSI color, even on a terminal (also honors $NO_COLOR)
+
+  -q, --quiet
+          Drop headers, badges, and prose; print only data and errors
+
+Examples:
+  mxmon get power.package_w
+  mxmon get power.ecpu.cores[0].freq_mhz processes.top[0].name
+  mxmon get thermal --format compact    flatten a whole group to key=value
+
+Array indices work as [0] or .0. Descending into a null source yields null and
+exits 0, because the metric is legitimately unavailable. A path the contract
+does not have exits 2.
+
+===== mxmon watch =====
+Watch metrics as a bounded stream, then exit
+
+Usage: watch [OPTIONS] [PATHS]...
+
+Arguments:
+  [PATHS]...
+          Dot-paths to include in each frame; omit for the whole report
+
+Options:
+      --interval <DUR>
+          Per-frame interval, e.g. `500ms` (100-2000ms). Defaults to config
+
+      --for <DUR>
+          Stop after this long, e.g. `10s`
+
+      --count <N>
+          Stop after this many frames
+
+  -h, --help
+          Print help (see a summary with '-h')
+
+Output options:
+      --format <FORMAT>
+          Output shape. `auto` prints a human summary on a terminal and machine output when piped; `compact` is flat `path=value` lines
+
+          Possible values:
+          - auto:    Human summary on a terminal, machine output when piped
+          - json:    Pretty-printed JSON
+          - ndjson:  One JSON object per line
+          - compact: Flat `dotted.path=value` lines, one leaf per line
+          - table:   Aligned columns for a terminal
+          
+          [default: auto]
+
+      --timeout <DUR>
+          Deadline for the settle a read verb waits on, e.g. `8s`, `500ms`, `2m` (read verbs only; the control verbs do not sample)
+
+      --no-color
+          Never emit ANSI color, even on a terminal (also honors $NO_COLOR)
+
+  -q, --quiet
+          Drop headers, badges, and prose; print only data and errors
+
+Examples:
+  mxmon watch --count 3                       three whole-report frames
+  mxmon watch power.package_w --for 10s       one field, ten seconds
+  mxmon watch cpu.self_ratio power.package_w --format table
+
+Every path is checked before the first frame, so a typo exits 2 instead of
+streaming nulls. Piped output is NDJSON and `| head` exits cleanly.
+
+===== mxmon top =====
+Rank the top consumers of a resource
+
+Usage: top [OPTIONS] [BY]
+
+Arguments:
+  [BY]
+          What to rank by
+
+          Possible values:
+          - cpu:   Busiest by CPU share (not clamped; 4.0 means four saturated cores)
+          - power: Highest estimated per-process power draw
+          - mem:   Largest resident memory footprint
+          - disk:  Highest combined disk read plus write throughput
+          
+          [default: cpu]
+
+Options:
+  -c, --count <N>
+          How many processes to list
+          
+          [default: 10]
+
+  -h, --help
+          Print help (see a summary with '-h')
+
+Output options:
+      --format <FORMAT>
+          Output shape. `auto` prints a human summary on a terminal and machine output when piped; `compact` is flat `path=value` lines
+
+          Possible values:
+          - auto:    Human summary on a terminal, machine output when piped
+          - json:    Pretty-printed JSON
+          - ndjson:  One JSON object per line
+          - compact: Flat `dotted.path=value` lines, one leaf per line
+          - table:   Aligned columns for a terminal
+          
+          [default: auto]
+
+      --timeout <DUR>
+          Deadline for the settle a read verb waits on, e.g. `8s`, `500ms`, `2m` (read verbs only; the control verbs do not sample)
+
+      --no-color
+          Never emit ANSI color, even on a terminal (also honors $NO_COLOR)
+
+  -q, --quiet
+          Drop headers, badges, and prose; print only data and errors
+
+Examples:
+  mxmon top power -c 5
+  mxmon top mem --format json
+
+Ranks the processes in the last sample. Note that cpu_ratio is not clamped: a
+process saturating four cores reads 4.0.
+
+===== mxmon check =====
+Evaluate a boolean assertion over the report.
+
+Grammar (paths use the same dot syntax as `get`):
+  expr    := or
+  or      := and ("or" and)*
+  and     := cmp ("and" cmp)*
+  cmp     := "not" cmp | "(" expr ")" | operand (op operand)?
+  op      := "<" | "<=" | ">" | ">=" | "==" | "!="
+  operand := path | number | string | true | false | null
+
+Evaluation is tri-state. An operand that resolves to null (a source that is down
+or disabled) makes the comparison undecidable rather than false, so
+`thermal.cpu_max_c < 90` never passes just because the sensor was unavailable.
+Test availability explicitly with `thermal == null`.
+
+Usage: check [OPTIONS] <EXPR>...
+
+Arguments:
+  <EXPR>...
+          The expression, e.g. `thermal.throttling == false and power.package_w < 40`
+
+Options:
+  -h, --help
+          Print help (see a summary with '-h')
+
+Output options:
+      --format <FORMAT>
+          Output shape. `auto` prints a human summary on a terminal and machine output when piped; `compact` is flat `path=value` lines
+
+          Possible values:
+          - auto:    Human summary on a terminal, machine output when piped
+          - json:    Pretty-printed JSON
+          - ndjson:  One JSON object per line
+          - compact: Flat `dotted.path=value` lines, one leaf per line
+          - table:   Aligned columns for a terminal
+          
+          [default: auto]
+
+      --timeout <DUR>
+          Deadline for the settle a read verb waits on, e.g. `8s`, `500ms`, `2m` (read verbs only; the control verbs do not sample)
+
+      --no-color
+          Never emit ANSI color, even on a terminal (also honors $NO_COLOR)
+
+  -q, --quiet
+          Drop headers, badges, and prose; print only data and errors
+
+Examples:
+  mxmon check 'thermal.throttling == false'
+  mxmon check 'power.package_w < 40 and memory.pressure == "normal"'
+  mxmon check 'not (battery.charging or battery.external_power)'
+  mxmon check 'storage != null'         is the source up at all?
+
+Exit: 0 true, 1 false, 2 malformed, 5 undecidable.
+
+===== mxmon health =====
+Print a composite health verdict; exit 1 when degraded
+
+Usage: health [OPTIONS]
+
+Options:
+  -h, --help
+          Print help (see a summary with '-h')
+
+Output options:
+      --format <FORMAT>
+          Output shape. `auto` prints a human summary on a terminal and machine output when piped; `compact` is flat `path=value` lines
+
+          Possible values:
+          - auto:    Human summary on a terminal, machine output when piped
+          - json:    Pretty-printed JSON
+          - ndjson:  One JSON object per line
+          - compact: Flat `dotted.path=value` lines, one leaf per line
+          - table:   Aligned columns for a terminal
+          
+          [default: auto]
+
+      --timeout <DUR>
+          Deadline for the settle a read verb waits on, e.g. `8s`, `500ms`, `2m` (read verbs only; the control verbs do not sample)
+
+      --no-color
+          Never emit ANSI color, even on a terminal (also honors $NO_COLOR)
+
+  -q, --quiet
+          Drop headers, badges, and prose; print only data and errors
+
+Folds thermal pressure, SMART, controller throttle, memory pressure, battery
+wear, and sleep blockers into one verdict. A domain whose source is null is
+reported as unavailable and does not drive the status: you cannot fail a check
+you could not run.
+
+Exit: 0 ok, 1 warn or crit.
+
+===== mxmon explain =====
+Explain a topic (thermal, power, slow, battery, network, disk)
+
+Usage: explain [OPTIONS] <TOPIC>
+
+Arguments:
+  <TOPIC>
+          The topic to diagnose
+
+          Possible values:
+          - thermal: Heat, thermal pressure, and what is driving it
+          - power:   Where the package watts are going
+          - slow:    Why the machine feels slow right now
+          - battery: Charge, wear, and what is draining it
+          - network: Link state, throughput, and reachability
+          - disk:    Throughput, capacity, and drive health
+
+Options:
+  -h, --help
+          Print help (see a summary with '-h')
+
+Output options:
+      --format <FORMAT>
+          Output shape. `auto` prints a human summary on a terminal and machine output when piped; `compact` is flat `path=value` lines
+
+          Possible values:
+          - auto:    Human summary on a terminal, machine output when piped
+          - json:    Pretty-printed JSON
+          - ndjson:  One JSON object per line
+          - compact: Flat `dotted.path=value` lines, one leaf per line
+          - table:   Aligned columns for a terminal
+          
+          [default: auto]
+
+      --timeout <DUR>
+          Deadline for the settle a read verb waits on, e.g. `8s`, `500ms`, `2m` (read verbs only; the control verbs do not sample)
+
+      --no-color
+          Never emit ANSI color, even on a terminal (also honors $NO_COLOR)
+
+  -q, --quiet
+          Drop headers, badges, and prose; print only data and errors
+
+Examples:
+  mxmon explain thermal
+  mxmon explain slow --format json
+
+Deterministic and templated, with no model in the loop, so the same report
+always yields the same diagnosis.
+
+===== mxmon schema =====
+Print the report contract: JSON Schema, or a flat path listing
+
+Usage: schema [OPTIONS]
+
+Options:
+  -h, --help
+          Print help (see a summary with '-h')
+
+Output options:
+      --format <FORMAT>
+          Output shape. `auto` prints a human summary on a terminal and machine output when piped; `compact` is flat `path=value` lines
+
+          Possible values:
+          - auto:    Human summary on a terminal, machine output when piped
+          - json:    Pretty-printed JSON
+          - ndjson:  One JSON object per line
+          - compact: Flat `dotted.path=value` lines, one leaf per line
+          - table:   Aligned columns for a terminal
+          
+          [default: auto]
+
+      --timeout <DUR>
+          Deadline for the settle a read verb waits on, e.g. `8s`, `500ms`, `2m` (read verbs only; the control verbs do not sample)
+
+      --no-color
+          Never emit ANSI color, even on a terminal (also honors $NO_COLOR)
+
+  -q, --quiet
+          Drop headers, badges, and prose; print only data and errors
+
+Examples:
+  mxmon schema                      the full JSON Schema
+  mxmon schema --format compact     path:type, one per line
+  mxmon schema --format table       path, type, and description
+
+The compact and table views emit exactly the paths `get`, `check`, and `watch`
+accept, so the listing doubles as the query vocabulary. Every field carries its
+unit in the description.
+
+===== mxmon completions =====
+Print a shell completion script (bash, zsh, fish, and more)
+
+Usage: completions [OPTIONS] <SHELL>
+
+Arguments:
+  <SHELL>
+          The shell to generate for
+          
+          [possible values: bash, elvish, fish, powershell, zsh]
+
+Options:
+  -h, --help
+          Print help (see a summary with '-h')
+
+Output options:
+      --format <FORMAT>
+          Output shape. `auto` prints a human summary on a terminal and machine output when piped; `compact` is flat `path=value` lines
+
+          Possible values:
+          - auto:    Human summary on a terminal, machine output when piped
+          - json:    Pretty-printed JSON
+          - ndjson:  One JSON object per line
+          - compact: Flat `dotted.path=value` lines, one leaf per line
+          - table:   Aligned columns for a terminal
+          
+          [default: auto]
+
+      --timeout <DUR>
+          Deadline for the settle a read verb waits on, e.g. `8s`, `500ms`, `2m` (read verbs only; the control verbs do not sample)
+
+      --no-color
+          Never emit ANSI color, even on a terminal (also honors $NO_COLOR)
+
+  -q, --quiet
+          Drop headers, badges, and prose; print only data and errors
+
+This command emits a fixed artifact; the Output options do not apply to it.
+
+===== mxmon man =====
+Print a roff man page covering mxmon and every subcommand
+
+Usage: man [OPTIONS]
+
+Options:
+  -h, --help
+          Print help (see a summary with '-h')
+
+Output options:
+      --format <FORMAT>
+          Output shape. `auto` prints a human summary on a terminal and machine output when piped; `compact` is flat `path=value` lines
+
+          Possible values:
+          - auto:    Human summary on a terminal, machine output when piped
+          - json:    Pretty-printed JSON
+          - ndjson:  One JSON object per line
+          - compact: Flat `dotted.path=value` lines, one leaf per line
+          - table:   Aligned columns for a terminal
+          
+          [default: auto]
+
+      --timeout <DUR>
+          Deadline for the settle a read verb waits on, e.g. `8s`, `500ms`, `2m` (read verbs only; the control verbs do not sample)
+
+      --no-color
+          Never emit ANSI color, even on a terminal (also honors $NO_COLOR)
+
+  -q, --quiet
+          Drop headers, badges, and prose; print only data and errors
+
+This command emits a fixed artifact; the Output options do not apply to it.
+
+===== mxmon kill =====
+Send a signal to processes (default SIGTERM)
+
+Usage: kill [OPTIONS] <PIDS>...
+
+Arguments:
+  <PIDS>...
+          Process IDs to signal
+
+Options:
+  -s, --signal <SIGNAL>
+          Signal by name or number: TERM, KILL, 9, HUP, INT (default TERM)
+          
+          [default: TERM]
+
+      --dry-run
+          Resolve and print the plan without signaling anything
+
+  -y, --yes
+          Proceed without the confirmation prompt (required when not a terminal)
+
+  -h, --help
+          Print help (see a summary with '-h')
+
+Output options:
+      --format <FORMAT>
+          Output shape. `auto` prints a human summary on a terminal and machine output when piped; `compact` is flat `path=value` lines
+
+          Possible values:
+          - auto:    Human summary on a terminal, machine output when piped
+          - json:    Pretty-printed JSON
+          - ndjson:  One JSON object per line
+          - compact: Flat `dotted.path=value` lines, one leaf per line
+          - table:   Aligned columns for a terminal
+          
+          [default: auto]
+
+      --timeout <DUR>
+          Deadline for the settle a read verb waits on, e.g. `8s`, `500ms`, `2m` (read verbs only; the control verbs do not sample)
+
+      --no-color
+          Never emit ANSI color, even on a terminal (also honors $NO_COLOR)
+
+  -q, --quiet
+          Drop headers, badges, and prose; print only data and errors
+
+Examples:
+  mxmon kill --dry-run 431           resolve and print the plan, touch nothing
+  mxmon kill -s KILL 431 512
+  mxmon kill 431 --yes --format json act, then parse what happened
+
+Confirms interactively by default. Off a terminal, --yes is required or the
+command refuses and exits 4.
+
+===== mxmon signal =====
+Send a named or numbered signal to processes
+
+Usage: signal [OPTIONS] <SIGNAL> <PIDS>...
+
+Arguments:
+  <SIGNAL>
+          Signal by name or number: TERM, KILL, 9, HUP, INT, STOP, CONT
+
+  <PIDS>...
+          Process IDs to signal
+
+Options:
+      --dry-run
+          Resolve and print the plan without signaling anything
+
+  -y, --yes
+          Proceed without the confirmation prompt (required when not a terminal)
+
+  -h, --help
+          Print help (see a summary with '-h')
+
+Output options:
+      --format <FORMAT>
+          Output shape. `auto` prints a human summary on a terminal and machine output when piped; `compact` is flat `path=value` lines
+
+          Possible values:
+          - auto:    Human summary on a terminal, machine output when piped
+          - json:    Pretty-printed JSON
+          - ndjson:  One JSON object per line
+          - compact: Flat `dotted.path=value` lines, one leaf per line
+          - table:   Aligned columns for a terminal
+          
+          [default: auto]
+
+      --timeout <DUR>
+          Deadline for the settle a read verb waits on, e.g. `8s`, `500ms`, `2m` (read verbs only; the control verbs do not sample)
+
+      --no-color
+          Never emit ANSI color, even on a terminal (also honors $NO_COLOR)
+
+  -q, --quiet
+          Drop headers, badges, and prose; print only data and errors
+
+Examples:
+  mxmon signal STOP 431              pause a process
+  mxmon signal CONT 431              resume it
+  mxmon signal 9 431 512 --yes
+
+Same policy as `kill`: confirms interactively by default, and off a terminal
+--yes is required or the command refuses and exits 4.
+
+===== mxmon renice =====
+Change the scheduling niceness of processes
+
+Usage: renice [OPTIONS] <NICE> <PIDS>...
+
+Arguments:
+  <NICE>
+          New niceness (-20 highest priority to 19 lowest; raising priority or renicing another user's process needs privilege)
+
+  <PIDS>...
+          Process IDs to renice
+
+Options:
+      --dry-run
+          Resolve and print the plan without renicing anything
+
+  -y, --yes
+          Proceed without the confirmation prompt (required when not a terminal)
+
+  -h, --help
+          Print help (see a summary with '-h')
+
+Output options:
+      --format <FORMAT>
+          Output shape. `auto` prints a human summary on a terminal and machine output when piped; `compact` is flat `path=value` lines
+
+          Possible values:
+          - auto:    Human summary on a terminal, machine output when piped
+          - json:    Pretty-printed JSON
+          - ndjson:  One JSON object per line
+          - compact: Flat `dotted.path=value` lines, one leaf per line
+          - table:   Aligned columns for a terminal
+          
+          [default: auto]
+
+      --timeout <DUR>
+          Deadline for the settle a read verb waits on, e.g. `8s`, `500ms`, `2m` (read verbs only; the control verbs do not sample)
+
+      --no-color
+          Never emit ANSI color, even on a terminal (also honors $NO_COLOR)
+
+  -q, --quiet
+          Drop headers, badges, and prose; print only data and errors
+
+Examples:
+  mxmon renice 10 431 --dry-run
+  mxmon renice 5 431 --yes
+
+Lowering priority (a higher number) works for your own processes. Raising it,
+or touching another user's process, needs sudo.
+
+===== mxmon debug =====
+Developer dumps of raw sources (hidden)
+
+Usage: debug [OPTIONS] <COMMAND>
+
+Commands:
+  net    Raw per-interface network counters
+  smc    Readable float SMC power/voltage/current keys
+  bench  Time each collector's sample cost
+  flows  Raw ntstat stream and calibrated offsets
+  smart  NVMe SMART page, APFS cache stats, interrupt rates
+  help   Print this message or the help of the given subcommand(s)
+
+Options:
+  -h, --help
+          Print help (see a summary with '-h')
+
+Output options:
+      --format <FORMAT>
+          Output shape. `auto` prints a human summary on a terminal and machine output when piped; `compact` is flat `path=value` lines
+
+          Possible values:
+          - auto:    Human summary on a terminal, machine output when piped
+          - json:    Pretty-printed JSON
+          - ndjson:  One JSON object per line
+          - compact: Flat `dotted.path=value` lines, one leaf per line
+          - table:   Aligned columns for a terminal
+          
+          [default: auto]
+
+      --timeout <DUR>
+          Deadline for the settle a read verb waits on, e.g. `8s`, `500ms`, `2m` (read verbs only; the control verbs do not sample)
+
+      --no-color
+          Never emit ANSI color, even on a terminal (also honors $NO_COLOR)
+
+  -q, --quiet
+          Drop headers, badges, and prose; print only data and errors
+
+===== mxmon debug net =====
+Raw per-interface network counters
+
+Usage: net [OPTIONS]
+
+Options:
+  -h, --help
+          Print help (see a summary with '-h')
+
+Output options:
+      --format <FORMAT>
+          Output shape. `auto` prints a human summary on a terminal and machine output when piped; `compact` is flat `path=value` lines
+
+          Possible values:
+          - auto:    Human summary on a terminal, machine output when piped
+          - json:    Pretty-printed JSON
+          - ndjson:  One JSON object per line
+          - compact: Flat `dotted.path=value` lines, one leaf per line
+          - table:   Aligned columns for a terminal
+          
+          [default: auto]
+
+      --timeout <DUR>
+          Deadline for the settle a read verb waits on, e.g. `8s`, `500ms`, `2m` (read verbs only; the control verbs do not sample)
+
+      --no-color
+          Never emit ANSI color, even on a terminal (also honors $NO_COLOR)
+
+  -q, --quiet
+          Drop headers, badges, and prose; print only data and errors
+
+===== mxmon debug smc =====
+Readable float SMC power/voltage/current keys
+
+Usage: smc [OPTIONS]
+
+Options:
+  -h, --help
+          Print help (see a summary with '-h')
+
+Output options:
+      --format <FORMAT>
+          Output shape. `auto` prints a human summary on a terminal and machine output when piped; `compact` is flat `path=value` lines
+
+          Possible values:
+          - auto:    Human summary on a terminal, machine output when piped
+          - json:    Pretty-printed JSON
+          - ndjson:  One JSON object per line
+          - compact: Flat `dotted.path=value` lines, one leaf per line
+          - table:   Aligned columns for a terminal
+          
+          [default: auto]
+
+      --timeout <DUR>
+          Deadline for the settle a read verb waits on, e.g. `8s`, `500ms`, `2m` (read verbs only; the control verbs do not sample)
+
+      --no-color
+          Never emit ANSI color, even on a terminal (also honors $NO_COLOR)
+
+  -q, --quiet
+          Drop headers, badges, and prose; print only data and errors
+
+===== mxmon debug bench =====
+Time each collector's sample cost
+
+Usage: bench [OPTIONS]
+
+Options:
+  -h, --help
+          Print help (see a summary with '-h')
+
+Output options:
+      --format <FORMAT>
+          Output shape. `auto` prints a human summary on a terminal and machine output when piped; `compact` is flat `path=value` lines
+
+          Possible values:
+          - auto:    Human summary on a terminal, machine output when piped
+          - json:    Pretty-printed JSON
+          - ndjson:  One JSON object per line
+          - compact: Flat `dotted.path=value` lines, one leaf per line
+          - table:   Aligned columns for a terminal
+          
+          [default: auto]
+
+      --timeout <DUR>
+          Deadline for the settle a read verb waits on, e.g. `8s`, `500ms`, `2m` (read verbs only; the control verbs do not sample)
+
+      --no-color
+          Never emit ANSI color, even on a terminal (also honors $NO_COLOR)
+
+  -q, --quiet
+          Drop headers, badges, and prose; print only data and errors
+
+===== mxmon debug flows =====
+Raw ntstat stream and calibrated offsets
+
+Usage: flows [OPTIONS]
+
+Options:
+  -h, --help
+          Print help (see a summary with '-h')
+
+Output options:
+      --format <FORMAT>
+          Output shape. `auto` prints a human summary on a terminal and machine output when piped; `compact` is flat `path=value` lines
+
+          Possible values:
+          - auto:    Human summary on a terminal, machine output when piped
+          - json:    Pretty-printed JSON
+          - ndjson:  One JSON object per line
+          - compact: Flat `dotted.path=value` lines, one leaf per line
+          - table:   Aligned columns for a terminal
+          
+          [default: auto]
+
+      --timeout <DUR>
+          Deadline for the settle a read verb waits on, e.g. `8s`, `500ms`, `2m` (read verbs only; the control verbs do not sample)
+
+      --no-color
+          Never emit ANSI color, even on a terminal (also honors $NO_COLOR)
+
+  -q, --quiet
+          Drop headers, badges, and prose; print only data and errors
+
+===== mxmon debug smart =====
+NVMe SMART page, APFS cache stats, interrupt rates
+
+Usage: smart [OPTIONS]
+
+Options:
+  -h, --help
+          Print help (see a summary with '-h')
+
+Output options:
+      --format <FORMAT>
+          Output shape. `auto` prints a human summary on a terminal and machine output when piped; `compact` is flat `path=value` lines
+
+          Possible values:
+          - auto:    Human summary on a terminal, machine output when piped
+          - json:    Pretty-printed JSON
+          - ndjson:  One JSON object per line
+          - compact: Flat `dotted.path=value` lines, one leaf per line
+          - table:   Aligned columns for a terminal
+          
+          [default: auto]
+
+      --timeout <DUR>
+          Deadline for the settle a read verb waits on, e.g. `8s`, `500ms`, `2m` (read verbs only; the control verbs do not sample)
+
+      --no-color
+          Never emit ANSI color, even on a terminal (also honors $NO_COLOR)
+
+  -q, --quiet
+          Drop headers, badges, and prose; print only data and errors
+
