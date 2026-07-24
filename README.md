@@ -131,16 +131,27 @@ versioned contract that scripts and AI agents can rely on. See
 | `mxmon check '<expr>'` | assert a condition; exit `0` true, `1` false (`mxmon check 'thermal.throttling == false' && cargo build`) |
 | `mxmon health` | a composite verdict over thermal, SMART, battery, memory, and sleep blockers |
 | `mxmon explain <topic>` | a plain-language diagnosis: thermal, power, slow, battery, network, disk |
-| `mxmon schema` | the JSON Schema of the report contract, self-describing (needs no hardware) |
+| `mxmon schema` | the report contract, self-describing (needs no hardware) |
 | `mxmon kill\|signal\|renice <pid>` | act on processes (confirm by default; `--yes` to skip, `--dry-run` to preview) |
 
-Every read command takes `--format json\|ndjson\|table\|compact`, `--only <groups>`,
-and `--timeout <dur>`. Units are consistent throughout: byte counts as integers,
-ratios in `0..1`, watts and Celsius as floats, frequency in MHz. A source that is
-down or disabled serializes as `null` with its reason in `source_errors` or
-`meta.features`, never a missing key, and the contract is versioned
-(`meta.schema_version`). The legacy `mxmon --json` still works and now emits the
-same v1 document as `mxmon snapshot`.
+Start with `mxmon schema --format compact`: every queryable path and its type,
+one per line, in the same dot-path dialect `get`, `check`, and `watch` accept.
+`--format table` adds each field's description, and the plain form prints the
+full JSON Schema.
+
+Every read command takes `--format json\|ndjson\|table\|compact`, `--timeout <dur>`,
+`--no-color`, and `--quiet`; `--only <groups>` is specific to `snapshot`. Units are
+consistent throughout: byte counts as integers, ratios in `0..1`, watts and Celsius
+as floats, frequency in MHz. A source that is down or disabled serializes as `null`
+with its reason in `source_errors` or `meta.features`, never a missing key, and the
+contract is versioned (`meta.schema_version`). The legacy `mxmon --json` still works
+and emits the same v1 document as `mxmon snapshot`.
+
+Exit codes are the interface for a script: `0` success or true, `1` false or
+degraded, `2` a usage error (a bad flag, an unknown path, a malformed
+expression), `3` no usable data, `4` a control action refused, `5` a `check`
+that could not be decided because a source was null. `mxmon --help` carries the
+same table.
 
 ## How it works
 
