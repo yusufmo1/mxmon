@@ -8,11 +8,11 @@
 //! - [`schema`] pins the derived JSON Schema against drift.
 
 mod build;
-pub mod model;
-mod norm;
 pub mod check;
 pub mod explain;
 pub mod health;
+pub mod model;
+mod norm;
 pub mod schema;
 pub mod select;
 
@@ -23,6 +23,45 @@ pub use model::Report;
 /// or renamed field, or a tightened type). The golden-schema drift test flags
 /// the change, and [`model::Meta::schema_version`] carries this at runtime.
 pub const SCHEMA_VERSION: u32 = 1;
+
+/// A fully-populated report, built through the real [`Report::build`] from the
+/// shared deterministic samples in [`crate::testutil`].
+///
+/// Every domain is live, so the consumers of a report (`health`, `explain`, the
+/// headless renderers) can be tested against the same shape the binary emits,
+/// rather than against hand-written JSON that could drift from the model.
+#[cfg(test)]
+pub fn populated() -> Report {
+    use crate::testutil;
+    let soc = testutil::soc();
+    let fast = testutil::fast_at(1);
+    let power = testutil::power_at(1);
+    let temps = testutil::temps_at(1);
+    let battery = testutil::battery();
+    let procs = testutil::procs(8);
+    let flows = testutil::flows();
+    let ping = testutil::ping_at(1);
+    let storage = testutil::storage();
+    let kernel = testutil::kernel();
+    Report::build(&Inputs {
+        soc: &soc,
+        fast: Some(&fast),
+        power: Some(&power),
+        temps: Some(&temps),
+        battery: Some(&battery),
+        procs: Some(&procs),
+        flows: Some(&flows),
+        ping: Some(&ping),
+        storage: Some(&storage),
+        kernel: Some(&kernel),
+        errors: &[],
+        fast_ms: 250,
+        ping_on: true,
+        storage_health_on: true,
+        kernel_stats_on: true,
+        settled: true,
+    })
+}
 
 #[cfg(test)]
 mod tests {
@@ -57,11 +96,25 @@ mod tests {
         let value = serde_json::to_value(Report::build(&inputs)).unwrap();
         let obj = value.as_object().expect("report is a JSON object");
         for key in [
-            "cpu", "gpu", "memory", "power", "thermal", "network", "disk", "storage", "battery",
-            "processes", "flows", "kernel", "ping",
+            "cpu",
+            "gpu",
+            "memory",
+            "power",
+            "thermal",
+            "network",
+            "disk",
+            "storage",
+            "battery",
+            "processes",
+            "flows",
+            "kernel",
+            "ping",
         ] {
             assert!(obj.contains_key(key), "missing key {key}");
-            assert!(obj[key].is_null(), "{key} must be null when its source is down");
+            assert!(
+                obj[key].is_null(),
+                "{key} must be null when its source is down"
+            );
         }
         assert!(!obj["meta"].is_null());
         assert!(!obj["soc"].is_null());
