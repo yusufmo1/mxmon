@@ -458,7 +458,8 @@ pub fn kill(pid: i32, signal: i32) -> Result<(), String> {
 pub fn renice(pid: i32, nice: i32) -> Result<(), String> {
     fp::setpriority(pid, nice).map_err(|e| match e.raw_os_error() {
         Some(libc::EPERM | libc::EACCES) => {
-            "permission denied — raising priority or renicing another user's process needs sudo".into()
+            "permission denied — raising priority or renicing another user's process needs sudo"
+                .into()
         }
         Some(libc::ESRCH) => "process already exited".into(),
         _ => e.to_string(),

@@ -95,7 +95,10 @@ mod tests {
 
     #[test]
     fn rounding_matches_the_documented_resolution() {
-        assert!((watts(Watts(5.234_5)) - 5.234).abs() < 1e-9 || (watts(Watts(5.234_5)) - 5.235).abs() < 1e-9);
+        assert!(
+            (watts(Watts(5.234_5)) - 5.234).abs() < 1e-9
+                || (watts(Watts(5.234_5)) - 5.235).abs() < 1e-9
+        );
         assert!((ratio(Ratio(0.503_37)) - 0.5034).abs() < 1e-9);
         assert!((celsius(Celsius(83.44)) - 83.4).abs() < 1e-9);
         assert_eq!(mhz(Mhz(3152)), 3152);
@@ -119,7 +122,13 @@ mod tests {
     #[test]
     fn non_finite_stays_non_finite_and_serializes_to_null() {
         assert!(watts(Watts(f32::NAN)).is_nan());
-        assert_eq!(serde_json::to_string(&watts(Watts(f32::INFINITY))).unwrap(), "null");
-        assert_eq!(serde_json::to_string(&celsius(Celsius(f32::NAN))).unwrap(), "null");
+        assert_eq!(
+            serde_json::to_string(&watts(Watts(f32::INFINITY))).unwrap(),
+            "null"
+        );
+        assert_eq!(
+            serde_json::to_string(&celsius(Celsius(f32::NAN))).unwrap(),
+            "null"
+        );
     }
 }

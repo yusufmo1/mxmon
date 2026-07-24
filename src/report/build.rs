@@ -5,19 +5,19 @@
 //! format.
 
 use super::model::{
-    Battery, Cluster, Controller, Core, Cpu, DailySoc, Disk, Features, Filesystem, Flow, Flows, Fan,
-    Gpu, InterruptSource, Interrupts, Kernel, KernelRates, Memory, Meta, Network, Ping, Power,
-    PrimaryIf, Proc, Processes, Report, SampleWindow, Sensor, SleepBlocker, Smart, Soc, SourceError,
-    Storage, Thermal, Volume,
+    Battery, Cluster, Controller, Core, Cpu, DailySoc, Disk, Fan, Features, Filesystem, Flow,
+    Flows, Gpu, InterruptSource, Interrupts, Kernel, KernelRates, Memory, Meta, Network, Ping,
+    Power, PrimaryIf, Proc, Processes, Report, SampleWindow, Sensor, SleepBlocker, Smart, Soc,
+    SourceError, Storage, Thermal, Volume,
 };
 use super::norm;
 use crate::collect::battery::{BatterySample, cell_imbalance_mv};
 use crate::collect::disk::DiskSample;
+use crate::collect::flows::{Flow as HwFlow, FlowSample};
 use crate::collect::gpu::GpuSample;
 use crate::collect::kernel::{InterruptSource as HwInterrupt, KernelSnapshot};
 use crate::collect::mem::MemSample;
 use crate::collect::net::{NetSample, PrimaryIf as HwPrimaryIf};
-use crate::collect::flows::{Flow as HwFlow, FlowSample};
 use crate::collect::ping::PingSample;
 use crate::collect::power::{ClusterSample, CoreSample, PowerSample};
 use crate::collect::procs::{ProcRow, ProcSample};
@@ -287,7 +287,11 @@ fn filesystems() -> Vec<Filesystem> {
     crate::ffi::sys::mounts()
         .into_iter()
         .filter(|m| {
-            m.total > 0 && matches!(m.fs_type.as_str(), "apfs" | "hfs" | "exfat" | "msdos" | "ntfs")
+            m.total > 0
+                && matches!(
+                    m.fs_type.as_str(),
+                    "apfs" | "hfs" | "exfat" | "msdos" | "ntfs"
+                )
         })
         .map(|m| {
             let used = m.total.saturating_sub(m.available);

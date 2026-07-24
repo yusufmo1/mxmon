@@ -92,7 +92,10 @@ pub fn only(root: &Value, groups: &[String]) -> Result<Value, String> {
         }
         let Some(v) = obj.get(key) else {
             let valid: Vec<&str> = obj.keys().map(String::as_str).collect();
-            return Err(format!("unknown group {key:?}; valid: {}", valid.join(", ")));
+            return Err(format!(
+                "unknown group {key:?}; valid: {}",
+                valid.join(", ")
+            ));
         };
         out.insert(key.to_owned(), v.clone());
     }
@@ -115,7 +118,10 @@ mod tests {
     #[test]
     fn resolves_keys_and_indices() {
         let v = sample();
-        assert_eq!(resolve(&v, &parse_path("power.cpu_w").unwrap()).unwrap(), &json!(4.2));
+        assert_eq!(
+            resolve(&v, &parse_path("power.cpu_w").unwrap()).unwrap(),
+            &json!(4.2)
+        );
         assert_eq!(
             resolve(&v, &parse_path("power.ecpu.cores[0].freq_mhz").unwrap()).unwrap(),
             &json!(1901)
@@ -129,7 +135,11 @@ mod tests {
     #[test]
     fn null_propagates_but_bad_field_errors() {
         let v = sample();
-        assert!(resolve(&v, &parse_path("thermal.cpu_max_c").unwrap()).unwrap().is_null());
+        assert!(
+            resolve(&v, &parse_path("thermal.cpu_max_c").unwrap())
+                .unwrap()
+                .is_null()
+        );
         assert!(resolve(&v, &parse_path("power.bogus").unwrap()).is_err());
         assert!(resolve(&v, &parse_path("power.ecpu.cores[9]").unwrap()).is_err());
     }

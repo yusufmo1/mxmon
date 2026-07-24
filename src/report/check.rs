@@ -33,7 +33,11 @@ pub enum Verdict {
 /// distinct outcome from `Unknown`).
 pub fn evaluate(root: &Value, expr: &str) -> Result<Verdict, String> {
     let tokens = tokenize(expr)?;
-    let mut p = Parser { tokens, pos: 0, root };
+    let mut p = Parser {
+        tokens,
+        pos: 0,
+        root,
+    };
     let v = p.expr()?;
     if p.pos != p.tokens.len() {
         return Err(format!("unexpected trailing input at token {}", p.pos));
@@ -111,12 +115,15 @@ fn tokenize(s: &str) -> Result<Vec<Tok>, String> {
                 let start = i;
                 i += 1;
                 while i < chars.len()
-                    && (chars[i].is_ascii_digit() || matches!(chars[i], '.' | 'e' | 'E' | '+' | '-'))
+                    && (chars[i].is_ascii_digit()
+                        || matches!(chars[i], '.' | 'e' | 'E' | '+' | '-'))
                 {
                     i += 1;
                 }
                 let lit: String = chars[start..i].iter().collect();
-                let n = lit.parse::<f64>().map_err(|_| format!("bad number {lit:?}"))?;
+                let n = lit
+                    .parse::<f64>()
+                    .map_err(|_| format!("bad number {lit:?}"))?;
                 out.push(Tok::Num(n));
             }
             c if is_ident_char(c) => {
@@ -227,7 +234,9 @@ impl Parser<'_> {
         // A bare operand is read as a boolean.
         let v = self.resolve(lhs)?;
         if v.unavailable {
-            return Ok(Verdict::Unknown("operand is null (source unavailable)".to_owned()));
+            return Ok(Verdict::Unknown(
+                "operand is null (source unavailable)".to_owned(),
+            ));
         }
         match v.value.as_bool() {
             Some(true) => Ok(Verdict::True),
@@ -313,11 +322,7 @@ fn json_eq(a: &Value, b: &Value) -> bool {
 }
 
 fn bool_verdict(b: bool) -> Verdict {
-    if b {
-        Verdict::True
-    } else {
-        Verdict::False
-    }
+    if b { Verdict::True } else { Verdict::False }
 }
 
 fn negate(v: Verdict) -> Verdict {
@@ -361,14 +366,26 @@ mod tests {
     #[test]
     fn comparisons_and_logic() {
         let r = report();
-        assert_eq!(evaluate(&r, "thermal.cpu_max_c < 90").unwrap(), Verdict::True);
-        assert_eq!(evaluate(&r, "power.package_w > 40").unwrap(), Verdict::False);
-        assert_eq!(evaluate(&r, "memory.pressure == \"normal\"").unwrap(), Verdict::True);
+        assert_eq!(
+            evaluate(&r, "thermal.cpu_max_c < 90").unwrap(),
+            Verdict::True
+        );
+        assert_eq!(
+            evaluate(&r, "power.package_w > 40").unwrap(),
+            Verdict::False
+        );
+        assert_eq!(
+            evaluate(&r, "memory.pressure == \"normal\"").unwrap(),
+            Verdict::True
+        );
         assert_eq!(
             evaluate(&r, "thermal.throttling == false and power.package_w < 40").unwrap(),
             Verdict::True
         );
-        assert_eq!(evaluate(&r, "not thermal.throttling").unwrap(), Verdict::True);
+        assert_eq!(
+            evaluate(&r, "not thermal.throttling").unwrap(),
+            Verdict::True
+        );
     }
 
     #[test]
@@ -376,8 +393,14 @@ mod tests {
         let r = report();
         // ping is null (disabled); ordering/equality against a real value is
         // undecidable, not false.
-        assert!(matches!(evaluate(&r, "ping.rtt_ms < 50").unwrap(), Verdict::Unknown(_)));
-        assert!(matches!(evaluate(&r, "ping.up == true").unwrap(), Verdict::Unknown(_)));
+        assert!(matches!(
+            evaluate(&r, "ping.rtt_ms < 50").unwrap(),
+            Verdict::Unknown(_)
+        ));
+        assert!(matches!(
+            evaluate(&r, "ping.up == true").unwrap(),
+            Verdict::Unknown(_)
+        ));
         // But an explicit availability check decides.
         assert_eq!(evaluate(&r, "ping == null").unwrap(), Verdict::True);
     }
