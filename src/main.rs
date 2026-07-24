@@ -1,4 +1,4 @@
-//! mxmon — a beautiful, lightning-fast terminal monitor for Apple Silicon.
+//! mxmon: a sudoless Apple Silicon system monitor, as a TUI and as a headless contract.
 
 mod app;
 mod arrange;

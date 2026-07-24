@@ -3,16 +3,26 @@ name = "mxmon"
 version = "0.1.1"
 edition = "2024"
 rust-version = "1.88" # let-chains
-description = "mxmon — a beautiful, lightning-fast terminal monitor for Apple Silicon"
+description = "Sudoless system monitor for Apple Silicon: power, thermals and per-process watts, as a TUI and a JSON contract for agents"
 repository = "https://github.com/yusufmo1/mxmon"
-homepage = "https://github.com/yusufmo1/mxmon"
+homepage = "https://mxmon.com"
+documentation = "https://github.com/yusufmo1/mxmon/blob/main/AGENTS.md"
 readme = "README.md"
 license = "MIT"
-keywords = ["macos", "apple-silicon", "monitoring", "tui", "terminal"]
-categories = ["command-line-utilities"]
-# Keep the published crate lean — dev tooling, CI, and screenshots live in the
-# git repo only, not in the crates.io tarball.
-exclude = ["/docs", "/.github", "/Makefile", "/bacon.toml"]
+keywords = ["apple-silicon", "macos", "powermetrics", "monitoring", "tui"]
+categories = ["command-line-utilities", "os::macos-apis", "hardware-support"]
+# Keep the published crate lean: dev tooling, CI, screenshots, and metadata for
+# other channels (Context7, the Claude Code plugin) live in the git repo only,
+# not in the crates.io tarball.
+exclude = [
+    "/docs",
+    "/.github",
+    "/Makefile",
+    "/bacon.toml",
+    "/context7.json",
+    "/.claude-plugin",
+    "/skills",
+]
 
 [lints.rust]
 unsafe_code = "deny" # only src/ffi/ opts back in
