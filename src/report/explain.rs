@@ -103,7 +103,12 @@ fn slow(r: &Report) -> String {
         |c| format!("load {:.2}", c.load_avg[0]),
     );
     let hog = top_by(r, |proc| proc.cpu_ratio.unwrap_or(0.0))
-        .map(|(name, ratio)| format!("; busiest process {name} at {:.0}% of a core", ratio * 100.0))
+        .map(|(name, ratio)| {
+            format!(
+                "; busiest process {name} at {:.0}% of a core",
+                ratio * 100.0
+            )
+        })
         .unwrap_or_default();
     let contention = r
         .processes
@@ -139,10 +144,14 @@ fn battery(r: &Report) -> String {
 }
 
 fn network(r: &Report) -> String {
-    let link = r.network.as_ref().and_then(|n| n.primary.as_ref()).map_or_else(
-        || "no primary interface".to_owned(),
-        |p| format!("{} {}", p.name, if p.link_up { "up" } else { "down" }),
-    );
+    let link = r
+        .network
+        .as_ref()
+        .and_then(|n| n.primary.as_ref())
+        .map_or_else(
+            || "no primary interface".to_owned(),
+            |p| format!("{} {}", p.name, if p.link_up { "up" } else { "down" }),
+        );
     let reach = r
         .ping
         .as_ref()
@@ -191,6 +200,91 @@ mod tests {
         }
     }
 
+    /// Every topic must produce prose that names the specific metric it is
+    /// about, from a report with every domain live. A topic that silently
+    /// returned a generic sentence would be worse than no diagnosis at all.
+    #[test]
+    fn every_topic_names_its_own_evidence() {
+        let r = crate::report::populated();
+        let h = super::super::health::assess(&r);
+        for (topic, needles) in [
+            ("thermal", vec!["pressure", "CPU max"]),
+            ("power", vec!["Package draw", "cpu", "gpu", "ane"]),
+            ("slow", vec!["load"]),
+            ("battery", vec!["Charge", "Health", "cycles"]),
+            ("network", vec!["Link"]),
+            ("disk", vec!["Read", "write", "boot volume"]),
+        ] {
+            let e = explain(topic, &r, &h);
+            assert_eq!(e.topic, topic);
+            for needle in needles {
+                assert!(
+                    e.summary.contains(needle),
+                    "explain {topic} never mentions {needle:?}: {}",
+                    e.summary
+                );
+            }
+        }
+    }
+
+    /// Findings are filtered per topic, so a thermal diagnosis does not drag in
+    /// the battery verdict and vice versa.
+    #[test]
+    fn findings_are_scoped_to_the_topic() {
+        let r = crate::report::populated();
+        let h = super::super::health::assess(&r);
+        let thermal = explain("thermal", &r, &h);
+        assert!(
+            thermal
+                .findings
+                .iter()
+                .all(|f| matches!(f.domain.as_str(), "thermal" | "controller")),
+            "thermal pulled in an unrelated finding"
+        );
+        let battery = explain("battery", &r, &h);
+        assert!(battery.findings.iter().all(|f| f.domain == "battery"));
+        // A topic with no health domain of its own carries the prose alone.
+        assert!(explain("network", &r, &h).findings.is_empty());
+    }
+
+    /// Each topic degrades to a named "unavailable" line rather than a panic or
+    /// a fabricated reading when its source is null.
+    #[test]
+    fn a_null_source_degrades_to_a_named_absence() {
+        let mut r = crate::report::populated();
+        r.thermal = None;
+        r.power = None;
+        r.disk = None;
+        r.battery = None;
+        let h = super::super::health::assess(&r);
+        assert!(explain("thermal", &r, &h).summary.contains("unavailable"));
+        assert!(explain("power", &r, &h).summary.contains("unavailable"));
+        assert!(explain("disk", &r, &h).summary.contains("unavailable"));
+        assert!(explain("battery", &r, &h).summary.contains("No battery"));
+        // `slow` and `network` compose from several sources and stay total.
+        assert!(!explain("slow", &r, &h).summary.is_empty());
+        assert!(!explain("network", &r, &h).summary.is_empty());
+    }
+
+    /// Throttling flips the thermal diagnosis from reassurance to an action.
+    #[test]
+    fn throttling_changes_the_thermal_verdict() {
+        let mut r = crate::report::populated();
+        let h = super::super::health::assess(&r);
+        let calm = explain("thermal", &r, &h).summary;
+        assert!(calm.contains("healthy"), "{calm}");
+
+        if let Some(t) = r.thermal.as_mut() {
+            t.throttling = Some(true);
+        }
+        let hot = explain("thermal", &r, &h).summary;
+        assert!(hot.contains("throttling"), "{hot}");
+        assert!(
+            hot.contains("Reduce sustained load"),
+            "it should say what to do"
+        );
+    }
+
     #[test]
     fn unknown_topic_is_reported_not_panicked() {
         let r: Report = serde_json::from_value(serde_json::json!({
@@ -205,7 +299,15 @@ mod tests {
             "network": null, "disk": null, "storage": null, "battery": null,
             "processes": null, "flows": null, "kernel": null, "ping": null, "source_errors": []
         })).unwrap();
-        assert!(explain("thermal", &r, &empty_health()).summary.contains("unavailable"));
-        assert!(explain("nope", &r, &empty_health()).summary.contains("unknown topic"));
+        assert!(
+            explain("thermal", &r, &empty_health())
+                .summary
+                .contains("unavailable")
+        );
+        assert!(
+            explain("nope", &r, &empty_health())
+                .summary
+                .contains("unknown topic")
+        );
     }
 }

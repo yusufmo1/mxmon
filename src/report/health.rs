@@ -114,8 +114,14 @@ pub fn assess(r: &Report) -> Health {
         let p = t.pressure.as_deref().unwrap_or("unknown");
         let (sev, summary) = match p {
             "nominal" | "light" => (Sev::Ok, format!("thermal pressure {p}")),
-            "moderate" | "heavy" => (Sev::Warn, format!("thermal pressure {p}: the SoC is throttling")),
-            "trapping" | "sleeping" => (Sev::Crit, format!("thermal pressure {p}: severe throttling")),
+            "moderate" | "heavy" => (
+                Sev::Warn,
+                format!("thermal pressure {p}: the SoC is throttling"),
+            ),
+            "trapping" | "sleeping" => (
+                Sev::Crit,
+                format!("thermal pressure {p}: severe throttling"),
+            ),
             other => (Sev::Note, format!("thermal pressure {other}")),
         };
         let detail = Some(format!(
@@ -134,12 +140,16 @@ pub fn assess(r: &Report) -> Health {
             let (sev, summary) = if sm.unhealthy {
                 (
                     Sev::Crit,
-                    "SMART fault: critical warning, media errors, or spare below threshold".to_owned(),
+                    "SMART fault: critical warning, media errors, or spare below threshold"
+                        .to_owned(),
                 )
             } else if sm.used_ratio >= ENDURANCE_WARN {
                 (
                     Sev::Warn,
-                    format!("drive at {:.0}% of rated write endurance", sm.used_ratio * 100.0),
+                    format!(
+                        "drive at {:.0}% of rated write endurance",
+                        sm.used_ratio * 100.0
+                    ),
                 )
             } else {
                 (Sev::Ok, "drive healthy".to_owned())
@@ -208,7 +218,10 @@ pub fn assess(r: &Report) -> Health {
         }
         if b.cell_imbalance_mv.is_some_and(|mv| mv > IMBALANCE_MV) {
             sev = Sev::Warn;
-            notes.push(format!("cell imbalance {}mV", b.cell_imbalance_mv.unwrap_or(0)));
+            notes.push(format!(
+                "cell imbalance {}mV",
+                b.cell_imbalance_mv.unwrap_or(0)
+            ));
         }
         let summary = if sev == Sev::Ok {
             "battery healthy".to_owned()
@@ -226,7 +239,10 @@ pub fn assess(r: &Report) -> Health {
         let on_battery = r.battery.as_ref().is_some_and(|b| !b.external_power);
         let sev = if on_battery { Sev::Warn } else { Sev::Note };
         let summary = if on_battery {
-            format!("{} process(es) keeping the machine awake on battery", blockers.len())
+            format!(
+                "{} process(es) keeping the machine awake on battery",
+                blockers.len()
+            )
         } else {
             format!("{} sleep blocker(s)", blockers.len())
         };
@@ -236,7 +252,13 @@ pub fn assess(r: &Report) -> Health {
         }
         let who = kinds
             .iter()
-            .map(|(kind, n)| if *n > 1 { format!("{kind} x{n}") } else { (*kind).to_owned() })
+            .map(|(kind, n)| {
+                if *n > 1 {
+                    format!("{kind} x{n}")
+                } else {
+                    (*kind).to_owned()
+                }
+            })
             .collect::<Vec<_>>()
             .join(", ");
         items.push(finding("kernel", sev, summary, Some(who)));
@@ -299,18 +321,203 @@ mod tests {
         serde_json::from_value(v).unwrap()
     }
 
+    /// Each rule is a threshold with a consequence, so each threshold gets a
+    /// case on both sides of it. These fire only on degraded hardware, which
+    /// is exactly why they cannot be verified by running the binary here.
+    #[test]
+    fn smart_and_controller_rules_fire_on_their_thresholds() {
+        let base = crate::report::populated();
+        let domain = |h: &Health, name: &str| h.findings.iter().find(|f| f.domain == name).cloned();
+
+        // Healthy drive: reported, but at Ok.
+        let h = assess(&base);
+        let st = domain(&h, "storage").expect("storage assessed");
+        assert_eq!(st.status, Status::Ok);
+        assert!(st.summary.contains("healthy"));
+        assert!(
+            domain(&h, "controller").is_none(),
+            "an idle controller says nothing"
+        );
+
+        // A SMART fault is critical regardless of endurance.
+        let mut r = base.clone();
+        if let Some(sm) = r.storage.as_mut().and_then(|s| s.smart.as_mut()) {
+            sm.unhealthy = true;
+        }
+        assert_eq!(assess(&r).status, Status::Crit);
+        assert!(
+            domain(&assess(&r), "storage")
+                .unwrap()
+                .summary
+                .contains("SMART fault")
+        );
+
+        // Endurance: below the threshold is quiet, above it warns.
+        let mut r = base.clone();
+        if let Some(sm) = r.storage.as_mut().and_then(|s| s.smart.as_mut()) {
+            sm.used_ratio = 0.89;
+        }
+        assert_eq!(
+            assess(&r).status,
+            Status::Ok,
+            "0.89 is under the 0.90 warn line"
+        );
+        if let Some(sm) = r.storage.as_mut().and_then(|s| s.smart.as_mut()) {
+            sm.used_ratio = 0.90;
+        }
+        assert_eq!(assess(&r).status, Status::Warn, "0.90 reaches it");
+        assert!(
+            domain(&assess(&r), "storage")
+                .unwrap()
+                .summary
+                .contains("endurance")
+        );
+
+        // Controller throttle escalates Ok -> Warn -> Crit.
+        for (ratio, want) in [
+            (0.05, Status::Ok),
+            (0.06, Status::Warn),
+            (0.26, Status::Crit),
+        ] {
+            let mut r = base.clone();
+            if let Some(c) = r.storage.as_mut() {
+                c.controller.throttled_ratio = Some(ratio);
+            }
+            assert_eq!(assess(&r).status, want, "throttled_ratio {ratio}");
+        }
+    }
+
+    #[test]
+    fn battery_wear_warns_on_health_cycles_or_imbalance() {
+        let base = crate::report::populated();
+        let battery = |h: &Health| h.findings.iter().find(|f| f.domain == "battery").cloned();
+        assert_eq!(
+            battery(&assess(&base)).expect("battery assessed").status,
+            Status::Ok
+        );
+
+        for mutate in [
+            (|b: &mut crate::report::model::Battery| b.health_ratio = 0.79) as fn(&mut _),
+            |b: &mut crate::report::model::Battery| b.cycle_ratio = Some(0.81),
+            |b: &mut crate::report::model::Battery| b.cell_imbalance_mv = Some(101),
+        ] {
+            let mut r = base.clone();
+            mutate(r.battery.as_mut().expect("fixture has a battery"));
+            let f = battery(&assess(&r)).expect("battery assessed");
+            assert_eq!(f.status, Status::Warn);
+            assert!(f.summary.contains("wear"), "{}", f.summary);
+        }
+
+        // A machine with no battery gets no finding at all, which is different
+        // from a battery whose source is down.
+        let mut r = base.clone();
+        r.battery = None;
+        assert!(
+            battery(&assess(&r)).is_none(),
+            "desktops have nothing to report"
+        );
+    }
+
+    #[test]
+    fn sleep_blockers_escalate_only_on_battery_and_are_deduped() {
+        let base = crate::report::populated();
+        let kernel = |h: &Health| h.findings.iter().find(|f| f.domain == "kernel").cloned();
+
+        let mut r = base.clone();
+        let blockers = r
+            .kernel
+            .as_mut()
+            .expect("fixture has kernel stats")
+            .sleep_blockers
+            .as_mut()
+            .expect("fixture has blockers");
+        blockers.clear();
+        for _ in 0..3 {
+            blockers.push(crate::report::model::SleepBlocker {
+                pid: 431,
+                kind: "PreventUserIdleSystemSleep".to_owned(),
+                reason: None,
+            });
+        }
+        blockers.push(crate::report::model::SleepBlocker {
+            pid: 512,
+            kind: "ExternalMedia".to_owned(),
+            reason: None,
+        });
+
+        // On the adapter it is a note: real, but not worth failing a check over.
+        if let Some(b) = r.battery.as_mut() {
+            b.external_power = true;
+        }
+        let plugged = assess(&r);
+        let f = kernel(&plugged).expect("blockers reported");
+        assert_eq!(f.status, Status::Ok, "a note folds to Ok for the top line");
+        // Repeated kinds collapse to one entry with a count.
+        let detail = f.detail.expect("detail names the kinds");
+        assert!(detail.contains("PreventUserIdleSystemSleep x3"), "{detail}");
+        assert!(detail.contains("ExternalMedia"), "{detail}");
+        assert!(
+            !detail.contains("x1"),
+            "a single occurrence is not counted: {detail}"
+        );
+
+        // On battery the same blockers are a warning, because they cost charge.
+        if let Some(b) = r.battery.as_mut() {
+            b.external_power = false;
+        }
+        let unplugged = assess(&r);
+        assert_eq!(kernel(&unplugged).unwrap().status, Status::Warn);
+        assert!(
+            kernel(&unplugged)
+                .unwrap()
+                .summary
+                .contains("awake on battery")
+        );
+        assert_eq!(unplugged.status, Status::Warn);
+    }
+
+    #[test]
+    fn findings_are_ordered_worst_first() {
+        let mut r = crate::report::populated();
+        if let Some(m) = r.memory.as_mut() {
+            m.pressure = "critical".to_owned();
+        }
+        let h = assess(&r);
+        assert_eq!(h.status, Status::Crit);
+        let ranks: Vec<u8> = h.findings.iter().map(|f| status_rank(f.status)).collect();
+        assert!(
+            ranks.windows(2).all(|w| w[0] >= w[1]),
+            "findings must be sorted worst first, got {ranks:?}"
+        );
+        assert_eq!(h.findings[0].domain, "memory");
+    }
+
     #[test]
     fn nominal_is_ok_moderate_is_warn_critical_mem_is_crit() {
         assert_eq!(assess(&report_with("nominal", "normal")).status, Status::Ok);
-        assert_eq!(assess(&report_with("moderate", "normal")).status, Status::Warn);
-        assert_eq!(assess(&report_with("nominal", "critical")).status, Status::Crit);
+        assert_eq!(
+            assess(&report_with("moderate", "normal")).status,
+            Status::Warn
+        );
+        assert_eq!(
+            assess(&report_with("nominal", "critical")).status,
+            Status::Crit
+        );
     }
 
     #[test]
     fn null_storage_is_partial_not_a_failure() {
         let h = assess(&report_with("nominal", "normal"));
         assert!(h.partial, "storage was null");
-        assert_eq!(h.status, Status::Ok, "an unavailable domain must not drive status");
-        assert!(h.findings.iter().any(|f| f.domain == "storage" && f.unavailable));
+        assert_eq!(
+            h.status,
+            Status::Ok,
+            "an unavailable domain must not drive status"
+        );
+        assert!(
+            h.findings
+                .iter()
+                .any(|f| f.domain == "storage" && f.unavailable)
+        );
     }
 }
