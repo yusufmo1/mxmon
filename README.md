@@ -3,24 +3,42 @@
 
 # ◉ mxmon
 
-The **Mx** **mon**itor: a blazing-fast, **sudoless** system monitor for Apple Silicon, living in your terminal.
+The **Mx** **mon**itor: a **sudoless** system monitor for Apple Silicon. Power, frequency and thermals in a terminal UI, and in a JSON contract that scripts and AI agents can query.
 
 ![Apple Silicon](https://img.shields.io/badge/Apple%20Silicon-0b0f17?style=for-the-badge&logo=apple&logoColor=white)
 ![Rust](https://img.shields.io/badge/Rust%202024-f74c00?style=for-the-badge&logo=rust&logoColor=white)
 [![ratatui](https://img.shields.io/badge/UI-ratatui-22d3ee?style=for-the-badge&labelColor=0b0f17)](https://ratatui.rs)
 ![no sudo](https://img.shields.io/badge/sudo-not%20required-22c55e?style=for-the-badge&labelColor=0b0f17)
+[![AGENTS.md](https://img.shields.io/badge/agents-AGENTS.md-f59e0b?style=for-the-badge&labelColor=0b0f17)](AGENTS.md)
 [![website](https://img.shields.io/badge/mxmon.com-online-22d3ee?style=for-the-badge&labelColor=0b0f17)](https://mxmon.com)
 [![MIT](https://img.shields.io/badge/license-MIT-a855f7?style=for-the-badge&labelColor=0b0f17)](LICENSE)
 
 <img src="https://raw.githubusercontent.com/yusufmo1/mxmon/main/docs/overview-neon.png" width="880" alt="mxmon overview: CPU, power, GPU, memory, network, battery and thermal panels in a neon terminal UI">
 
-[Website](https://mxmon.com) · [Features](#features) · [Install](#install) · [Keys](#keys) · [How it works](#how-it-works) · [Themes](#themes)
+[Website](https://mxmon.com) · [Features](#features) · [Install](#install) · [Agents](#agents--scripting) · [vs. powermetrics](#compared-to-powermetrics-htop-and-activity-monitor) · [Keys](#keys) · [How it works](#how-it-works) · [Themes](#themes)
 
 </div>
 
 ---
 
-`mxmon` fuses htop's process management with Mx-Power-Gadget-class SoC telemetry, a live network panel, an AlDente-style battery power-flow, and a real-time **thermal map of your MacBook's chassis**, all in a neon terminal UI that redraws only when data changes, so it sips CPU when idle. Everything is read straight from macOS frameworks: **no `sudo`, no kexts, no daemons.**
+`mxmon` fuses htop's process management with Mx-Power-Gadget-class SoC telemetry, a live network panel, an AlDente-style battery power-flow, and a real-time **thermal map of your MacBook's chassis**, all in a neon terminal UI that redraws only when data changes, so it sips CPU when idle. Everything is read straight from macOS frameworks: **no `sudo`, no kexts, no daemons.** Every one of those readings is also available headless, as a versioned JSON contract with dot-path queries and real exit codes, so a script or an agent can read this machine's power and thermals without a password prompt.
+
+**Built to be run by a program, not just piped to one.** `powermetrics`, the usual way to
+read Apple Silicon power and frequency, refuses to run as anything but root: inside an agent
+loop that is a hung password prompt, a sandbox denial, or a failed CI job. `mxmon` reads the
+same class of counters through the same private frameworks with no privileges, and it answers
+a question instead of dumping a document.
+
+```sh
+mxmon schema --format compact                              # every queryable path and its type
+mxmon get power.package_w thermal.throttling               # pull values, one per line
+mxmon check 'thermal.throttling == false' && cargo build   # gate a build on a condition
+mxmon top power                                            # rank processes by watts
+```
+
+Read verbs settle and exit; nothing here needs a terminal, a signal, or a guessed timeout.
+The full surface is [Agents & scripting](#agents--scripting), and [AGENTS.md](AGENTS.md) is
+the guide written for an agent to read.
 
 ## Features
 
@@ -85,42 +103,12 @@ cargo build --release && ./target/release/mxmon
 | `--theme <NAME>` | launch with any of the 18 built-in [themes](#themes) |
 | `--glyphs <MODE>` | graph fill: `auto` (default), `octant`, or `braille` (see [glyphs](#glyphs)) |
 
-## Keys
-
-| Keys | Action |
-|---|---|
-| <kbd>1</kbd> <kbd>2</kbd> <kbd>3</kbd> <kbd>4</kbd> / <kbd>Tab</kbd> | overview · processes · thermal · connections |
-| <kbd>j</kbd> <kbd>k</kbd> / arrows · <kbd>g</kbd> <kbd>G</kbd> | select · jump to top / bottom |
-| <kbd>/</kbd> or <kbd>F3</kbd> | filter (<kbd>Esc</kbd> clears) |
-| <kbd>s</kbd> / <kbd>F6</kbd> / click header | sort |
-| <kbd>x</kbd> / <kbd>F9</kbd> | kill (signal picker) |
-| <kbd>Enter</kbd> | process details |
-| <kbd>o</kbd> | settings card: every option in the app, on one surface |
-| <kbd>i</kbd> | inspector: storage health, kernel activity, battery depth |
-| <kbd>a</kbd> | arrange cards: arrows move, <kbd>Enter</kbd> picks up and drops |
-| <kbd>t</kbd> | cycle theme |
-| <kbd>p</kbd> · <kbd>+</kbd> <kbd>-</kbd> · <kbd>d</kbd> | pause · sampling speed · debug HUD |
-| <kbd>?</kbd> · <kbd>q</kbd> | key reference · quit |
-
-<sub>Every one of these is remappable (see [Settings](#settings)).</sub>
-
-<sub>Full mouse support: every metric card is a button. Hover it for a `▸ destination` hint, click to jump where that metric deepens (CPU/MEM/POWER open the process table sorted by it, NET the connections view, GPU/TEMPS/BATTERY the thermal view). Click tabs, column headers, rows, footer chips and the modal `✕`; scroll the process, sensor and connection lists, and everything in the settings card.</sub>
-
-<sub>Drag any card onto another to swap the two: the rects never move, only which panel draws into them, so every layout stays exactly as tuned at every terminal width. The process table drags by its title bar (its rows keep selecting processes). Rearrangements persist, survive resizing across every breakpoint, and reset from `panels › arrangement` in the settings card.</sub>
-
-<div align="center">
-
-<img src="https://raw.githubusercontent.com/yusufmo1/mxmon/main/docs/narrow-layout.png" width="380" alt="mxmon reflowed into a narrow terminal">
-
-<sub>Reflows cleanly all the way down to narrow terminals.</sub>
-
-</div>
-
-## Scripting & agents
+## Agents & scripting
 
 Bare `mxmon` is the TUI. Every metric is also available headless, as a clean,
-versioned contract that scripts and AI agents can rely on. See
-[AGENTS.md](AGENTS.md) for the agent-oriented guide.
+versioned contract that scripts and AI agents can rely on, with nothing to
+install alongside it and no daemon to keep alive. [AGENTS.md](AGENTS.md) is the
+guide written to be read by an agent.
 
 | Command | What it does |
 |---|---|
@@ -152,6 +140,76 @@ degraded, `2` a usage error (a bad flag, an unknown path, a malformed
 expression), `3` no usable data, `4` a control action refused, `5` a `check`
 that could not be decided because a source was null. `mxmon --help` carries the
 same table.
+
+## Compared to powermetrics, htop, and Activity Monitor
+
+`powermetrics` is Apple's own tool and the reference for this data. It also refuses to run
+as anything but root, which is fine at a prompt and fatal everywhere else: a CI job, a
+sandbox, a launchd agent, an AI agent. That one constraint is most of this table.
+
+| | `mxmon` | `sudo powermetrics` | `htop` / `btop` | Activity Monitor |
+|---|---|---|---|---|
+| Runs without root | yes | no, refuses to start | yes; btop's own CPU-watts readout needs setcap, setuid, or sudo | yes |
+| Usable unattended (CI, sandbox, agent) | yes | no | no, interactive only | no, GUI only |
+| Ships with macOS | no | yes | no | yes |
+| Platforms | Apple Silicon | macOS | Linux, macOS, BSD, more | macOS |
+| SoC power rails in watts (package / CPU / GPU / ANE / RAM) | yes | yes | no | no; "Energy Impact" is a unitless score |
+| Per-process energy | yes, from `proc_pid_rusage` nanojoule counters | yes | no | no, Energy Impact again |
+| Per-cluster DVFS frequency | yes | yes | no | no |
+| Named die and chassis temperatures | 50+ IOHID and SMC sensors | some | some SMC keys on macOS | no |
+| Structured output | JSON, NDJSON, flat `path=value`, versioned | XML or binary plist | no | no |
+| Query one value by path | `mxmon get power.package_w` | parse the plist yourself | no | no |
+| Assert a condition, exit non-zero | `mxmon check '...'` | no | no | no |
+| Self-describing schema | `mxmon schema` | no | no | no |
+
+<sub>Without <code>sudo</code>, mxmon's <i>process</i> table covers your own processes, exactly like <code>htop</code>; SoC telemetry, sensors, and per-connection flows are unrestricted either way. The btop note quotes btop's own configuration help for <code>show_cpu_watts</code>.</sub>
+
+**Where the others win, plainly.** `powermetrics` ships with the OS, needs no install, and
+has samplers mxmon does not model, notably per-process interrupt and timer-wakeup
+attribution. With an interactive root shell it is the more complete instrument, and mxmon is
+not trying to replace it. `htop` and `btop` run on the platforms mxmon does not, and btop is
+a far more mature project. Activity Monitor is already installed and keeps multi-hour energy
+averages nothing here reproduces.
+
+**Other sudoless tools exist, and the difference is the interface.**
+[macmon](https://github.com/vladkens/macmon) and [macpow](https://github.com/k06a/macpow)
+read the same IOReport and SMC counters without root, and both can print JSON. What mxmon
+adds is a contract rather than a dump: one path grammar that `get`, `check`, and `watch` all
+speak, a schema you can read before you write the query, exit codes a script can branch on,
+and read verbs that settle and exit on their own. `mxmon check 'thermal.throttling == false'`
+answers a question; a JSON dump leaves the caller to parse a document to find out whether
+anything is wrong.
+
+## Keys
+
+| Keys | Action |
+|---|---|
+| <kbd>1</kbd> <kbd>2</kbd> <kbd>3</kbd> <kbd>4</kbd> / <kbd>Tab</kbd> | overview · processes · thermal · connections |
+| <kbd>j</kbd> <kbd>k</kbd> / arrows · <kbd>g</kbd> <kbd>G</kbd> | select · jump to top / bottom |
+| <kbd>/</kbd> or <kbd>F3</kbd> | filter (<kbd>Esc</kbd> clears) |
+| <kbd>s</kbd> / <kbd>F6</kbd> / click header | sort |
+| <kbd>x</kbd> / <kbd>F9</kbd> | kill (signal picker) |
+| <kbd>Enter</kbd> | process details |
+| <kbd>o</kbd> | settings card: every option in the app, on one surface |
+| <kbd>i</kbd> | inspector: storage health, kernel activity, battery depth |
+| <kbd>a</kbd> | arrange cards: arrows move, <kbd>Enter</kbd> picks up and drops |
+| <kbd>t</kbd> | cycle theme |
+| <kbd>p</kbd> · <kbd>+</kbd> <kbd>-</kbd> · <kbd>d</kbd> | pause · sampling speed · debug HUD |
+| <kbd>?</kbd> · <kbd>q</kbd> | key reference · quit |
+
+<sub>Every one of these is remappable (see [Settings](#settings)).</sub>
+
+<sub>Full mouse support: every metric card is a button. Hover it for a `▸ destination` hint, click to jump where that metric deepens (CPU/MEM/POWER open the process table sorted by it, NET the connections view, GPU/TEMPS/BATTERY the thermal view). Click tabs, column headers, rows, footer chips and the modal `✕`; scroll the process, sensor and connection lists, and everything in the settings card.</sub>
+
+<sub>Drag any card onto another to swap the two: the rects never move, only which panel draws into them, so every layout stays exactly as tuned at every terminal width. The process table drags by its title bar (its rows keep selecting processes). Rearrangements persist, survive resizing across every breakpoint, and reset from `panels › arrangement` in the settings card.</sub>
+
+<div align="center">
+
+<img src="https://raw.githubusercontent.com/yusufmo1/mxmon/main/docs/narrow-layout.png" width="380" alt="mxmon reflowed into a narrow terminal">
+
+<sub>Reflows cleanly all the way down to narrow terminals.</sub>
+
+</div>
 
 ## How it works
 
