@@ -1,0 +1,39 @@
+{
+  "name": "mxmon",
+  "owner": {
+    "name": "Yusuf"
+  },
+  "metadata": {
+    "description": "Apple Silicon telemetry for coding agents, from the mxmon CLI.",
+    "version": "0.1.0"
+  },
+  "plugins": [
+    {
+      "name": "mxmon",
+      "source": "./",
+      "description": "Read Apple Silicon power, temperature, frequency, per-process energy and thermal state on macOS without sudo, via the mxmon CLI.",
+      "version": "0.1.0",
+      "author": {
+        "name": "Yusuf"
+      },
+      "homepage": "https://mxmon.com",
+      "repository": "https://github.com/yusufmo1/mxmon",
+      "license": "MIT",
+      "keywords": [
+        "apple-silicon",
+        "macos",
+        "telemetry",
+        "power",
+        "thermal",
+        "temperature",
+        "battery",
+        "monitoring",
+        "sudoless"
+      ],
+      "strict": false,
+      "skills": [
+        "./skills/mxmon"
+      ]
+    }
+  ]
+}
