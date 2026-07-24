@@ -30,6 +30,19 @@ impl ProcState {
             Self::Unknown => "?",
         }
     }
+
+    /// Stable lowercase label for the v1 report contract (a word, not the
+    /// single-letter glyph the TUI uses).
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Running => "running",
+            Self::Sleeping => "sleeping",
+            Self::Idle => "idle",
+            Self::Stopped => "stopped",
+            Self::Zombie => "zombie",
+            Self::Unknown => "unknown",
+        }
+    }
 }
 
 /// One row of the process table.
@@ -436,6 +449,18 @@ impl ProcCollector {
 pub fn kill(pid: i32, signal: i32) -> Result<(), String> {
     fp::kill(pid, signal).map_err(|e| match e.raw_os_error() {
         Some(libc::EPERM) => "permission denied — run with sudo".into(),
+        Some(libc::ESRCH) => "process already exited".into(),
+        _ => e.to_string(),
+    })
+}
+
+/// Renice `pid`, mapping the common errno cases to friendly messages.
+pub fn renice(pid: i32, nice: i32) -> Result<(), String> {
+    fp::setpriority(pid, nice).map_err(|e| match e.raw_os_error() {
+        Some(libc::EPERM | libc::EACCES) => {
+            "permission denied — raising priority or renicing another user's process needs sudo"
+                .into()
+        }
         Some(libc::ESRCH) => "process already exited".into(),
         _ => e.to_string(),
     })

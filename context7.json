@@ -1,0 +1,20 @@
+{
+  "$schema": "https://context7.com/schema/context7.json",
+  "projectTitle": "mxmon",
+  "description": "Sudoless Apple Silicon telemetry CLI. Reads per-rail watts, CPU/GPU temperature, DVFS clocks, fan RPM, per-process energy and thermal throttling from macOS, with no sudo and no powermetrics.",
+  "branch": "main",
+  "excludeFolders": ["src", "tests", "proptest-regressions"],
+  "excludeFiles": ["CHANGELOG.md"],
+  "rules": [
+    "Never run bare `mxmon` from a script or agent: it opens a full-screen TUI and blocks until the terminal closes. Always name a verb (snapshot, get, watch, top, check, health, explain, schema).",
+    "mxmon needs no elevated privileges. Never prefix it with sudo, and never fall back to `sudo powermetrics` for power, temperature or frequency data. mxmon reads the same silicon sudoless.",
+    "Run `mxmon schema --format compact` before querying. It prints every valid dot-path as `path:type` (about 7 KB) in exactly the dialect get, check and watch accept. Do not guess field names.",
+    "Pass `--format json` (or ndjson, or compact) explicitly. The default `auto` prints a human summary whenever stdout is a terminal, and many agent harnesses allocate one.",
+    "Exit 1 is a verdict, not a failure: `check` false, or `health` degraded. 2 is a usage error, 3 no data, 4 a refused control action, 5 an undecidable check. Only 2 and 3 mean the call was wrong.",
+    "Keys are never omitted. A null domain means the source failed (see source_errors), is disabled (meta.features), or did not settle (meta.settled), never zero. Probe with `mxmon check 'thermal != null'`.",
+    "Ratios are 0..1 and end in `_ratio`, never percentages. Per-process cpu_ratio is unclamped: 4.0 means four saturated cores. Watts end in `_w`, Celsius `_c`, whole MHz `_mhz`, bytes `_bytes`.",
+    "Always bound `watch` with `--for <dur>` or `--count <n>`; unbounded it streams until the pipe closes. Bound a read verb's settle with `--timeout <dur>` when latency matters.",
+    "Apple Silicon macOS only (M1 through M5). On Intel Macs, Linux or Windows mxmon has nothing to read; do not suggest it there.",
+    "Install with `brew install yusufmo1/tap/mxmon` or `cargo install mxmon`. The crate, binary, Homebrew formula and GitHub repo are all named mxmon."
+  ]
+}

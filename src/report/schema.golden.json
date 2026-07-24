@@ -1,0 +1,2007 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Report",
+  "description": "One settled snapshot of the machine.",
+  "type": "object",
+  "properties": {
+    "battery": {
+      "description": "Battery and adapter state. `null` on machines without a battery.",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Battery"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "cpu": {
+      "description": "CPU utilization and load. `null` if the fast tier did not settle.",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Cpu"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "disk": {
+      "description": "Disk I/O, capacity, and filesystems. `null` if the block-storage source is down.",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Disk"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "flows": {
+      "description": "Per-connection network flows. `null` if the ntstat source is down.",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Flows"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "gpu": {
+      "description": "GPU utilization and memory. `null` if the AGX source is down.",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Gpu"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "kernel": {
+      "description": "Kernel activity: scheduler rates, interrupts, and sleep blockers.",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Kernel"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "memory": {
+      "description": "System memory and swap. `null` if the memory source is down.",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Memory"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "meta": {
+      "description": "Provenance: contract version, capture time, settle state, and which\noptional collectors ran.",
+      "$ref": "#/$defs/Meta"
+    },
+    "network": {
+      "description": "Network throughput and the primary interface. `null` if the source is down.",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Network"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "ping": {
+      "description": "Connectivity probe. `null` when `ping` is disabled.",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Ping"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "power": {
+      "description": "Power rails and CPU/GPU frequency. `null` if IOReport is unavailable.",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Power"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "processes": {
+      "description": "Process-table summary and top consumers. `null` if the process pass is down.",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Processes"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "soc": {
+      "description": "Immutable machine facts. Never null: loaded synchronously at startup.",
+      "$ref": "#/$defs/Soc"
+    },
+    "source_errors": {
+      "description": "One entry per collector that failed at startup. Always present, often\nempty. A key elsewhere being `null` with a matching entry here means\n\"the source is down\", as opposed to \"disabled\" or \"not yet settled\".",
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/SourceError"
+      }
+    },
+    "storage": {
+      "description": "Drive health (SMART, cache, throttle). `null` when `storage_health` is off.",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Storage"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "thermal": {
+      "description": "Temperatures, fans, and thermal pressure. `null` if the SMC sweep is down.",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Thermal"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "required": [
+    "meta",
+    "soc",
+    "source_errors"
+  ],
+  "$defs": {
+    "Battery": {
+      "description": "Battery and adapter state.",
+      "type": "object",
+      "properties": {
+        "adapter_name": {
+          "description": "Adapter name, when reported.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "adapter_w": {
+          "description": "Adapter wattage, when connected.",
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "double"
+        },
+        "battery_w": {
+          "description": "Signed: positive while charging, negative while discharging.",
+          "type": "number",
+          "format": "double"
+        },
+        "cell_imbalance_mv": {
+          "description": "Spread between the highest and lowest cell, the earliest sign of a\nfailing pack.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "cell_voltages_mv": {
+          "description": "Per-cell voltages.",
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "format": "uint64",
+            "minimum": 0
+          }
+        },
+        "charge_ratio": {
+          "description": "Current charge, 0..1.",
+          "type": "number",
+          "format": "double"
+        },
+        "charging": {
+          "description": "Whether the pack is charging.",
+          "type": "boolean"
+        },
+        "cycle_count": {
+          "description": "Charge cycles the pack has been through.",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "cycle_ratio": {
+          "description": "Cycles used as a fraction of the pack's rated cycle life.",
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "double"
+        },
+        "daily_soc": {
+          "description": "The optimized-charging band the pack has lived in recently.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/DailySoc"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "design_cycles": {
+          "description": "Cycles the pack is rated for.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "external_power": {
+          "description": "Whether an adapter is connected.",
+          "type": "boolean"
+        },
+        "fully_charged": {
+          "description": "Whether the OS considers the pack full.",
+          "type": "boolean"
+        },
+        "health_ratio": {
+          "description": "Current full-charge capacity vs design capacity, 0..1.",
+          "type": "number",
+          "format": "double"
+        },
+        "lifetime_max_temp_c": {
+          "description": "Highest pack temperature ever recorded.",
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "double"
+        },
+        "minutes_remaining": {
+          "description": "Minutes to full (charging) or empty (discharging), when the OS knows.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "not_charging_reason": {
+          "description": "Non-zero reason code when on AC but not charging.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "raw_capacity_mah": {
+          "description": "Present charge in mAh.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "raw_max_capacity_mah": {
+          "description": "Full-charge capacity in mAh.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "temp_c": {
+          "description": "Pack temperature.",
+          "type": "number",
+          "format": "double"
+        },
+        "thermally_limited_secs": {
+          "description": "Seconds of charging the pack has spent thermally limited.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "charge_ratio",
+        "charging",
+        "external_power",
+        "fully_charged",
+        "battery_w",
+        "cycle_count",
+        "health_ratio",
+        "temp_c",
+        "cell_voltages_mv"
+      ]
+    },
+    "Cluster": {
+      "description": "A CPU cluster's aggregate readings plus its per-core breakdown.",
+      "type": "object",
+      "properties": {
+        "cores": {
+          "description": "Per-core breakdown, sorted by (die, cluster, core).",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Core"
+          }
+        },
+        "freq_mhz": {
+          "description": "Residency-weighted average frequency across the cluster.",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "usage_ratio": {
+          "description": "Average effective utilization across the cluster, 0..1.",
+          "type": "number",
+          "format": "double"
+        }
+      },
+      "required": [
+        "freq_mhz",
+        "usage_ratio",
+        "cores"
+      ]
+    },
+    "Controller": {
+      "description": "Controller-side counters only IOReport publishes.",
+      "type": "object",
+      "properties": {
+        "nand_written_bytes": {
+          "description": "Bytes the controller moved to flash over the window.",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "throttled_ratio": {
+          "description": "Share of the window the drive spent thermally throttled.",
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "double"
+        }
+      },
+      "required": [
+        "nand_written_bytes"
+      ]
+    },
+    "Core": {
+      "description": "One core's frequency, usage, and (when the chip publishes a per-core rail)\npower.",
+      "type": "object",
+      "properties": {
+        "freq_mhz": {
+          "description": "This core's residency-weighted frequency.",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "power_w": {
+          "description": "The core's own energy rail in watts. `null` on chips that publish no\nper-core rail: absent power is not zero power.",
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "double"
+        },
+        "usage_ratio": {
+          "description": "This core's effective utilization, 0..1.",
+          "type": "number",
+          "format": "double"
+        }
+      },
+      "required": [
+        "freq_mhz",
+        "usage_ratio"
+      ]
+    },
+    "Cpu": {
+      "description": "CPU utilization and system load. Per-core frequency and power live under\n[`Power`] (a different source: IOReport, not mach).",
+      "type": "object",
+      "properties": {
+        "load_avg": {
+          "description": "Load average over 1, 5, and 15 minutes.",
+          "type": "array",
+          "items": {
+            "type": "number",
+            "format": "double"
+          },
+          "maxItems": 3,
+          "minItems": 3
+        },
+        "per_core_ratio": {
+          "description": "Busy fraction per logical core, 0..1, in kernel order (E-cluster first).\nEmpty if the per-core read failed.",
+          "type": "array",
+          "items": {
+            "type": "number",
+            "format": "double"
+          }
+        },
+        "self_ratio": {
+          "description": "mxmon's own CPU use, as a fraction of one core.",
+          "type": "number",
+          "format": "double"
+        },
+        "uptime_secs": {
+          "description": "Seconds since boot.",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "per_core_ratio",
+        "load_avg",
+        "uptime_secs",
+        "self_ratio"
+      ]
+    },
+    "DailySoc": {
+      "description": "The optimized-charging state-of-charge band, as ratios.",
+      "type": "object",
+      "properties": {
+        "max_ratio": {
+          "description": "High end of the optimized-charging band, 0..1.",
+          "type": "number",
+          "format": "double"
+        },
+        "min_ratio": {
+          "description": "Low end of the optimized-charging band, 0..1.",
+          "type": "number",
+          "format": "double"
+        }
+      },
+      "required": [
+        "min_ratio",
+        "max_ratio"
+      ]
+    },
+    "Disk": {
+      "description": "Disk throughput, latency, capacity, and mounted filesystems.",
+      "type": "object",
+      "properties": {
+        "capacity_available_bytes": {
+          "description": "Free space on the data volume.",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "capacity_total_bytes": {
+          "description": "Capacity of the data volume the system booted from.",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "capacity_used_ratio": {
+          "description": "Used fraction of the data volume, 0..1.",
+          "type": "number",
+          "format": "double"
+        },
+        "devices": {
+          "description": "Number of block-storage drivers aggregated.",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "filesystems": {
+          "description": "Every real, sized filesystem currently mounted.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Filesystem"
+          }
+        },
+        "read_bytes_per_sec": {
+          "description": "Read throughput, aggregated across drives.",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "read_iops": {
+          "description": "Read operations per second.",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "read_latency_us": {
+          "description": "Average per-op read latency, when any op has been seen.",
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "double"
+        },
+        "read_session_bytes": {
+          "description": "Read bytes accumulated since mxmon launched.",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "write_bytes_per_sec": {
+          "description": "Write throughput, aggregated across drives.",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "write_iops": {
+          "description": "Write operations per second.",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "write_latency_us": {
+          "description": "Average per-op write latency, when any op has been seen.",
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "double"
+        },
+        "write_session_bytes": {
+          "description": "Write bytes accumulated since mxmon launched.",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "read_bytes_per_sec",
+        "write_bytes_per_sec",
+        "read_iops",
+        "write_iops",
+        "read_session_bytes",
+        "write_session_bytes",
+        "devices",
+        "capacity_total_bytes",
+        "capacity_available_bytes",
+        "capacity_used_ratio",
+        "filesystems"
+      ]
+    },
+    "Fan": {
+      "description": "One fan's current and maximum speed.",
+      "type": "object",
+      "properties": {
+        "label": {
+          "description": "Fan name.",
+          "type": "string"
+        },
+        "max_rpm": {
+          "description": "Rated maximum speed.",
+          "type": "number",
+          "format": "double"
+        },
+        "ratio": {
+          "description": "Current speed as a fraction of maximum, when the maximum is known.",
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "double"
+        },
+        "rpm": {
+          "description": "Current speed.",
+          "type": "number",
+          "format": "double"
+        }
+      },
+      "required": [
+        "label",
+        "rpm",
+        "max_rpm"
+      ]
+    },
+    "Features": {
+      "description": "The optional collectors and whether each was enabled.",
+      "type": "object",
+      "properties": {
+        "kernel_stats": {
+          "description": "Interrupt-rate and sleep-assertion polling.",
+          "type": "boolean"
+        },
+        "ping": {
+          "description": "The ICMP connectivity prober.",
+          "type": "boolean"
+        },
+        "storage_health": {
+          "description": "NVMe SMART, APFS cache, and controller-throttle polling.",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "ping",
+        "storage_health",
+        "kernel_stats"
+      ]
+    },
+    "Filesystem": {
+      "description": "One mounted filesystem's capacity.",
+      "type": "object",
+      "properties": {
+        "available_bytes": {
+          "description": "Free space.",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "fs_type": {
+          "description": "Filesystem type (apfs, hfs, ...).",
+          "type": "string"
+        },
+        "mount": {
+          "description": "Mount point.",
+          "type": "string"
+        },
+        "total_bytes": {
+          "description": "Capacity.",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "used_ratio": {
+          "description": "Used fraction, 0..1.",
+          "type": "number",
+          "format": "double"
+        }
+      },
+      "required": [
+        "mount",
+        "fs_type",
+        "total_bytes",
+        "available_bytes",
+        "used_ratio"
+      ]
+    },
+    "Flow": {
+      "description": "One connection.",
+      "type": "object",
+      "properties": {
+        "local": {
+          "description": "Local address:port.",
+          "type": "string"
+        },
+        "name": {
+          "description": "Owning process name.",
+          "type": "string"
+        },
+        "pid": {
+          "description": "Owning process ID.",
+          "type": "integer",
+          "format": "int64"
+        },
+        "remote": {
+          "description": "Remote address:port.",
+          "type": "string"
+        },
+        "retransmit_ratio": {
+          "description": "Lifetime retransmitted share of transmitted bytes, 0..1.",
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "double"
+        },
+        "rtt_ms": {
+          "description": "Smoothed round-trip time; `null` for UDP or before any measurement.",
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "double"
+        },
+        "rx_bytes_per_sec": {
+          "description": "Receive rate.",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "rx_total_bytes": {
+          "description": "Bytes received over the connection's life.",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "state": {
+          "description": "TCP state name, or empty for UDP.",
+          "type": "string"
+        },
+        "tx_bytes_per_sec": {
+          "description": "Transmit rate.",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "tx_total_bytes": {
+          "description": "Bytes sent over the connection's life.",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "udp": {
+          "description": "True for UDP, false for TCP.",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "pid",
+        "name",
+        "local",
+        "remote",
+        "state",
+        "udp",
+        "rx_bytes_per_sec",
+        "tx_bytes_per_sec",
+        "rx_total_bytes",
+        "tx_total_bytes"
+      ]
+    },
+    "Flows": {
+      "description": "Per-connection network flows.",
+      "type": "object",
+      "properties": {
+        "count": {
+          "description": "All live sources, including ones not shown in `top`.",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "rx_bytes_per_sec": {
+          "description": "Total receive rate across all connections.",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "top": {
+          "description": "Busiest connections, most-active first, capped at 10.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Flow"
+          }
+        },
+        "tx_bytes_per_sec": {
+          "description": "Total transmit rate across all connections.",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "count",
+        "rx_bytes_per_sec",
+        "tx_bytes_per_sec",
+        "top"
+      ]
+    },
+    "Gpu": {
+      "description": "GPU utilization and memory. GPU frequency and active ratio live under\n[`Power`] (the IOReport source).",
+      "type": "object",
+      "properties": {
+        "device_ratio": {
+          "description": "Overall device utilization, 0..1 (matches Activity Monitor's GPU meter).",
+          "type": "number",
+          "format": "double"
+        },
+        "renderer_ratio": {
+          "description": "Renderer (shader) utilization, 0..1.",
+          "type": "number",
+          "format": "double"
+        },
+        "tiler_ratio": {
+          "description": "Tiler (geometry) utilization, 0..1.",
+          "type": "number",
+          "format": "double"
+        },
+        "used_memory_bytes": {
+          "description": "In-use system memory attributed to the GPU.",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "device_ratio",
+        "renderer_ratio",
+        "tiler_ratio",
+        "used_memory_bytes"
+      ]
+    },
+    "InterruptSource": {
+      "description": "One hardware block's interrupt activity.",
+      "type": "object",
+      "properties": {
+        "device": {
+          "description": "Hardware block, e.g. \"gfx-asc\", \"ans\", \"usb-drd0\".",
+          "type": "string"
+        },
+        "handler_cpu_ratio": {
+          "description": "Handler time as a share of the window (the part that costs CPU).",
+          "type": "number",
+          "format": "double"
+        },
+        "per_sec": {
+          "description": "Interrupts per second from this device.",
+          "type": "number",
+          "format": "double"
+        }
+      },
+      "required": [
+        "device",
+        "per_sec",
+        "handler_cpu_ratio"
+      ]
+    },
+    "Interrupts": {
+      "description": "Interrupt activity, aggregated to the busiest sources.",
+      "type": "object",
+      "properties": {
+        "top_sources": {
+          "description": "Busiest interrupt sources, most-active first.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/InterruptSource"
+          }
+        },
+        "total_per_sec": {
+          "description": "Total interrupts per second across all sources.",
+          "type": "number",
+          "format": "double"
+        }
+      },
+      "required": [
+        "total_per_sec",
+        "top_sources"
+      ]
+    },
+    "Kernel": {
+      "description": "Kernel activity: scheduler rates (from the process pass), interrupt sources,\nand sleep blockers (from the `kernel_stats` collector).",
+      "type": "object",
+      "properties": {
+        "interrupts": {
+          "description": "Interrupt sources. `null` when `kernel_stats` is off.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Interrupts"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "rates": {
+          "description": "System-wide scheduler rates. `null` if the process pass has not settled.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/KernelRates"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "sleep_blockers": {
+          "description": "What is currently holding the machine awake. `null` when `kernel_stats`\nis off.",
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "$ref": "#/$defs/SleepBlocker"
+          }
+        }
+      }
+    },
+    "KernelRates": {
+      "description": "System-wide kernel activity rates.",
+      "type": "object",
+      "properties": {
+        "context_switches_per_sec": {
+          "description": "System-wide context switches per second.",
+          "type": "number",
+          "format": "double"
+        },
+        "interrupt_wakeups_per_sec": {
+          "description": "System-wide interrupt-driven wakeups per second.",
+          "type": "number",
+          "format": "double"
+        },
+        "mach_messages_per_sec": {
+          "description": "System-wide Mach messages per second.",
+          "type": "number",
+          "format": "double"
+        },
+        "runnable_threads": {
+          "description": "Runnable-but-not-running thread-seconds per wall second.",
+          "type": "number",
+          "format": "double"
+        },
+        "syscalls_per_sec": {
+          "description": "System-wide system calls per second.",
+          "type": "number",
+          "format": "double"
+        }
+      },
+      "required": [
+        "context_switches_per_sec",
+        "syscalls_per_sec",
+        "mach_messages_per_sec",
+        "interrupt_wakeups_per_sec",
+        "runnable_threads"
+      ]
+    },
+    "Memory": {
+      "description": "System memory (the Activity Monitor formula), swap, and pressure.",
+      "type": "object",
+      "properties": {
+        "app_bytes": {
+          "description": "Anonymous, non-purgeable application memory.",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "cached_bytes": {
+          "description": "File-backed and purgeable pages the OS can reclaim.",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "compressed_bytes": {
+          "description": "Memory held by the compressor.",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "pressure": {
+          "description": "Kernel memory pressure: \"normal\", \"warning\", or \"critical\".",
+          "type": "string"
+        },
+        "swap_total_bytes": {
+          "description": "Swap backing-store size.",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "swap_used_bytes": {
+          "description": "Swap in use.",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "total_bytes": {
+          "description": "Installed physical memory.",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "used_bytes": {
+          "description": "App + wired + compressed (Activity Monitor's \"Memory Used\").",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "used_ratio": {
+          "description": "`used_bytes` / `total_bytes`, 0..1.",
+          "type": "number",
+          "format": "double"
+        },
+        "wired_bytes": {
+          "description": "Wired (non-pageable) memory.",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "total_bytes",
+        "used_bytes",
+        "app_bytes",
+        "wired_bytes",
+        "compressed_bytes",
+        "cached_bytes",
+        "swap_used_bytes",
+        "swap_total_bytes",
+        "used_ratio",
+        "pressure"
+      ]
+    },
+    "Meta": {
+      "description": "Provenance for the snapshot: how to read it and how fresh it is.",
+      "type": "object",
+      "properties": {
+        "features": {
+          "description": "Which optional collectors were enabled for this run. Disambiguates a\n`null` domain that is \"disabled\" from one that is \"down\" or \"unsettled\".",
+          "$ref": "#/$defs/Features"
+        },
+        "generated_unix": {
+          "description": "Wall-clock capture time, seconds since the Unix epoch.",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "mxmon_version": {
+          "description": "The mxmon build that produced this report.",
+          "type": "string"
+        },
+        "sample_window": {
+          "description": "Delta windows the printed rates average over, per tier, in milliseconds.",
+          "$ref": "#/$defs/SampleWindow"
+        },
+        "schema_version": {
+          "description": "Contract version. Bumped on any breaking schema change. Currently 1.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "settled": {
+          "description": "True iff every settle-gated tier reported at least twice before the\ndeadline. When false, some fresh-but-single-sample or absent values may\nbe present, and delta-based rates may still be zero.",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "schema_version",
+        "mxmon_version",
+        "generated_unix",
+        "settled",
+        "sample_window",
+        "features"
+      ]
+    },
+    "Network": {
+      "description": "Network throughput and the primary interface.",
+      "type": "object",
+      "properties": {
+        "primary": {
+          "description": "The busiest active interface, when one is up.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PrimaryIf"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "rx_bytes_per_sec": {
+          "description": "Receive throughput, aggregated over physical interfaces.",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "rx_session_bytes": {
+          "description": "Received bytes accumulated since mxmon launched.",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "tx_bytes_per_sec": {
+          "description": "Transmit throughput, aggregated over physical interfaces.",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "tx_session_bytes": {
+          "description": "Transmitted bytes accumulated since mxmon launched.",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "rx_bytes_per_sec",
+        "tx_bytes_per_sec",
+        "rx_session_bytes",
+        "tx_session_bytes"
+      ]
+    },
+    "Ping": {
+      "description": "Active connectivity probe (ICMP echo).",
+      "type": "object",
+      "properties": {
+        "host": {
+          "description": "The probed host.",
+          "type": "string"
+        },
+        "jitter_ms": {
+          "description": "Smoothed mean inter-probe variation (jitter).",
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "double"
+        },
+        "latency_ms": {
+          "description": "Smoothed (EMA) latency.",
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "double"
+        },
+        "rtt_ms": {
+          "description": "This probe's round trip; `null` on timeout.",
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "double"
+        },
+        "up": {
+          "description": "Reachability, debounced by one miss.",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "host",
+        "up"
+      ]
+    },
+    "Power": {
+      "description": "Power rails and CPU/GPU frequency from IOReport energy counters.",
+      "type": "object",
+      "properties": {
+        "amcc_w": {
+          "description": "Memory-controller fabric (`AMCC`), separate from the DRAM rail.",
+          "type": "number",
+          "format": "double"
+        },
+        "ane_w": {
+          "description": "Apple Neural Engine.",
+          "type": "number",
+          "format": "double"
+        },
+        "cpu_w": {
+          "description": "CPU compute rails.",
+          "type": "number",
+          "format": "double"
+        },
+        "dcs_w": {
+          "description": "DRAM command scheduler / PHY (`DCS`).",
+          "type": "number",
+          "format": "double"
+        },
+        "display_ext_w": {
+          "description": "External display pipeline (the external share of `display_w`).",
+          "type": "number",
+          "format": "double"
+        },
+        "display_w": {
+          "description": "Both display pipelines summed.",
+          "type": "number",
+          "format": "double"
+        },
+        "dram_w": {
+          "description": "LPDDR (DRAM) rail.",
+          "type": "number",
+          "format": "double"
+        },
+        "ecpu": {
+          "description": "Efficiency cluster (the \"E\" tier; the mid tier on M5 Pro/Max).",
+          "$ref": "#/$defs/Cluster"
+        },
+        "gpu_active_ratio": {
+          "description": "Fraction of the window the GPU was powered on.",
+          "type": "number",
+          "format": "double"
+        },
+        "gpu_cs_w": {
+          "description": "GPU command/scheduler rails.",
+          "type": "number",
+          "format": "double"
+        },
+        "gpu_freq_mhz": {
+          "description": "GPU frequency, residency-weighted.",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "gpu_sram_w": {
+          "description": "GPU SRAM rail.",
+          "type": "number",
+          "format": "double"
+        },
+        "gpu_usage_ratio": {
+          "description": "Frequency-scaled GPU usage.",
+          "type": "number",
+          "format": "double"
+        },
+        "gpu_w": {
+          "description": "GPU compute rails.",
+          "type": "number",
+          "format": "double"
+        },
+        "isp_w": {
+          "description": "Camera image-signal processor (`ISP`).",
+          "type": "number",
+          "format": "double"
+        },
+        "package_w": {
+          "description": "Package power: CPU + GPU + ANE rails.",
+          "type": "number",
+          "format": "double"
+        },
+        "pcpu": {
+          "description": "Performance cluster (the \"P\" tier; \"S\" on M5 Pro/Max).",
+          "$ref": "#/$defs/Cluster"
+        },
+        "scaler_w": {
+          "description": "Media scaler (`MSR`).",
+          "type": "number",
+          "format": "double"
+        },
+        "video_w": {
+          "description": "Video encode/decode engine (`AVE`).",
+          "type": "number",
+          "format": "double"
+        }
+      },
+      "required": [
+        "package_w",
+        "cpu_w",
+        "gpu_w",
+        "ane_w",
+        "dram_w",
+        "display_w",
+        "display_ext_w",
+        "gpu_sram_w",
+        "amcc_w",
+        "dcs_w",
+        "video_w",
+        "isp_w",
+        "scaler_w",
+        "gpu_cs_w",
+        "ecpu",
+        "pcpu",
+        "gpu_freq_mhz",
+        "gpu_usage_ratio",
+        "gpu_active_ratio"
+      ]
+    },
+    "PrimaryIf": {
+      "description": "The busiest active interface.",
+      "type": "object",
+      "properties": {
+        "ipv4": {
+          "description": "Local IPv4 address, when assigned.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "link_speed_bps": {
+          "description": "Link speed in bits per second (a bit-rate by definition).",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "link_up": {
+          "description": "Link actually up (`IFF_RUNNING`), not merely configured.",
+          "type": "boolean"
+        },
+        "mac": {
+          "description": "Hardware (MAC) address.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "name": {
+          "description": "Interface name, e.g. \"en0\".",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "link_speed_bps",
+        "link_up"
+      ]
+    },
+    "Proc": {
+      "description": "One process, enriched where permissions allowed.",
+      "type": "object",
+      "properties": {
+        "cpu_ratio": {
+          "description": "CPU as a fraction of one core; can exceed 1 for multithreaded work.",
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "double"
+        },
+        "cpu_time_secs": {
+          "description": "Cumulative CPU time.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "csw_per_sec": {
+          "description": "Context switches per second.",
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "double"
+        },
+        "disk_read_bytes_per_sec": {
+          "description": "Disk read rate.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "disk_write_bytes_per_sec": {
+          "description": "Disk write rate.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "ipc": {
+          "description": "Instructions retired per cycle.",
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "double"
+        },
+        "memory_bytes": {
+          "description": "Physical footprint (Activity Monitor's memory column).",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "name": {
+          "description": "Executable name.",
+          "type": "string"
+        },
+        "p_share_ratio": {
+          "description": "Fraction of the window's cycles spent on P-cluster cores.",
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "double"
+        },
+        "path": {
+          "description": "Executable path, when readable.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "pid": {
+          "description": "Process ID.",
+          "type": "integer",
+          "format": "int64"
+        },
+        "power_w": {
+          "description": "Average power over the window, from per-process energy counters.",
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "double"
+        },
+        "ppid": {
+          "description": "Parent process ID.",
+          "type": "integer",
+          "format": "int64"
+        },
+        "qos_background_ratio": {
+          "description": "Share of CPU time requested at background QoS, 0..1.",
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "double"
+        },
+        "qos_interactive_ratio": {
+          "description": "Share of CPU time requested at interactive QoS, 0..1.",
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "double"
+        },
+        "runnable": {
+          "description": "Seconds runnable-but-not-running per wall second (scheduler contention).",
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "double"
+        },
+        "state": {
+          "description": "\"running\", \"sleeping\", \"idle\", \"stopped\", \"zombie\", or \"unknown\".",
+          "type": "string"
+        },
+        "syscalls_per_sec": {
+          "description": "System calls per second.",
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "double"
+        },
+        "threads": {
+          "description": "Thread count, when readable.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "int64"
+        },
+        "user": {
+          "description": "Owning username.",
+          "type": "string"
+        },
+        "wakeups_per_sec": {
+          "description": "Interrupt-driven wakeups per second.",
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "double"
+        }
+      },
+      "required": [
+        "pid",
+        "ppid",
+        "user",
+        "name",
+        "state"
+      ]
+    },
+    "Processes": {
+      "description": "The process table summary and the top consumers by CPU.",
+      "type": "object",
+      "properties": {
+        "restricted": {
+          "description": "True when at least one process was unreadable.",
+          "type": "boolean"
+        },
+        "running": {
+          "description": "Processes currently running (not sleeping or idle).",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "threads_visible": {
+          "description": "Threads across readable processes (a lower bound without sudo).",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "top": {
+          "description": "Busiest processes by CPU, most-active first, capped at 12.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Proc"
+          }
+        },
+        "total": {
+          "description": "Total processes on the system.",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "total",
+        "running",
+        "threads_visible",
+        "restricted",
+        "top"
+      ]
+    },
+    "SampleWindow": {
+      "description": "Per-tier sampling intervals, in milliseconds.",
+      "type": "object",
+      "properties": {
+        "fast_ms": {
+          "description": "Fast tier: cpu, gpu, memory, network, disk.",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "flows_ms": {
+          "description": "Connection-flows tier.",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "power_ms": {
+          "description": "Power and frequency tier.",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "procs_ms": {
+          "description": "Process-table tier.",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "fast_ms",
+        "power_ms",
+        "procs_ms",
+        "flows_ms"
+      ]
+    },
+    "Sensor": {
+      "description": "One named temperature reading.",
+      "type": "object",
+      "properties": {
+        "group": {
+          "description": "Display group, tier-aware (\"E-Cores\"/\"P-Cores\", \"GPU\", \"SSD\", ...).",
+          "type": "string"
+        },
+        "label": {
+          "description": "Human-readable sensor name.",
+          "type": "string"
+        },
+        "temp_c": {
+          "description": "Temperature.",
+          "type": "number",
+          "format": "double"
+        }
+      },
+      "required": [
+        "label",
+        "group",
+        "temp_c"
+      ]
+    },
+    "SleepBlocker": {
+      "description": "One reason the machine is being held awake.",
+      "type": "object",
+      "properties": {
+        "kind": {
+          "description": "Assertion type, e.g. \"PreventUserIdleSystemSleep\".",
+          "type": "string"
+        },
+        "pid": {
+          "description": "Process holding the assertion.",
+          "type": "integer",
+          "format": "int64"
+        },
+        "reason": {
+          "description": "Human-readable reason the owner supplied, when any.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "pid",
+        "kind"
+      ]
+    },
+    "Smart": {
+      "description": "The NVMe SMART / Health Information log page.",
+      "type": "object",
+      "properties": {
+        "available_spare_ratio": {
+          "description": "Spare capacity remaining, 0..1.",
+          "type": "number",
+          "format": "double"
+        },
+        "available_spare_threshold_ratio": {
+          "description": "Threshold below which the drive considers itself failing, 0..1.",
+          "type": "number",
+          "format": "double"
+        },
+        "bytes_read": {
+          "description": "Bytes read over the drive's life. Narrowed from the log's 128-bit\ncounter to u64 (saturating); values past 2^53 lose precision in JSON\nparsers that use doubles.",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "bytes_written": {
+          "description": "Bytes written over the drive's life (same u64 narrowing as `bytes_read`).",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "critical_warning": {
+          "description": "Fault bit field; any bit set is a controller-reported problem.",
+          "type": "integer",
+          "format": "uint8",
+          "maximum": 255,
+          "minimum": 0
+        },
+        "error_log_entries": {
+          "description": "Entries in the controller error log.",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "media_errors": {
+          "description": "Unrecovered media errors.",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "power_cycles": {
+          "description": "Power-cycle count over the drive's life.",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "power_on_hours": {
+          "description": "Powered-on hours over the drive's life.",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "temperature_c": {
+          "description": "Composite drive temperature, when reported.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "int64"
+        },
+        "unhealthy": {
+          "description": "True when the controller is flagging a real problem.",
+          "type": "boolean"
+        },
+        "unsafe_shutdowns": {
+          "description": "Power losses without a clean shutdown.",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "used_ratio": {
+          "description": "Rated write endurance consumed, 0..1 (can exceed 1).",
+          "type": "number",
+          "format": "double"
+        }
+      },
+      "required": [
+        "critical_warning",
+        "available_spare_ratio",
+        "available_spare_threshold_ratio",
+        "used_ratio",
+        "bytes_read",
+        "bytes_written",
+        "power_cycles",
+        "power_on_hours",
+        "unsafe_shutdowns",
+        "media_errors",
+        "error_log_entries",
+        "unhealthy"
+      ]
+    },
+    "Soc": {
+      "description": "Immutable machine facts.",
+      "type": "object",
+      "properties": {
+        "chip": {
+          "description": "Marketing name, e.g. \"Apple M3 Max\".",
+          "type": "string"
+        },
+        "cores_per_pcluster": {
+          "description": "Cores per performance cluster (Max parts run more than one cluster).",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "ecpu_cores": {
+          "description": "Efficiency-tier core count.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "ecpu_freqs_mhz": {
+          "description": "E-tier DVFS steps, ascending, in MHz.",
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "format": "uint64",
+            "minimum": 0
+          }
+        },
+        "gpu_cores": {
+          "description": "GPU core count, when the registry publishes it.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0
+        },
+        "gpu_freqs_mhz": {
+          "description": "GPU DVFS steps, ascending, in MHz.",
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "format": "uint64",
+            "minimum": 0
+          }
+        },
+        "macos_version": {
+          "description": "macOS product version, e.g. \"26.5.2\".",
+          "type": "string"
+        },
+        "memory_bytes": {
+          "description": "Installed physical memory.",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "pcpu_cores": {
+          "description": "Performance-tier core count.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "pcpu_freqs_mhz": {
+          "description": "P-tier DVFS steps, ascending, in MHz.",
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "format": "uint64",
+            "minimum": 0
+          }
+        },
+        "tier_high": {
+          "description": "Display letter for the upper CPU tier (\"P\" on M1-M4, \"S\" on M5 Pro/Max).",
+          "type": "string"
+        },
+        "tier_low": {
+          "description": "Display letter for the lower CPU tier (\"E\" on M1-M4, \"P\" on M5 Pro/Max).",
+          "type": "string"
+        }
+      },
+      "required": [
+        "chip",
+        "macos_version",
+        "ecpu_cores",
+        "pcpu_cores",
+        "cores_per_pcluster",
+        "memory_bytes",
+        "ecpu_freqs_mhz",
+        "pcpu_freqs_mhz",
+        "gpu_freqs_mhz",
+        "tier_low",
+        "tier_high"
+      ]
+    },
+    "SourceError": {
+      "description": "A collector that failed at startup, with the reason.",
+      "type": "object",
+      "properties": {
+        "error": {
+          "description": "Why it failed.",
+          "type": "string"
+        },
+        "source": {
+          "description": "The collector that failed (matches a top-level domain key).",
+          "type": "string"
+        }
+      },
+      "required": [
+        "source",
+        "error"
+      ]
+    },
+    "Storage": {
+      "description": "Drive health: NVMe SMART, APFS per-volume cache behaviour, and controller\nthrottle counters. The health tier; `null` when `storage_health` is off.",
+      "type": "object",
+      "properties": {
+        "controller": {
+          "description": "Controller-side throttle and flash-traffic counters.",
+          "$ref": "#/$defs/Controller"
+        },
+        "smart": {
+          "description": "The NVMe SMART log page, when the drive exposes it.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Smart"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "volumes": {
+          "description": "APFS per-volume cache and write behaviour (distinct from\n[`Disk::filesystems`], which is capacity).",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Volume"
+          }
+        }
+      },
+      "required": [
+        "controller",
+        "volumes"
+      ]
+    },
+    "Thermal": {
+      "description": "Temperatures, fans, the kernel's thermal-pressure verdict, and SMC power.",
+      "type": "object",
+      "properties": {
+        "adapter_power_w": {
+          "description": "SMC watts delivered by the adapter right now (`PDTR`).",
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "double"
+        },
+        "backlight_power_w": {
+          "description": "SMC display backlight rail (`PDBR`).",
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "double"
+        },
+        "cpu_avg_c": {
+          "description": "Mean CPU core temperature.",
+          "type": "number",
+          "format": "double"
+        },
+        "cpu_max_c": {
+          "description": "Hottest CPU core temperature.",
+          "type": "number",
+          "format": "double"
+        },
+        "fans": {
+          "description": "Fans (empty on fanless machines).",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Fan"
+          }
+        },
+        "gpu_avg_c": {
+          "description": "Mean GPU temperature.",
+          "type": "number",
+          "format": "double"
+        },
+        "gpu_max_c": {
+          "description": "Hottest GPU temperature.",
+          "type": "number",
+          "format": "double"
+        },
+        "pressure": {
+          "description": "Kernel thermal-pressure level: \"nominal\" through \"sleeping\". `null` if\nthe notification key is unavailable.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "sensors": {
+          "description": "Every readable die and board sensor.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Sensor"
+          }
+        },
+        "severity": {
+          "description": "Pressure severity on a 0..1 ramp, for gauges.",
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "double"
+        },
+        "sys_power_w": {
+          "description": "SMC total system power draw (`PSTR`).",
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "double"
+        },
+        "throttling": {
+          "description": "Whether the OS considers the machine thermally constrained (pressure at\n\"moderate\" or above).",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "cpu_avg_c",
+        "cpu_max_c",
+        "gpu_avg_c",
+        "gpu_max_c",
+        "sensors",
+        "fans"
+      ]
+    },
+    "Volume": {
+      "description": "One APFS volume's cache and write behaviour.",
+      "type": "object",
+      "properties": {
+        "cache_hit_ratio": {
+          "description": "Share of reads served without touching the device, when anything was\nread.",
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "double"
+        },
+        "device_read_bytes": {
+          "description": "Bytes that actually reached the device (the gap is the cache).",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "device_write_bytes": {
+          "description": "Bytes that actually reached the device.",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "name": {
+          "description": "APFS volume name.",
+          "type": "string"
+        },
+        "user_read_bytes": {
+          "description": "Bytes userspace asked to read.",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "user_write_bytes": {
+          "description": "Bytes userspace asked to write.",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "write_amplification": {
+          "description": "Device bytes written per byte userspace wrote.",
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "double"
+        }
+      },
+      "required": [
+        "name",
+        "user_read_bytes",
+        "device_read_bytes",
+        "user_write_bytes",
+        "device_write_bytes"
+      ]
+    }
+  }
+}

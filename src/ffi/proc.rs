@@ -340,3 +340,14 @@ pub fn kill(pid: i32, signal: i32) -> io::Result<()> {
         Err(io::Error::last_os_error())
     }
 }
+
+/// Set the scheduling niceness of `pid` (`PRIO_PROCESS`). Raising priority
+/// (negative nice) or renicing another user's process needs privilege and
+/// surfaces as `EPERM`/`EACCES`.
+pub fn setpriority(pid: i32, nice: i32) -> io::Result<()> {
+    if unsafe { libc::setpriority(libc::PRIO_PROCESS, pid as u32, nice) } == 0 {
+        Ok(())
+    } else {
+        Err(io::Error::last_os_error())
+    }
+}

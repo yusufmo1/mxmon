@@ -16,6 +16,17 @@ pub enum Pressure {
     Critical,
 }
 
+impl Pressure {
+    /// Stable lowercase label for the v1 report contract.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Normal => "normal",
+            Self::Warning => "warning",
+            Self::Critical => "critical",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct MemSample {
     pub total: Bytes,

@@ -1,0 +1,37 @@
+name: Refresh Context7
+
+# Context7 re-parses on a popularity-tiered schedule, and a new library sits in
+# the slowest bucket. This nudges a refresh whenever the indexed surface actually
+# changes, so an agent never reads a contract the binary no longer implements.
+# The path filter is deliberate: a refresh on every commit would spend quota on
+# code Context7 does not index (src/ and tests/ are excluded in context7.json).
+on:
+  push:
+    branches: [main]
+    paths:
+      - "README.md"
+      - "AGENTS.md"
+      - "context7.json"
+      - "skills/**"
+      - "docs/**"
+  workflow_dispatch:
+
+# No repository contents are needed: the job is a single outbound request.
+permissions: {}
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger Context7 refresh
+        env:
+          CONTEXT7_API_KEY: ${{ secrets.CONTEXT7_API_KEY }}
+        run: |
+          if [ -z "$CONTEXT7_API_KEY" ]; then
+            echo "CONTEXT7_API_KEY not set; nothing to do."
+            exit 0
+          fi
+          curl -sS --fail-with-body -X POST https://context7.com/api/v1/refresh \
+            -H "Content-Type: application/json" \
+            -H "Authorization: Bearer $CONTEXT7_API_KEY" \
+            -d "{\"libraryName\": \"/${GITHUB_REPOSITORY}\"}"
