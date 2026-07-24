@@ -1,6 +1,6 @@
 [package]
 name = "mxmon"
-version = "0.1.2"
+version = "0.2.0"
 edition = "2024"
 rust-version = "1.88" # let-chains
 description = "Sudoless system monitor for Apple Silicon: power, thermals and per-process watts, as a TUI and a JSON contract for agents"

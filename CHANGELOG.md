@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0](https://github.com/yusufmo1/mxmon/compare/v0.1.2...v0.2.0) - 2026-07-24
+
+### Added
+
+- *(cli)* complete the help and pin it with a golden
+- *(cli)* honor every flag the help advertises
+- *(cli)* [**breaking**] headless subcommand surface for scripting and agents
+- *(report)* versioned v1 agent-facing data contract
+
+### Other
+
+- Merge dev into main: agent CLI surface and discovery
+- align crate metadata with the agent positioning
+- *(readme)* lead with the agent contract, add a comparison table
+- correct the agent guide and README for the finished surface
+- cover the headless surface end to end
+- *(report)* shared fully-populated report fixture
+- satisfy the fmt gate on the phase-1 files
+- agent CLI guide and README section
+- add schemars, clap_complete, and clap_mangen
+- *(ui)* redact the crate version in the about-page snapshot
+
 ## [0.1.2](https://github.com/yusufmo1/mxmon/compare/v0.1.1...v0.1.2) - 2026-07-23
 
 ### Added
